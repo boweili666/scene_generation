@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Scene Graph Interface</title>
+
+  <!-- Cytoscape.js -->
+  <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; font-family: Arial, Helvetica, sans-serif; }
+
+    body {
+      margin: 0;
+      background: #f5f5f5;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .header {
+      height: 60px;
+      background: #1f2933;
+      color: white;
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      font-size: 20px;
+      font-weight: bold;
+    }
+
+    .container {
+      flex: 1;
+      display: flex;
+      padding: 12px;
+      gap: 12px;
+    }
+
+    .conversation {
+      flex: 1;
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .conversation h2,
+    .panel h2 {
+      margin-top: 0;
+      font-size: 18px;
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 8px;
+    }
+
+    .right-panel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .panel {
+      flex: 1;
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    textarea {
+      flex: 1;
+      resize: none;
+      padding: 8px;
+      font-size: 20px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      padding: 8px 14px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: none;
+      background: #2563eb;
+      color: white;
+      cursor: pointer;
+    }
+
+    .status {
+      font-size: 13px;
+      color: #475569;
+    }
+
+    .placeholder {
+      flex: 1;
+      border: 1px dashed #cbd5e1;
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #sceneGraph {
+      width: 100%;
+      height: 100%;
+    }
+
+    .placeholder img {
+      max-width: 100%;
+      max-height: 100%;
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="header">Scene Graph Generation & Visualization</div>
+
+  <div class="container">
+
+    <!-- Left: Conversation -->
+    <div class="conversation">
+      <h2>Conversation</h2>
+
+      <textarea
+        id="sceneInput"
+        placeholder="Describe the scene in natural language..."
+      ></textarea>
+
+      <button
+        style="margin-top:10px;"
+        onclick="generateSceneGraphFromText()"
+      >
+        Generate Scene Graph
+      </button>
+    </div>
+
+    <!-- Right -->
+    <div class="right-panel">
+
+      <!-- Scene Graph -->
+      <div class="panel">
+        <h2>Scene Graph Visualization</h2>
+        <div class="placeholder">
+          <div id="sceneGraph"></div>
+        </div>
+      </div>
+
+      <!-- Isaac Sim -->
+      <div class="panel">
+        <h2>Isaac Sim Images</h2>
+
+        <div class="controls">
+          <button id="generateBtn" onclick="generateScene()">Generate Scene</button>
+          <span id="status" class="status">Idle</span>
+        </div>
+
+        <div class="placeholder">
+          <img id="renderImage" src="assets/renders/render.png" />
+          <span id="imagePlaceholder">No image yet</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    let cy = null;
+
+    /* ========= Render Scene Graph ========= */
+    function renderSceneGraph(graph) {
+      const elements = [];
+
+      for (const obj of graph.objects) {
+        elements.push({
+          data: {
+            id: obj.path,
+            label: obj.class_name
+          }
+        });
+      }
+
+      for (const e of graph.edges) {
+        elements.push({
+          data: {
+            id: e.source + "->" + e.target,
+            source: e.source,
+            target: e.target,
+            label: e.relation
+          }
+        });
+      }
+
+      if (cy) cy.destroy();
+
+      cy = cytoscape({
+        container: document.getElementById("sceneGraph"),
+        elements: elements,
+        style: [
+          {
+            selector: "node",
+            style: {
+              "background-color": "#2563eb",
+              "label": "data(label)",
+              "color": "white",
+              "text-valign": "center",
+              "shape": "round-rectangle",
+              "padding": "8px",
+              "font-size": "12px"
+            }
+          },
+          {
+            selector: "edge",
+            style: {
+              "curve-style": "bezier",
+              "target-arrow-shape": "triangle",
+              "label": "data(label)",
+              "font-size": "10px",
+              "text-background-color": "white",
+              "text-background-opacity": 1,
+              "text-background-padding": "2px"
+            }
+          }
+        ],
+        layout: {
+          name: "cose",
+          animate: true,
+          padding: 30
+        }
+      });
+    }
+
+    /* ========= Load initial graph from file ========= */
+    async function loadSceneGraph() {
+      const res = await fetch("/scene_graph");
+      const graph = await res.json();
+      renderSceneGraph(graph);
+    }
+
+    /* ========= NL → Scene Graph ========= */
+    async function generateSceneGraphFromText() {
+      const text = document.getElementById("sceneInput").value;
+
+      const res = await fetch("/nl_to_scene", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+
+      const graph = await res.json();
+      renderSceneGraph(graph);
+    }
+
+    /* ========= Isaac Sim ========= */
+    async function generateScene() {
+      const btn = document.getElementById("generateBtn");
+      const status = document.getElementById("status");
+      const img = document.getElementById("renderImage");
+      const placeholder = document.getElementById("imagePlaceholder");
+
+      btn.disabled = true;
+      status.textContent = "Generating scene...";
+
+      try {
+        await fetch("/generate");
+        img.src = "assets/renders/render.png?ts=" + Date.now();
+        img.style.display = "block";
+        placeholder.style.display = "none";
+        status.textContent = "Done";
+      } catch (err) {
+        console.error(err);
+        status.textContent = "Failed";
+      }
+
+      btn.disabled = false;
+    }
+
+    // 初始加载文件 Scene Graph
+    loadSceneGraph();
+  </script>
+</body>
+</html>
