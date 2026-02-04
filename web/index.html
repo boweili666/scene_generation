@@ -135,9 +135,20 @@
         placeholder="Describe the scene in natural language..."
       ></textarea>
 
+      <div class="controls" style="margin-top:8px;">
+        <input id="imageInput" type="file" accept="image/*" />
+        <span class="status" id="uploadStatus">Image optional</span>
+      </div>
+
+      <div class="controls" style="margin-top:8px;">
+        <label style="font-size:13px;">Or pick a folder locally:</label>
+        <input id="classDirPicker" type="file" webkitdirectory multiple />
+        <span class="status" id="classStatus"></span>
+      </div>
+
       <button
         style="margin-top:10px;"
-        onclick="generateSceneGraphFromText()"
+        onclick="generateSceneGraph()"
       >
         Generate Scene Graph
       </button>
@@ -160,6 +171,7 @@
 
         <div class="controls">
           <button id="generateBtn" onclick="generateScene()">Generate Scene</button>
+          <button id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
           <span id="status" class="status">Idle</span>
         </div>
 
@@ -245,18 +257,52 @@
       renderSceneGraph(graph);
     }
 
-    /* ========= NL → Scene Graph ========= */
-    async function generateSceneGraphFromText() {
+    /* ========= Text or Image → Scene Graph ========= */
+    async function generateSceneGraph() {
       const text = document.getElementById("sceneInput").value;
+      const fileInput = document.getElementById("imageInput");
+      const uploadStatus = document.getElementById("uploadStatus");
+      const classDirPicker = document.getElementById("classDirPicker");
+      const classStatus = document.getElementById("classStatus");
 
-      const res = await fetch("/nl_to_scene", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text })
-      });
+      const formData = new FormData();
+      if (text.trim()) formData.append("text", text);
+      if (fileInput.files.length > 0) {
+        formData.append("image", fileInput.files[0]);
+        uploadStatus.textContent = "Using uploaded image";
+      } else {
+        uploadStatus.textContent = "Using text description";
+      }
+      if (classDirPicker.files.length > 0) {
+        const names = Array.from(classDirPicker.files)
+          .map((f) => {
+            const parts = f.name.split(".");
+            parts.pop();
+            return parts.join("."); // drop extension
+          })
+          .filter(Boolean);
+        formData.append("class_names", JSON.stringify(names));
+        classStatus.textContent = `${names.length} file names added`;
+      } else {
+        classStatus.textContent = "";
+      }
 
-      const graph = await res.json();
-      renderSceneGraph(graph);
+      try {
+        const res = await fetch("/scene_from_input", {
+          method: "POST",
+          body: formData
+        });
+
+        const graph = await res.json();
+        if (!res.ok) {
+          alert(graph.error || "Generation failed");
+          return;
+        }
+        renderSceneGraph(graph);
+      } catch (err) {
+        console.error(err);
+        alert("Failed to generate scene graph");
+      }
     }
 
     /* ========= Isaac Sim ========= */
@@ -271,6 +317,37 @@
 
       try {
         await fetch("/generate");
+        img.src = "assets/renders/render.png?ts=" + Date.now();
+        img.style.display = "block";
+        placeholder.style.display = "none";
+        status.textContent = "Done";
+      } catch (err) {
+        console.error(err);
+        status.textContent = "Failed";
+      }
+
+      btn.disabled = false;
+    }
+
+    /* ========= Real2Sim Pipeline ========= */
+    async function runReal2Sim() {
+      const btn = document.getElementById("real2simBtn");
+      const status = document.getElementById("status");
+      const img = document.getElementById("renderImage");
+      const placeholder = document.getElementById("imagePlaceholder");
+
+      btn.disabled = true;
+      status.textContent = "Running Real2Sim...";
+
+      try {
+        const res = await fetch("/real2sim");
+        const data = await res.json();
+        if (!res.ok) {
+          status.textContent = "Failed";
+          alert((data && (data.detail || data.msg)) || "Real2Sim failed");
+          btn.disabled = false;
+          return;
+        }
         img.src = "assets/renders/render.png?ts=" + Date.now();
         img.style.display = "block";
         placeholder.style.display = "none";
