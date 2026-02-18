@@ -1,17 +1,25 @@
 import os
 import subprocess
+import json
+from pathlib import Path
 from datetime import datetime
 
 try:
     from .config import (
         ASSET_CONVERTER_SCRIPT,
-        ARRANGE_FROM_CSV_SCRIPT,
         ARRANGE_INPUT_DIR,
         GENMESH_ROOT,
         ISAAC_PYTHON,
         ISAAC_SCRIPT,
         LOG_PATH,
+        OPTION2_MASK_OUTPUT,
+        OPTION2_MESH_OUTPUT_DIR,
+        OPTION2_REUSE_MESH_DIR,
+        OPTION2_SKIP_SAM3D_DEFAULT,
+        OPTION2_STEP4_ARRANGE_WRAPPER,
+        OPTION2_STEP1_SEGMENT_SCRIPT,
         OPTION2_DEFAULT_CSV,
+        SCENE_GRAPH_PATH,
         SAM3_MESH_GEN,
         SAM3_MESH_OUTPUT,
         SAM3_RELATIVE_XY_SCRIPT,
@@ -23,13 +31,19 @@ try:
 except ImportError:
     from config import (
         ASSET_CONVERTER_SCRIPT,
-        ARRANGE_FROM_CSV_SCRIPT,
         ARRANGE_INPUT_DIR,
         GENMESH_ROOT,
         ISAAC_PYTHON,
         ISAAC_SCRIPT,
         LOG_PATH,
+        OPTION2_MASK_OUTPUT,
+        OPTION2_MESH_OUTPUT_DIR,
+        OPTION2_REUSE_MESH_DIR,
+        OPTION2_SKIP_SAM3D_DEFAULT,
+        OPTION2_STEP4_ARRANGE_WRAPPER,
+        OPTION2_STEP1_SEGMENT_SCRIPT,
         OPTION2_DEFAULT_CSV,
+        SCENE_GRAPH_PATH,
         SAM3_MESH_GEN,
         SAM3_MESH_OUTPUT,
         SAM3_RELATIVE_XY_SCRIPT,
@@ -74,6 +88,42 @@ def _run_step(cmd, timeout, label, env=None):
     return result
 
 
+def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
+    path = Path(scene_graph_path)
+    if not path.exists():
+        return []
+
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    prompts: list[str] = []
+    objects = data.get("objects")
+    if isinstance(objects, list):
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+            val = obj.get("class_name") or obj.get("class")
+            if isinstance(val, str) and val.strip():
+                prompts.append(val.strip().lower())
+
+    obj_map = data.get("obj")
+    if isinstance(obj_map, dict):
+        for obj in obj_map.values():
+            if not isinstance(obj, dict):
+                continue
+            val = obj.get("class_name") or obj.get("class")
+            if isinstance(val, str) and val.strip():
+                prompts.append(val.strip().lower())
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in prompts:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
 def run_real2sim() -> None:
     isaac_env = os.environ.copy()
     isaac_env["WARP_DISABLE_CUDA"] = "1"
@@ -97,10 +147,17 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     payload = payload or {}
     topview_input = str(payload.get("topview_input") or TOPVIEW_DEFAULT_INPUT)
     topview_output = str(payload.get("topview_output") or TOPVIEW_DEFAULT_OUTPUT)
-    prompts = payload.get("prompts") or ["table"]
+    scene_graph_path = str(payload.get("scene_graph_path") or SCENE_GRAPH_PATH)
+    scene_graph_prompts = _extract_prompts_from_scene_graph(scene_graph_path)
+    prompts = payload.get("prompts") or scene_graph_prompts
+    if not prompts:
+        prompts = ["table"]
     if not isinstance(prompts, list) or not all(isinstance(p, str) and p for p in prompts):
         raise ValueError("prompts must be a non-empty list of strings")
-    reference = str(payload.get("reference") or "table")
+    prompts = [p.strip().lower() for p in prompts if p and p.strip()]
+    if not prompts:
+        raise ValueError("prompts resolved to empty after normalization")
+    reference = str(payload.get("reference") or ("table" if "table" in prompts else prompts[0])).strip().lower()
     csv_output = str(payload.get("csv_output") or OPTION2_DEFAULT_CSV)
     input_dir = str(payload.get("input_dir") or ARRANGE_INPUT_DIR)
     output_glb = str(payload.get("output_glb") or os.path.join(input_dir, "scene_from_csv_yaw.glb"))
@@ -110,9 +167,37 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     topview_python = str(payload.get("topview_python") or SAM3_PYTHON)
     sam3_python = str(payload.get("sam3_python") or SAM3_PYTHON)
     arrange_python = str(payload.get("arrange_python") or SAM3_PYTHON)
+    mask_output = str(payload.get("mask_output") or OPTION2_MASK_OUTPUT)
+    mesh_output_dir = str(payload.get("mesh_output_dir") or OPTION2_MESH_OUTPUT_DIR)
+    reuse_mesh_dir = str(payload.get("reuse_mesh_dir") or OPTION2_REUSE_MESH_DIR)
+    skip_sam3d = bool(payload.get("skip_sam3d", OPTION2_SKIP_SAM3D_DEFAULT))
+    sam3d_url = str(payload.get("sam3d_url") or "http://128.2.204.116:8000/generate_mesh")
+
+    Path(mask_output).mkdir(parents=True, exist_ok=True)
+    Path(os.path.dirname(csv_output)).mkdir(parents=True, exist_ok=True)
 
     # step1
-    _run_step([SAM3_PYTHON, SAM3_MESH_GEN], timeout=600, label="option2_sam3_mesh_gen")
+    step1_cmd = [
+        sam3_python,
+        OPTION2_STEP1_SEGMENT_SCRIPT,
+        "--image",
+        topview_input,
+        "--scene-graph",
+        scene_graph_path,
+        "--output-root",
+        mask_output,
+        "--mesh-output-dir",
+        mesh_output_dir,
+        "--reuse-mesh-dir",
+        reuse_mesh_dir,
+        "--sam3d-url",
+        sam3d_url,
+        "--prompts",
+        *prompts,
+    ]
+    if skip_sam3d:
+        step1_cmd.append("--skip-sam3d")
+    _run_step(step1_cmd, timeout=1800, label="option2_step1_segment_scene_graph")
 
     # step2
     _run_step(
@@ -150,7 +235,7 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     _run_step(
         [
             arrange_python,
-            ARRANGE_FROM_CSV_SCRIPT,
+            OPTION2_STEP4_ARRANGE_WRAPPER,
             "--input-dir",
             input_dir,
             "--csv-path",
@@ -165,12 +250,18 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     )
 
     return {
+        "scene_graph_path": scene_graph_path,
+        "scene_graph_prompts": scene_graph_prompts,
         "topview_input": topview_input,
         "topview_output": topview_output,
         "csv_output": csv_output,
         "input_dir": input_dir,
         "output_glb": output_glb,
         "output_json": output_json,
+        "mask_output": mask_output,
+        "mesh_output_dir": mesh_output_dir,
+        "reuse_mesh_dir": reuse_mesh_dir,
+        "skip_sam3d": skip_sam3d,
         "prompts": prompts,
         "reference": reference,
     }

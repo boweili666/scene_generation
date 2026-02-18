@@ -1,2 +1,7 @@
 genmesh/
 outputs/
+option2_pipeline/runtime/
+
+# Python cache
+__pycache__/
+*.pyc
