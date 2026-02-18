@@ -108,6 +108,18 @@
       overflow: hidden;
     }
 
+    .json-output {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+
     #sceneGraph {
       width: 100%;
       height: 100%;
@@ -152,6 +164,19 @@
       >
         Generate Scene Graph
       </button>
+
+      <button
+        id="editJsonFromConversationBtn"
+        style="margin-top:8px; background:#0ea5e9;"
+        onclick="editJsonFromConversation()"
+      >
+        Edit JSON with Left Description
+      </button>
+
+      <div class="controls" style="margin-top:6px; justify-content: space-between; align-items: center;">
+        <span class="status" id="jsonStatus">Idle</span>
+      </div>
+      <div class="json-output" id="jsonPreview" aria-live="polite">Waiting for GPT JSON result...</div>
     </div>
 
     <!-- Right -->
@@ -165,20 +190,25 @@
         </div>
       </div>
 
-      <!-- Isaac Sim -->
+      <!-- Isaac Sim / Scene Service -->
       <div class="panel">
-        <h2>Isaac Sim Images</h2>
+        <h2>Isaac Sim & Scene Service</h2>
 
-        <div class="controls">
+        <div class="controls" style="flex-wrap: wrap; gap: 8px 12px;">
           <button id="generateBtn" onclick="generateScene()">Generate Scene</button>
           <button id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
+          <button onclick="callSceneService('scene')">POST /scene</button>
+          <button onclick="callSceneService('scene_new')">POST /scene_new</button>
           <span id="status" class="status">Idle</span>
+          <span id="sceneSvcStatus" class="status">Idle</span>
         </div>
 
         <div class="placeholder">
           <img id="renderImage" src="assets/renders/render.png" />
           <span id="imagePlaceholder">No image yet</span>
         </div>
+
+        <div class="json-output" id="sceneSvcResult">Waiting for response...</div>
       </div>
 
     </div>
@@ -360,7 +390,103 @@
       btn.disabled = false;
     }
 
-    // 初始加载文件 Scene Graph
+    /* ========= Isaac Scene Service (FastAPI) ========= */
+    async function callSceneService(endpoint) {
+      const statusEl = document.getElementById("sceneSvcStatus");
+      const resultEl = document.getElementById("sceneSvcResult");
+      const img = document.getElementById("renderImage");
+      const placeholder = document.getElementById("imagePlaceholder");
+
+      const base = "http://127.0.0.1:8001";
+      const payload = {}; // Fixed command, empty JSON
+
+      statusEl.textContent = `Calling /${endpoint} ...`;
+      resultEl.textContent = "Requesting...";
+
+      try {
+        const res = await fetch(`${base}/${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        statusEl.textContent = res.ok ? "Done" : "Failed";
+        resultEl.textContent = JSON.stringify(data, null, 2);
+        if (!res.ok) {
+          alert(data.detail || data.error || "Request failed");
+        } else {
+          // Refresh render.png
+          img.src = "assets/renders/render.png?ts=" + Date.now();
+          img.style.display = "block";
+          placeholder.style.display = "none";
+        }
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Failed";
+        resultEl.textContent = String(err);
+        alert("Request failed, possibly a port or CORS issue");
+      }
+    }
+
+    /* ========= GPT JSON Editing ========= */
+    async function editJson(opts = {}) {
+      const status = document.getElementById("jsonStatus");
+      const preview = document.getElementById("jsonPreview");
+      const triggerBtn = opts.btn || null;
+      const instruction =
+        (opts.instruction && opts.instruction.trim()) ||
+        document.getElementById("sceneInput").value.trim(); // Directly use the left description
+
+      if (!instruction) {
+        alert("Please enter a description on the left first");
+        return;
+      }
+
+      if (triggerBtn) triggerBtn.disabled = true;
+      status.textContent = "Calling...";
+      preview.textContent = "Waiting for GPT response...";
+
+      try {
+        const res = await fetch("/edit_json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instruction }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          const msg = data.error || data.detail || "Edit failed";
+          status.textContent = "Failed";
+          preview.textContent = msg;
+          alert(msg);
+          if (triggerBtn) triggerBtn.disabled = false;
+          return;
+        }
+
+        status.textContent = "Done";
+        const pretty = JSON.stringify(data.json, null, 2);
+        preview.textContent = `Input: ${data.input}\nOutput: ${data.output}\n\n${pretty}`;
+      } catch (err) {
+        console.error(err);
+        status.textContent = "Failed";
+        preview.textContent = "Request failed";
+        alert("Request failed");
+      }
+
+      if (triggerBtn) triggerBtn.disabled = false;
+    }
+
+    // Use left conversation text to call GPT JSON edit
+    function editJsonFromConversation() {
+      const sceneText = document.getElementById("sceneInput").value.trim();
+      if (!sceneText) {
+        alert("Please enter a description on the left first");
+        return;
+      }
+      editJson({ instruction: sceneText, btn: document.getElementById("editJsonFromConversationBtn") });
+    }
+
+    // Load Scene Graph file initially
     loadSceneGraph();
   </script>
 </body>
