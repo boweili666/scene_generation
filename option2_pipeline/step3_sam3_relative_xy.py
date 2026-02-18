@@ -10,9 +10,9 @@ import numpy as np
 from PIL import Image
 
 
-DEFAULT_IMAGE = Path("/home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png")
+DEFAULT_IMAGE = Path("option2_pipeline/runtime/scene_60_top_view.png")
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
-DEFAULT_OUTPUT = Path("/home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/sam3_bbox_relative.csv")
+DEFAULT_OUTPUT = Path("option2_pipeline/runtime/sam3_bbox_relative.csv")
 
 
 @dataclass

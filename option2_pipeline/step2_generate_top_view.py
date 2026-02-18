@@ -12,12 +12,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input",
-        default="/home/lbw/3dgen-project/sam3/scene_60.jpeg",
+        default="../sam3/scene_60.jpeg",
         help="Path to the input scene image.",
     )
     parser.add_argument(
         "--output",
-        default="/home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png",
+        default="option2_pipeline/runtime/scene_60_top_view.png",
         help="Path for the generated output image.",
     )
     parser.add_argument(

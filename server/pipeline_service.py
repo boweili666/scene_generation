@@ -15,10 +15,13 @@ try:
         OPTION2_MASK_OUTPUT,
         OPTION2_MESH_OUTPUT_DIR,
         OPTION2_REUSE_MESH_DIR,
+        OPTION2_ROOT_DIR,
         OPTION2_SKIP_SAM3D_DEFAULT,
         OPTION2_STEP4_ARRANGE_WRAPPER,
         OPTION2_STEP1_SEGMENT_SCRIPT,
         OPTION2_DEFAULT_CSV,
+        OPTION2_DEFAULT_OUTPUT_GLB,
+        OPTION2_DEFAULT_OUTPUT_JSON,
         SCENE_GRAPH_PATH,
         SAM3_MESH_GEN,
         SAM3_MESH_OUTPUT,
@@ -39,10 +42,13 @@ except ImportError:
         OPTION2_MASK_OUTPUT,
         OPTION2_MESH_OUTPUT_DIR,
         OPTION2_REUSE_MESH_DIR,
+        OPTION2_ROOT_DIR,
         OPTION2_SKIP_SAM3D_DEFAULT,
         OPTION2_STEP4_ARRANGE_WRAPPER,
         OPTION2_STEP1_SEGMENT_SCRIPT,
         OPTION2_DEFAULT_CSV,
+        OPTION2_DEFAULT_OUTPUT_GLB,
+        OPTION2_DEFAULT_OUTPUT_JSON,
         SCENE_GRAPH_PATH,
         SAM3_MESH_GEN,
         SAM3_MESH_OUTPUT,
@@ -65,7 +71,7 @@ def run_generate() -> None:
     )
 
 
-def _run_step(cmd, timeout, label, env=None):
+def _run_step(cmd, timeout, label, env=None, cwd=None):
     result = subprocess.run(
         cmd,
         check=True,
@@ -74,11 +80,13 @@ def _run_step(cmd, timeout, label, env=None):
         text=True,
         timeout=timeout,
         env=env or os.environ.copy(),
+        cwd=cwd,
     )
     ts = datetime.now().isoformat()
     log_text = (
         f"[{ts}] === {label} ===\n"
         f"CMD: {' '.join(cmd)}\n"
+        f"CWD: {cwd or os.getcwd()}\n"
         f"STDOUT:\n{result.stdout}\n"
         f"STDERR:\n{result.stderr}\n"
     )
@@ -145,6 +153,10 @@ def run_real2sim() -> None:
 
 def run_real2sim_option2(payload: dict | None = None) -> dict:
     payload = payload or {}
+    option2_root_dir = str(payload.get("option2_root_dir") or OPTION2_ROOT_DIR)
+    option2_root = Path(option2_root_dir).resolve()
+    option2_root.mkdir(parents=True, exist_ok=True)
+
     topview_input = str(payload.get("topview_input") or TOPVIEW_DEFAULT_INPUT)
     topview_output = str(payload.get("topview_output") or TOPVIEW_DEFAULT_OUTPUT)
     scene_graph_path = str(payload.get("scene_graph_path") or SCENE_GRAPH_PATH)
@@ -160,10 +172,8 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     reference = str(payload.get("reference") or ("table" if "table" in prompts else prompts[0])).strip().lower()
     csv_output = str(payload.get("csv_output") or OPTION2_DEFAULT_CSV)
     input_dir = str(payload.get("input_dir") or ARRANGE_INPUT_DIR)
-    output_glb = str(payload.get("output_glb") or os.path.join(input_dir, "scene_from_csv_yaw.glb"))
-    output_json = str(
-        payload.get("output_json") or os.path.join(input_dir, "scene_from_csv_yaw_transforms.json")
-    )
+    output_glb = str(payload.get("output_glb") or OPTION2_DEFAULT_OUTPUT_GLB)
+    output_json = str(payload.get("output_json") or OPTION2_DEFAULT_OUTPUT_JSON)
     topview_python = str(payload.get("topview_python") or SAM3_PYTHON)
     sam3_python = str(payload.get("sam3_python") or SAM3_PYTHON)
     arrange_python = str(payload.get("arrange_python") or SAM3_PYTHON)
@@ -173,8 +183,9 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     skip_sam3d = bool(payload.get("skip_sam3d", OPTION2_SKIP_SAM3D_DEFAULT))
     sam3d_url = str(payload.get("sam3d_url") or "http://128.2.204.116:8000/generate_mesh")
 
-    Path(mask_output).mkdir(parents=True, exist_ok=True)
-    Path(os.path.dirname(csv_output)).mkdir(parents=True, exist_ok=True)
+    (option2_root / Path(mask_output)).mkdir(parents=True, exist_ok=True)
+    (option2_root / Path(mesh_output_dir)).mkdir(parents=True, exist_ok=True)
+    (option2_root / Path(csv_output)).parent.mkdir(parents=True, exist_ok=True)
 
     # step1
     step1_cmd = [
@@ -197,7 +208,12 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
     ]
     if skip_sam3d:
         step1_cmd.append("--skip-sam3d")
-    _run_step(step1_cmd, timeout=1800, label="option2_step1_segment_scene_graph")
+    _run_step(
+        step1_cmd,
+        timeout=1800,
+        label="option2_step1_segment_scene_graph",
+        cwd=str(option2_root),
+    )
 
     # step2
     _run_step(
@@ -211,6 +227,7 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
         ],
         timeout=600,
         label="option2_generate_top_view",
+        cwd=str(option2_root),
     )
 
     # step3
@@ -229,6 +246,7 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
         ],
         timeout=1200,
         label="option2_sam3_relative_xy",
+        cwd=str(option2_root),
     )
 
     # step4
@@ -238,6 +256,8 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
             OPTION2_STEP4_ARRANGE_WRAPPER,
             "--input-dir",
             input_dir,
+            "--mesh-dir",
+            mesh_output_dir,
             "--csv-path",
             csv_output,
             "--output-glb",
@@ -247,9 +267,11 @@ def run_real2sim_option2(payload: dict | None = None) -> dict:
         ],
         timeout=1800,
         label="option2_arrange_from_csv",
+        cwd=str(option2_root),
     )
 
     return {
+        "option2_root_dir": str(option2_root),
         "scene_graph_path": scene_graph_path,
         "scene_graph_prompts": scene_graph_prompts,
         "topview_input": topview_input,

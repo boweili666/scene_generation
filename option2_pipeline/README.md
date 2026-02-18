@@ -1,26 +1,27 @@
 # Real2Sim Option2 Pipeline (Unified)
 
-本目录用于 `scene_graph_ui_test` 的 Real2Sim option2 分步执行。
+This directory is used for step-by-step execution of Real2Sim option2 in `scene_graph_ui_test`.
+All commands below assume you run them from `/home/lbw/3dgen-project/scene_graph_ui_test`.
 
-## 环境准备
+## Environment Setup
 
 ```bash
 conda activate sam3
 ```
 
-建议依赖（至少 step3/4 需要）：
+Recommended dependencies (at least required by step3/step4):
 
 ```bash
 pip install torch transformers pillow numpy pyrender trimesh scikit-image PyOpenGL pyglet
 ```
 
-如果需要 step2（OpenAI 图像编辑）：
+If you want to run step2 (OpenAI image editing):
 
 ```bash
-export OPENAI_API_KEY=你的key
+export OPENAI_API_KEY=your_key
 ```
 
-## 目录与默认输入输出
+## Directory Layout and Default Inputs/Outputs
 
 - step1: `step1_segment_scene60_all_objects.py`
 - step2: `step2_generate_top_view.py`
@@ -28,89 +29,94 @@ export OPENAI_API_KEY=你的key
 - step4: `step4_arrange_from_csv.py`
 - runtime: `scene_graph_ui_test/option2_pipeline/runtime/`
 
-默认 mesh 目录：
-
-- `/home/lbw/3dgen-project/scene60_mesh_rts`
+Default step4 input directory (rts/json + reference images):
+- `option2_pipeline/runtime`
+Default mesh output directory (generated/copied by step1):
+- `option2_pipeline/runtime/meshes`
+Default `reuse_mesh_dir`:
+- `option2_pipeline/runtime/meshes` (so by default no copy from an external mesh directory)
 
 ---
 
-## Step1 单独测试（分割）
+## Step1 Standalone Test (Segmentation)
 
-### 用默认 prompts（推荐先测这个）
+### Use default prompts (recommended first test)
 
 ```bash
-python /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/step1_segment_scene60_all_objects.py \
+cd /home/lbw/3dgen-project/scene_graph_ui_test
+python option2_pipeline/step1_segment_scene60_all_objects.py \
   --skip-sam3d
 ```
 
-### 用 scene graph 自动 prompts
+### Use scene-graph-derived prompts
 
 ```bash
-python /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/step1_segment_scene60_all_objects.py \
+python option2_pipeline/step1_segment_scene60_all_objects.py \
   --scene-graph /home/lbw/Downloads/isaac-sim-standalone-5.0.0-linux-x86_64/bowei/my_viewer/full_scene_graph.json \
   --skip-sam3d
 ```
 
-### 成功判据
+### Success Criteria
 
-- 终端有 `[SEGMENT] ...` 和 `[DONE] Total saved masks`。
-- 生成目录：`scene_graph_ui_test/option2_pipeline/runtime/masks/`。
+- Terminal shows `[SEGMENT] ...` and `[DONE] Total saved masks`.
+- Output directory exists: `scene_graph_ui_test/option2_pipeline/runtime/masks/`.
 
 ---
 
-## Step2 单独测试（俯视图）
+## Step2 Standalone Test (Top View)
 
 ```bash
-python /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/step2_generate_top_view.py \
-  --input /home/lbw/3dgen-project/sam3/scene_60.jpeg \
-  --output /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png
+python option2_pipeline/step2_generate_top_view.py \
+  --input ../sam3/scene_60.jpeg \
+  --output option2_pipeline/runtime/scene_60_top_view.png
 ```
 
-### 成功判据
+### Success Criteria
 
-- 输出文件存在：`scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png`。
+- Output file exists: `scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png`.
 
 ---
 
-## Step3 单独测试（相对位置 CSV）
+## Step3 Standalone Test (Relative Position CSV)
 
 ```bash
-python /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/step3_sam3_relative_xy.py \
-  --image /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/scene_60_top_view.png \
+python option2_pipeline/step3_sam3_relative_xy.py \
+  --image option2_pipeline/runtime/scene_60_top_view.png \
   --prompts table "desk lamp" "alarm clock" notebook pen "glass cup" \
   --reference table \
-  --output /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/sam3_bbox_relative.csv
+  --output option2_pipeline/runtime/sam3_bbox_relative.csv
 ```
 
-### 成功判据
+### Success Criteria
 
-- 终端输出 `[DONE] csv saved to ...`。
-- CSV 存在：`scene_graph_ui_test/option2_pipeline/runtime/sam3_bbox_relative.csv`。
+- Terminal prints `[DONE] csv saved to ...`.
+- CSV exists: `scene_graph_ui_test/option2_pipeline/runtime/sam3_bbox_relative.csv`.
 
 ---
 
-## Step4 单独测试（拼场景 GLB）
+## Step4 Standalone Test (Assemble Scene GLB)
 
 ```bash
-python /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/step4_arrange_from_csv.py \
-  --input-dir /home/lbw/3dgen-project/scene60_mesh_rts \
-  --csv-path /home/lbw/3dgen-project/scene_graph_ui_test/option2_pipeline/runtime/sam3_bbox_relative.csv \
-  --output-glb /home/lbw/3dgen-project/scene60_mesh_rts/scene_from_csv_yaw.glb \
-  --output-json /home/lbw/3dgen-project/scene60_mesh_rts/scene_from_csv_yaw_transforms.json
+python option2_pipeline/step4_arrange_from_csv.py \
+  --input-dir option2_pipeline/runtime \
+  --mesh-dir option2_pipeline/runtime/meshes \
+  --csv-path option2_pipeline/runtime/sam3_bbox_relative.csv \
+  --output-glb option2_pipeline/runtime/scene_from_csv_yaw.glb \
+  --output-json option2_pipeline/runtime/scene_from_csv_yaw_transforms.json
 ```
 
-### 成功判据
+### Success Criteria
 
-- 终端有 object 进度日志：`[progress] [i/N] ...`。
-- 最后输出：`Saved merged GLB`、`Saved transforms`。
-- 文件存在：
-  - `/home/lbw/3dgen-project/scene60_mesh_rts/scene_from_csv_yaw.glb`
-  - `/home/lbw/3dgen-project/scene60_mesh_rts/scene_from_csv_yaw_transforms.json`
+- Terminal shows object progress logs: `[progress] [i/N] ...`.
+- Final output contains: `Saved merged GLB`, `Saved transforms`.
+- Files exist:
+  - `option2_pipeline/runtime/scene_from_csv_yaw.glb`
+  - `option2_pipeline/runtime/scene_from_csv_yaw_transforms.json`
 
 ---
 
-## 常见问题
+## Common Issues
 
-- `OSError ... gated repo facebook/sam3`：HF 权限或 token 问题，先 `hf auth login` 并确认账号已获该模型访问权限。
-- `OPENAI_API_KEY is not set`：先 `export OPENAI_API_KEY=...` 再跑 step2。
-- `Missing dependency 'pyrender'`：安装 `pyrender`（以及 `PyOpenGL`、`pyglet`）。
+- `OSError ... gated repo facebook/sam3`: Hugging Face permission/token issue. Run `hf auth login` and ensure your account has access to that model.
+- `OPENAI_API_KEY is not set`: run `export OPENAI_API_KEY=...` before step2.
+- `Missing dependency 'pyrender'`: install `pyrender` (and `PyOpenGL`, `pyglet`).

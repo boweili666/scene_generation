@@ -156,6 +156,8 @@ def find_ref_image(input_dir: Path, label_key: str) -> Optional[Path]:
         input_dir / f"{label_key}_0_rgba_whitebg.png",
         input_dir / f"{label_key}_0_rgba_fullsize.png",
         input_dir / f"{label_key}_0_rgba.png",
+        input_dir / "masks" / label_key / f"{label_key}_0_rgba_fullsize.png",
+        input_dir / "masks" / label_key / f"{label_key}_0_rgba_crop.png",
     ]
     for p in candidates:
         if p.exists():
@@ -286,10 +288,15 @@ def estimate_yaw_for_object(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", default=".")
-    parser.add_argument("--csv-path", default="sam3_bbox_relative.csv")
-    parser.add_argument("--output-glb", default="scene_from_csv_yaw.glb")
-    parser.add_argument("--output-json", default="scene_from_csv_yaw_transforms.json")
+    parser.add_argument("--input-dir", default="option2_pipeline/runtime")
+    parser.add_argument(
+        "--mesh-dir",
+        default="option2_pipeline/runtime/meshes",
+        help="Directory containing *_mesh.glb files. Relative paths are resolved from current working directory.",
+    )
+    parser.add_argument("--csv-path", default="option2_pipeline/runtime/sam3_bbox_relative.csv")
+    parser.add_argument("--output-glb", default="option2_pipeline/runtime/scene_from_csv_yaw.glb")
+    parser.add_argument("--output-json", default="option2_pipeline/runtime/scene_from_csv_yaw_transforms.json")
     parser.add_argument("--y-offset", type=float, default=1e-4)
     parser.add_argument("--yaw-samples", type=int, default=120)
     parser.add_argument("--yaw-seed", type=int, default=42)
@@ -308,6 +315,9 @@ def main() -> None:
     args = parser.parse_args()
 
     input_dir = Path(args.input_dir).resolve()
+    mesh_dir_arg = Path(args.mesh_dir)
+    mesh_dir = mesh_dir_arg if mesh_dir_arg.is_absolute() else (Path.cwd() / mesh_dir_arg)
+    mesh_dir = mesh_dir.resolve()
     csv_path = (input_dir / args.csv_path).resolve() if not Path(args.csv_path).is_absolute() else Path(args.csv_path)
     rows = parse_csv(csv_path)
     rts = load_rts(input_dir)
@@ -348,7 +358,7 @@ def main() -> None:
             print(f"[progress] [{obj_idx}/{total_objects}] skip {obj_key}: no csv row for '{label_key}'")
             continue
         obj_row = rows[label_key]
-        mesh_path = input_dir / f"{obj_key}_mesh.glb"
+        mesh_path = mesh_dir / f"{obj_key}_mesh.glb"
         if not mesh_path.exists():
             print(f"[progress] [{obj_idx}/{total_objects}] skip {obj_key}: missing mesh")
             continue
