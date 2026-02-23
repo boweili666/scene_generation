@@ -294,7 +294,7 @@ def main() -> None:
         default="option2_pipeline/runtime/meshes",
         help="Directory containing *_mesh.glb files. Relative paths are resolved from current working directory.",
     )
-    parser.add_argument("--csv-path", default="option2_pipeline/runtime/sam3_bbox_relative.csv")
+    parser.add_argument("--csv-path", default="sam3_bbox_relative.csv")
     parser.add_argument("--output-glb", default="option2_pipeline/runtime/scene_from_csv_yaw.glb")
     parser.add_argument("--output-json", default="option2_pipeline/runtime/scene_from_csv_yaw_transforms.json")
     parser.add_argument("--y-offset", type=float, default=1e-4)
@@ -318,7 +318,15 @@ def main() -> None:
     mesh_dir_arg = Path(args.mesh_dir)
     mesh_dir = mesh_dir_arg if mesh_dir_arg.is_absolute() else (Path.cwd() / mesh_dir_arg)
     mesh_dir = mesh_dir.resolve()
-    csv_path = (input_dir / args.csv_path).resolve() if not Path(args.csv_path).is_absolute() else Path(args.csv_path)
+    csv_arg = Path(args.csv_path)
+    if csv_arg.is_absolute():
+        csv_path = csv_arg
+    elif csv_arg.parent == Path("."):
+        # Simple filename -> resolve under input_dir
+        csv_path = (input_dir / csv_arg).resolve()
+    else:
+        # Relative path with subdirs -> resolve from cwd
+        csv_path = (Path.cwd() / csv_arg).resolve()
     rows = parse_csv(csv_path)
     rts = load_rts(input_dir)
     table_key = find_table_key(rts)
@@ -329,7 +337,7 @@ def main() -> None:
         raise ValueError("Cannot find table row in csv")
     table_row = rows[table_label_key]
 
-    table_mesh = load_single_mesh(input_dir / f"{table_key}_mesh.glb")
+    table_mesh = load_single_mesh(mesh_dir / f"{table_key}_mesh.glb")
     table_size_x = float(table_mesh.bounds[1, 0] - table_mesh.bounds[0, 0])
     table_size_z = float(table_mesh.bounds[1, 2] - table_mesh.bounds[0, 2])
     table_top_y = float(table_mesh.bounds[1, 1])

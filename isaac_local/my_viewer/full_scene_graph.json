@@ -1,0 +1,71 @@
+{
+  "objects": [
+    {
+      "path": "/World/robot_0",
+      "class_name": "robot",
+      "id": 0
+    },
+    {
+      "path": "/World/table_1",
+      "class_name": "table",
+      "id": 1
+    },
+    {
+      "path": "/World/container_2",
+      "class_name": "container",
+      "id": 2
+    },
+    {
+      "path": "/World/pallet_3",
+      "class_name": "pallet",
+      "id": 3
+    },
+    {
+      "path": "/World/baggingmachine_4",
+      "class_name": "baggingmachine",
+      "id": 4
+    },
+    {
+      "path": "/World/panel_5",
+      "class_name": "panel",
+      "id": 5
+    }
+  ],
+  "edges": [
+    {
+      "source": "/World/robot_0",
+      "source_name": "robot",
+      "target": "/World/table_1",
+      "target_name": "table",
+      "relation": "front"
+    },
+    {
+      "source": "/World/container_2",
+      "source_name": "container",
+      "target": "/World/robot_0",
+      "target_name": "robot",
+      "relation": "right"
+    },
+    {
+      "source": "/World/pallet_3",
+      "source_name": "pallet",
+      "target": "/World/container_2",
+      "target_name": "container",
+      "relation": "front"
+    },
+    {
+      "source": "/World/table_1",
+      "source_name": "table",
+      "target": "/World/baggingmachine_4",
+      "target_name": "baggingmachine",
+      "relation": "front"
+    },
+    {
+      "source": "/World/panel_5",
+      "source_name": "panel",
+      "target": "/World/baggingmachine_4",
+      "target_name": "baggingmachine",
+      "relation": "left"
+    }
+  ]
+}

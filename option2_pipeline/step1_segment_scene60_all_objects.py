@@ -253,20 +253,20 @@ def main() -> None:
             rgba_crop_path = class_dir / f"{instance_key}_rgba_crop.png"
 
             Image.fromarray(mask_img).save(mask_path)
-            Image.fromarray(rgba_full, mode="RGBA").save(rgba_full_path)
-            Image.fromarray(rgba_crop, mode="RGBA").save(rgba_crop_path)
+            Image.fromarray(rgba_full).save(rgba_full_path)
+            Image.fromarray(rgba_crop).save(rgba_crop_path)
 
             if saved_idx == 0:
                 flat_rgba = runtime_dir / f"{prompt_key}_0_rgba.png"
                 flat_full = runtime_dir / f"{prompt_key}_0_rgba_fullsize.png"
                 flat_white = runtime_dir / f"{prompt_key}_0_rgba_whitebg.png"
 
-                Image.fromarray(rgba_crop, mode="RGBA").save(flat_rgba)
-                Image.fromarray(rgba_full, mode="RGBA").save(flat_full)
+                Image.fromarray(rgba_crop).save(flat_rgba)
+                Image.fromarray(rgba_full).save(flat_full)
 
                 white_bg = np.full_like(image_np, 255, dtype=np.uint8)
                 white_bg[mask > 0] = image_np[mask > 0]
-                Image.fromarray(white_bg, mode="RGB").save(flat_white)
+                Image.fromarray(white_bg).save(flat_white)
 
             total_masks += 1
             saved_idx += 1

@@ -8,74 +8,248 @@
   <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
 
   <style>
-    * { box-sizing: border-box; font-family: Arial, Helvetica, sans-serif; }
+    :root {
+      --bg-0: #f6f7fb;
+      --bg-1: #e5ebff;
+      --bg-2: #d7f4e8;
+      --card: rgba(255, 255, 255, 0.86);
+      --border: rgba(15, 23, 42, 0.1);
+      --text-main: #111827;
+      --text-soft: #4b5563;
+      --title: #0f172a;
+      --brand: #0f5eff;
+      --brand-hover: #0b4ddb;
+      --teal: #018f7c;
+      --teal-hover: #007666;
+      --shadow: 0 18px 40px rgba(30, 41, 59, 0.14);
+      --radius-lg: 16px;
+      --radius-md: 12px;
+      --radius-sm: 8px;
+    }
+
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      background: #f5f5f5;
+      color: var(--text-main);
+      font-family: "Avenir Next", "Avenir", "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
+      background:
+        radial-gradient(circle at 85% -10%, #d2f8ec 0, transparent 32%),
+        radial-gradient(circle at -5% 100%, #d6deff 0, transparent 34%),
+        linear-gradient(160deg, var(--bg-0), #f9fafb 38%, #f3f6ff 100%);
       height: 100vh;
       display: flex;
       flex-direction: column;
     }
 
     .header {
-      height: 60px;
-      background: #1f2933;
-      color: white;
+      min-height: 68px;
+      background: linear-gradient(92deg, #0f172a, #172554);
+      color: #f8fafc;
       display: flex;
       align-items: center;
-      padding: 0 20px;
-      font-size: 20px;
-      font-weight: bold;
+      justify-content: center;
+      padding: 0 28px;
+      letter-spacing: 0.02em;
+      font-size: 22px;
+      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
     }
 
     .container {
       flex: 1;
       display: flex;
-      padding: 12px;
-      gap: 12px;
+      padding: 18px;
+      gap: 16px;
+      min-height: 0;
     }
 
     .conversation {
       flex: 1;
-      background: white;
-      border-radius: 8px;
-      padding: 16px;
+      background: var(--card);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(6px);
+      padding: 18px;
       display: flex;
       flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .chat-shell {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .chat-stream {
+      flex: 0 0 280px;
+      min-height: 220px;
+      max-height: 320px;
+      overflow: auto;
+      border-radius: var(--radius-md);
+      border: 1px solid #d8e2f7;
+      background: linear-gradient(180deg, rgba(251, 253, 255, 0.94), rgba(240, 247, 255, 0.92));
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .msg {
+      max-width: 84%;
+      padding: 9px 12px;
+      border-radius: 14px;
+      line-height: 1.45;
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: linear-gradient(135deg, #1d4ed8, #2563eb);
+      color: #ffffff;
+      border-bottom-right-radius: 6px;
+    }
+
+    .msg.assistant {
+      align-self: flex-start;
+      background: #ffffff;
+      color: #1f2937;
+      border: 1px solid #d8e1f3;
+      border-bottom-left-radius: 6px;
+    }
+
+    .msg.system {
+      align-self: center;
+      background: #ecfeff;
+      color: #0f766e;
+      border: 1px solid #b4eef0;
+      border-radius: 999px;
+      font-size: 12px;
+      padding: 5px 10px;
+      box-shadow: none;
+    }
+
+    .msg.typing {
+      font-style: italic;
+      color: #475569;
+    }
+
+    .chat-composer textarea {
+      width: 100%;
+      min-height: 88px;
+      max-height: 160px;
+      flex: none;
+      display: block;
+    }
+
+    .chat-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .chat-actions button {
+      flex: 1;
+      min-width: 150px;
+    }
+
+    .upload-row,
+    .folder-row {
+      margin-top: 0;
+      margin-bottom: 0;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid #cfdbf5;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #f7faff, #edf3ff);
+    }
+
+    .upload-row .status,
+    .folder-row .status {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid #c6d6fb;
+      background: #eef4ff;
+      color: #315391;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .upload-row .status:empty,
+    .folder-row .status:empty {
+      display: none;
     }
 
     .conversation h2,
     .panel h2 {
-      margin-top: 0;
-      font-size: 18px;
-      border-bottom: 1px solid #e5e7eb;
+      margin: 0 0 10px 0;
+      font-size: 19px;
+      color: var(--title);
+      border-bottom: 1px solid #d9e1f2;
       padding-bottom: 8px;
+      letter-spacing: 0.01em;
     }
 
     .right-panel {
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 16px;
+      min-height: 0;
     }
 
     .panel {
       flex: 1;
-      background: white;
-      border-radius: 8px;
-      padding: 16px;
+      background: var(--card);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(6px);
+      padding: 18px;
       display: flex;
       flex-direction: column;
+      min-height: 0;
+    }
+
+    .service-panel {
+      overflow: auto;
+      padding-right: 10px;
     }
 
     textarea {
       flex: 1;
       resize: none;
-      padding: 8px;
-      font-size: 20px;
-      border-radius: 6px;
-      border: 1px solid #cbd5e1;
+      min-height: 160px;
+      padding: 14px;
+      font-size: 16px;
+      line-height: 1.55;
+      border-radius: var(--radius-md);
+      border: 1px solid #bfcae0;
+      background: #f8fbff;
+      color: #0f172a;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+
+    textarea:focus,
+    input[type="file"]:focus-visible,
+    button:focus-visible {
+      outline: none;
+      border-color: #90b2ff;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+      background: #ffffff;
     }
 
     .controls {
@@ -85,50 +259,429 @@
       margin-bottom: 12px;
     }
 
-    button {
-      padding: 8px 14px;
-      font-size: 14px;
-      border-radius: 6px;
-      border: none;
-      background: #2563eb;
-      color: white;
+    .controls.tight {
+      margin-top: 8px;
+    }
+
+    .controls.between {
+      margin-top: 6px;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .controls.wrap {
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+
+    .mt-10 {
+      margin-top: 10px;
+    }
+
+    .mt-8 {
+      margin-top: 8px;
+    }
+
+    .form-label {
+      font-size: 13px;
+      color: var(--text-soft);
+      white-space: nowrap;
+    }
+
+    input[type="file"] {
+      max-width: 100%;
+      min-width: 0;
+      font-size: 13px;
+      color: #1e293b;
+      background: #ffffff;
+      border: 1px solid #bfd0f1;
+      border-radius: var(--radius-sm);
+      padding: 5px 6px;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+
+    .upload-row input[type="file"],
+    .folder-row input[type="file"] {
+      flex: 1 1 320px;
+    }
+
+    input[type="file"]::file-selector-button {
+      border: 1px solid #7fb0ff;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #eef4ff, #dbe9ff);
+      color: #1e3a8a;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 6px 10px;
+      margin-right: 10px;
       cursor: pointer;
+    }
+
+    input[type="file"]::file-selector-button:hover {
+      background: linear-gradient(135deg, #dbe9ff, #c8dcff);
+    }
+
+    .folder-row .form-label {
+      font-weight: 600;
+      color: #334155;
+    }
+
+    button {
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      border-radius: 999px;
+      border: none;
+      background: linear-gradient(135deg, var(--brand), #3475ff);
+      color: #ffffff;
+      cursor: pointer;
+      box-shadow: 0 10px 20px rgba(15, 94, 255, 0.22);
+      transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 14px 26px rgba(15, 94, 255, 0.28);
+      filter: saturate(1.05);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.64;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .btn-alt {
+      background: linear-gradient(135deg, #0ea5e9, #0284c7);
+      box-shadow: 0 10px 20px rgba(14, 165, 233, 0.22);
+    }
+
+    .btn-service {
+      background: linear-gradient(135deg, var(--teal), #0ba48f);
+      box-shadow: 0 10px 20px rgba(1, 143, 124, 0.22);
+    }
+
+    .btn-service:hover {
+      background: linear-gradient(135deg, var(--teal-hover), #008f7e);
     }
 
     .status {
       font-size: 13px;
-      color: #475569;
+      color: var(--text-soft);
     }
 
     .placeholder {
       flex: 1;
-      border: 1px dashed #cbd5e1;
-      border-radius: 6px;
+      border: 1px dashed #b8c6e6;
+      border-radius: var(--radius-md);
       position: relative;
       overflow: hidden;
+      min-height: 180px;
+      background:
+        linear-gradient(135deg, rgba(224, 238, 255, 0.46), rgba(237, 247, 255, 0.4));
+    }
+
+    .service-panel .placeholder {
+      flex: 0 0 230px;
+      min-height: 230px;
+    }
+
+    #sceneSvcResult {
+      flex: 0 0 auto;
+      margin-top: 10px;
+      max-height: 150px;
+      min-height: 64px;
+    }
+
+    #imagePlaceholder {
+      display: inline-flex;
+      width: 100%;
+      height: 100%;
+      align-items: center;
+      justify-content: center;
+      color: #5b6478;
+      font-size: 14px;
     }
 
     .json-output {
-      background: #0f172a;
-      color: #e2e8f0;
-      padding: 12px;
-      border-radius: 6px;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      margin-top: 10px;
+      background: linear-gradient(160deg, #0f172a, #1f2937);
+      color: #d9e4ff;
+      padding: 13px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       font-size: 12px;
-      max-height: 220px;
+      line-height: 1.45;
+      max-height: 210px;
       overflow: auto;
       white-space: pre-wrap;
+    }
+
+    .feedback-card {
+      margin-top: 4px;
+      border: 1px solid #d7e0f3;
+      background: linear-gradient(140deg, rgba(255, 255, 255, 0.86), rgba(239, 246, 255, 0.9));
+      border-radius: var(--radius-md);
+      padding: 10px 12px;
+    }
+
+    .feedback-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .feedback-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: 0.01em;
+    }
+
+    .feedback-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid #bfd0f5;
+      color: #1d4ed8;
+      background: #e8f0ff;
+    }
+
+    .feedback-badge.pending {
+      color: #0369a1;
+      border-color: #bce6fb;
+      background: #e0f2fe;
+    }
+
+    .feedback-badge.ok {
+      color: #0f766e;
+      border-color: #b8ece2;
+      background: #def7f2;
+    }
+
+    .feedback-badge.warn {
+      color: #92400e;
+      border-color: #f4d9a4;
+      background: #fef3c7;
+    }
+
+    .feedback-text {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #334155;
+    }
+
+    .feedback-grid {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .feedback-item {
+      border: 1px solid #d6dff2;
+      border-radius: 8px;
+      background: #f8fbff;
+      padding: 7px 8px;
+    }
+
+    .feedback-item strong {
+      display: block;
+      font-size: 11px;
+      color: #64748b;
+      margin-bottom: 2px;
+      font-weight: 600;
+    }
+
+    .feedback-item span {
+      font-size: 13px;
+      color: #0f172a;
+      font-weight: 700;
+    }
+
+    .feedback-list {
+      margin: 8px 0 0 0;
+      padding-left: 18px;
+      color: #334155;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .feedback-list li + li {
+      margin-top: 3px;
     }
 
     #sceneGraph {
       width: 100%;
       height: 100%;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(255, 255, 255, 0.7), transparent 35%),
+        repeating-linear-gradient(
+          0deg,
+          rgba(148, 163, 184, 0.08),
+          rgba(148, 163, 184, 0.08) 1px,
+          transparent 1px,
+          transparent 30px
+        ),
+        repeating-linear-gradient(
+          90deg,
+          rgba(148, 163, 184, 0.08),
+          rgba(148, 163, 184, 0.08) 1px,
+          transparent 1px,
+          transparent 30px
+        );
+    }
+
+    .graph-hint {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      z-index: 5;
+      font-size: 11px;
+      color: #334155;
+      background: rgba(248, 250, 252, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      border-radius: 999px;
+      padding: 4px 8px;
+      pointer-events: none;
+    }
+
+    .json-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(15, 23, 42, 0.5);
+      backdrop-filter: blur(4px);
+      padding: 20px;
+    }
+
+    .json-modal.open {
+      display: flex;
+    }
+
+    .json-modal-card {
+      width: min(920px, 96vw);
+      max-height: 86vh;
+      background: #ffffff;
+      border: 1px solid #d6dff1;
+      border-radius: 16px;
+      box-shadow: 0 24px 58px rgba(15, 23, 42, 0.34);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .json-modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #dbe5f7;
+      background: linear-gradient(120deg, #eff6ff, #ecfeff);
+    }
+
+    .json-modal-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+
+    .json-modal-close {
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      background: #1f2937;
+      box-shadow: none;
+    }
+
+    .json-modal-body {
+      padding: 12px;
+      overflow: auto;
     }
 
     .placeholder img {
-      max-width: 100%;
-      max-height: 100%;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
       display: none;
+    }
+
+    @media (max-width: 1080px) {
+      .container {
+        flex-direction: column;
+        padding: 14px;
+      }
+
+      .conversation,
+      .panel {
+        min-height: 360px;
+      }
+
+      .header {
+        justify-content: flex-start;
+        font-size: 19px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .container {
+        gap: 12px;
+        padding: 10px;
+      }
+
+      .header {
+        min-height: 56px;
+        padding: 0 14px;
+        font-size: 17px;
+      }
+
+      button {
+        width: 100%;
+      }
+
+      .controls {
+        flex-wrap: wrap;
+      }
+
+      .feedback-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .chat-stream {
+        flex-basis: 220px;
+        max-height: 260px;
+      }
+
+      .chat-actions {
+        gap: 6px;
+      }
+
+      .service-panel .placeholder {
+        flex-basis: 180px;
+        min-height: 180px;
+      }
+
+      #sceneSvcResult {
+        max-height: 120px;
+      }
     }
   </style>
 </head>
@@ -140,43 +693,58 @@
 
     <!-- Left: Conversation -->
     <div class="conversation">
-      <h2>Conversation</h2>
+      <h2>JSON Chat Assistant</h2>
+      <div class="chat-shell">
+        <div class="chat-stream" id="chatMessages" aria-live="polite">
+          <div class="msg assistant">I can convert your description into Scene Graph JSON. You can keep asking follow-up edits.</div>
+        </div>
 
-      <textarea
-        id="sceneInput"
-        placeholder="Describe the scene in natural language..."
-      ></textarea>
+        <div class="chat-composer">
+          <textarea
+            id="sceneInput"
+            placeholder='Type like GPT: e.g. "There is a table in the room, a chair is to the left of the table, and a lamp is near the wall."'
+          ></textarea>
+        </div>
 
-      <div class="controls" style="margin-top:8px;">
-        <input id="imageInput" type="file" accept="image/*" />
-        <span class="status" id="uploadStatus">Image optional</span>
+        <div class="chat-actions">
+          <button id="editJsonFromConversationBtn" class="btn-alt" onclick="sendChatMessage()">
+            Send Message
+          </button>
+          <button onclick="generateSceneGraph()">Generate Scene Graph</button>
+        </div>
+
+        <div class="controls tight upload-row">
+          <input id="imageInput" type="file" accept="image/*" />
+          <span class="status" id="uploadStatus">Image optional</span>
+        </div>
+
+        <div class="controls tight folder-row">
+          <label class="form-label">Or pick a folder locally:</label>
+          <input id="classDirPicker" type="file" webkitdirectory multiple />
+          <span class="status" id="classStatus"></span>
+        </div>
+
+        <div class="controls between">
+          <span class="status" id="jsonStatus">Idle</span>
+        </div>
+
+        <div class="feedback-card" id="interactionFeedback" aria-live="polite">
+          <div class="feedback-head">
+            <span class="feedback-title">Language Interaction Feedback</span>
+            <span class="feedback-badge" id="feedbackBadge">Ready</span>
+          </div>
+          <p class="feedback-text" id="feedbackText">After you enter a prompt, you will see structure analysis and JSON quality feedback.</p>
+          <div class="feedback-grid">
+            <div class="feedback-item"><strong>Input Length</strong><span id="metaLength">0</span></div>
+            <div class="feedback-item"><strong>Objects</strong><span id="metaObjects">-</span></div>
+            <div class="feedback-item"><strong>Edges</strong><span id="metaEdges">-</span></div>
+          </div>
+          <ul class="feedback-list" id="feedbackList">
+            <li>Try describing object count, relative positions, and directional relations (left/right/front/behind).</li>
+          </ul>
+        </div>
       </div>
-
-      <div class="controls" style="margin-top:8px;">
-        <label style="font-size:13px;">Or pick a folder locally:</label>
-        <input id="classDirPicker" type="file" webkitdirectory multiple />
-        <span class="status" id="classStatus"></span>
-      </div>
-
-      <button
-        style="margin-top:10px;"
-        onclick="generateSceneGraph()"
-      >
-        Generate Scene Graph
-      </button>
-
-      <button
-        id="editJsonFromConversationBtn"
-        style="margin-top:8px; background:#0ea5e9;"
-        onclick="editJsonFromConversation()"
-      >
-        Edit JSON with Left Description
-      </button>
-
-      <div class="controls" style="margin-top:6px; justify-content: space-between; align-items: center;">
-        <span class="status" id="jsonStatus">Idle</span>
-      </div>
-      <div class="json-output" id="jsonPreview" aria-live="polite">Waiting for GPT JSON result...</div>
+      <div class="json-output" id="jsonPreview" aria-live="polite" style="display:none;">Waiting for GPT JSON result...</div>
     </div>
 
     <!-- Right -->
@@ -187,18 +755,19 @@
         <h2>Scene Graph Visualization</h2>
         <div class="placeholder">
           <div id="sceneGraph"></div>
+          <span class="graph-hint">Click node to focus</span>
         </div>
       </div>
 
       <!-- Isaac Sim / Scene Service -->
-      <div class="panel">
+      <div class="panel service-panel">
         <h2>Isaac Sim & Scene Service</h2>
 
-        <div class="controls" style="flex-wrap: wrap; gap: 8px 12px;">
-          <button id="generateBtn" onclick="generateScene()">Generate Scene</button>
-          <button id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
-          <button onclick="callSceneService('scene')">POST /scene</button>
-          <button onclick="callSceneService('scene_new')">POST /scene_new</button>
+        <div class="controls wrap">
+          <button id="generateBtn" class="btn-service" onclick="generateScene()">Generate Scene</button>
+          <button id="real2simBtn" class="btn-service" onclick="runReal2Sim()">Real2Sim</button>
+          <button class="btn-service" onclick="callSceneService('scene')">POST /scene</button>
+          <button class="btn-service" onclick="callSceneService('scene_new')">POST /scene_new</button>
           <span id="status" class="status">Idle</span>
           <span id="sceneSvcStatus" class="status">Idle</span>
         </div>
@@ -214,18 +783,170 @@
     </div>
   </div>
 
+  <div class="json-modal" id="jsonModal" aria-hidden="true">
+    <div class="json-modal-card">
+      <div class="json-modal-head">
+        <span class="json-modal-title">Generated JSON</span>
+        <button class="json-modal-close" onclick="closeJsonModal()">Close</button>
+      </div>
+      <div class="json-modal-body">
+        <div class="json-output" id="jsonModalContent">No result yet</div>
+      </div>
+    </div>
+  </div>
+
   <script>
     let cy = null;
+    let typingMessageEl = null;
+    const interactionState = {
+      startedAt: null,
+      lastInstruction: "",
+      lastJson: null
+    };
+    const chatState = {
+      turns: []
+    };
+
+    function setFeedbackBadge(text, tone = "") {
+      const badge = document.getElementById("feedbackBadge");
+      badge.textContent = text;
+      badge.className = `feedback-badge${tone ? " " + tone : ""}`;
+    }
+
+    function setFeedbackText(text) {
+      document.getElementById("feedbackText").textContent = text;
+    }
+
+    function setFeedbackList(items) {
+      const list = document.getElementById("feedbackList");
+      list.innerHTML = "";
+      for (const item of items) {
+        const li = document.createElement("li");
+        li.textContent = item;
+        list.appendChild(li);
+      }
+    }
+
+    function appendChatMessage(role, text) {
+      const stream = document.getElementById("chatMessages");
+      const msg = document.createElement("div");
+      msg.className = `msg ${role}`;
+      msg.textContent = text;
+      stream.appendChild(msg);
+      stream.scrollTop = stream.scrollHeight;
+      return msg;
+    }
+
+    function setTypingMessage(text = "Assistant is generating JSON...") {
+      clearTypingMessage();
+      typingMessageEl = appendChatMessage("assistant typing", text);
+    }
+
+    function clearTypingMessage() {
+      if (typingMessageEl) {
+        typingMessageEl.remove();
+        typingMessageEl = null;
+      }
+    }
+
+    function openJsonModal(content) {
+      document.getElementById("jsonModalContent").textContent = content;
+      const modal = document.getElementById("jsonModal");
+      modal.classList.add("open");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeJsonModal() {
+      const modal = document.getElementById("jsonModal");
+      modal.classList.remove("open");
+      modal.setAttribute("aria-hidden", "true");
+    }
+
+    function composeInstructionWithHistory(currentInput) {
+      const history = chatState.turns.slice(-6)
+        .map((turn, idx) => {
+          const user = turn.user || "";
+          const assistant = turn.assistant || "";
+          return `Turn ${idx + 1}\nUser: ${user}\nAssistant summary: ${assistant}`;
+        })
+        .join("\n\n");
+
+      if (!history) return currentInput;
+      return `Conversation context:\n${history}\n\nCurrent user request:\n${currentInput}`;
+    }
+
+    function updateInputMeta() {
+      const text = document.getElementById("sceneInput").value.trim();
+      const imageCount = document.getElementById("imageInput").files.length;
+      const classCount = document.getElementById("classDirPicker").files.length;
+      const chars = text.length;
+      const approxTokens = Math.ceil(chars / 3.6) || 0;
+
+      document.getElementById("metaLength").textContent = `${chars} chars (~${approxTokens} tok)`;
+
+      if (!text && !imageCount) {
+        setFeedbackBadge("Ready");
+        setFeedbackText("After you enter a prompt, you will see structure analysis and JSON quality feedback.");
+        document.getElementById("metaObjects").textContent = "-";
+        document.getElementById("metaEdges").textContent = "-";
+        setFeedbackList([
+          "Try describing object count, relative positions, and directional relations (left/right/front/behind)."
+        ]);
+        return;
+      }
+
+      const hints = [];
+      if (text && chars < 25) hints.push("The prompt is short. Consider adding count, direction, and hierarchy details.");
+      if (text && !/(left|right|front|behind|near|on|under|in|next to)/i.test(text)) {
+        hints.push("Add spatial relation words to make edge relations clearer.");
+      }
+      if (!imageCount) hints.push("No image uploaded. The result will rely on text only.");
+      if (imageCount) hints.push("Image detected. Visual cues will be combined with text.");
+      if (classCount) hints.push(`${classCount} local class-name files selected.`);
+
+      setFeedbackBadge("Draft", "pending");
+      setFeedbackText("Input parsed. Ready to generate structured JSON.");
+      setFeedbackList(hints.slice(0, 4));
+    }
+
+    function analyzeSceneJson(json) {
+      const objects = Array.isArray(json?.objects) ? json.objects : [];
+      const edges = Array.isArray(json?.edges) ? json.edges : [];
+      const warnings = [];
+
+      if (!objects.length) warnings.push("`objects` is empty, so scene nodes may not render.");
+      if (!edges.length) warnings.push("`edges` is empty, so relation information is weak.");
+
+      const unnamed = objects.filter((o) => !o?.class_name).length;
+      const noPath = objects.filter((o) => !o?.path).length;
+      const badEdge = edges.filter((e) => !e?.source || !e?.target || !e?.relation).length;
+
+      if (unnamed) warnings.push(`${unnamed} object(s) missing class_name.`);
+      if (noPath) warnings.push(`${noPath} object(s) missing path.`);
+      if (badEdge) warnings.push(`${badEdge} edge(s) missing source/target/relation.`);
+
+      const score = Math.max(0, 100 - warnings.length * 12);
+      return {
+        objects: objects.length,
+        edges: edges.length,
+        warnings,
+        score
+      };
+    }
 
     /* ========= Render Scene Graph ========= */
     function renderSceneGraph(graph) {
       const elements = [];
 
       for (const obj of graph.objects) {
+        const depth = String(obj.path || "")
+          .split("/")
+          .filter(Boolean).length;
         elements.push({
           data: {
             id: obj.path,
-            label: obj.class_name
+            label: obj.class_name,
+            depth: depth
           }
         });
       }
@@ -250,33 +971,103 @@
           {
             selector: "node",
             style: {
-              "background-color": "#2563eb",
+              "background-color": "mapData(depth, 1, 6, #7cc6ff, #1f45d9)",
+              "border-color": "#1d4ed8",
+              "border-width": "1.5px",
               "label": "data(label)",
               "color": "white",
               "text-valign": "center",
               "shape": "round-rectangle",
-              "padding": "8px",
-              "font-size": "12px"
+              "padding": "11px",
+              "font-size": "11px",
+              "text-wrap": "wrap",
+              "text-max-width": "120px",
+              "text-outline-width": 2,
+              "text-outline-color": "rgba(15, 23, 42, 0.22)",
+              "shadow-color": "rgba(30, 64, 175, 0.34)",
+              "shadow-blur": 12,
+              "shadow-offset-y": 4,
+              "transition-property": "background-color, border-color, shadow-blur, shadow-color, opacity",
+              "transition-duration": "180ms"
             }
           },
           {
             selector: "edge",
             style: {
-              "curve-style": "bezier",
+              "curve-style": "unbundled-bezier",
               "target-arrow-shape": "triangle",
               "label": "data(label)",
               "font-size": "10px",
-              "text-background-color": "white",
-              "text-background-opacity": 1,
-              "text-background-padding": "2px"
+              "line-color": "#7ca3f8",
+              "target-arrow-color": "#7ca3f8",
+              "width": 2,
+              "arrow-scale": 0.9,
+              "text-rotation": "autorotate",
+              "text-background-color": "#f8fbff",
+              "text-background-opacity": 0.94,
+              "text-background-padding": "4px",
+              "color": "#0f172a",
+              "text-border-width": 1,
+              "text-border-color": "rgba(148, 163, 184, 0.45)",
+              "text-margin-y": -3,
+              "transition-property": "line-color, target-arrow-color, width, opacity",
+              "transition-duration": "180ms"
+            }
+          },
+          {
+            selector: ".dim",
+            style: {
+              "opacity": 0.16
+            }
+          },
+          {
+            selector: ".focus-node",
+            style: {
+              "border-color": "#f59e0b",
+              "border-width": 3,
+              "shadow-color": "rgba(245, 158, 11, 0.5)",
+              "shadow-blur": 20
+            }
+          },
+          {
+            selector: ".focus-edge",
+            style: {
+              "line-color": "#f59e0b",
+              "target-arrow-color": "#f59e0b",
+              "width": 3,
+              "opacity": 1
             }
           }
         ],
         layout: {
           name: "cose",
           animate: true,
-          padding: 30
+          animationDuration: 480,
+          fit: true,
+          padding: 28,
+          nodeRepulsion: 5200,
+          edgeElasticity: 130,
+          idealEdgeLength: 110,
+          gravity: 0.2,
+          numIter: 900
         }
+      });
+
+      const clearFocus = () => {
+        cy.elements().removeClass("dim focus-node focus-edge");
+      };
+
+      cy.on("tap", "node", (evt) => {
+        const node = evt.target;
+        clearFocus();
+        cy.elements().addClass("dim");
+        node.removeClass("dim").addClass("focus-node");
+        node.connectedEdges().removeClass("dim").addClass("focus-edge");
+        node.neighborhood().removeClass("dim");
+      });
+
+      cy.on("tap", (evt) => {
+        if (evt.target === cy) clearFocus();
       });
     }
 
@@ -442,8 +1233,17 @@
         return;
       }
 
+      interactionState.startedAt = performance.now();
+      interactionState.lastInstruction = instruction;
       if (triggerBtn) triggerBtn.disabled = true;
-      status.textContent = "Calling...";
+      status.textContent = "Calling model...";
+      setFeedbackBadge("Calling", "pending");
+      setFeedbackText("Converting natural language into scene JSON...");
+      setFeedbackList([
+        "Step 1/3: Parse prompt intent",
+        "Step 2/3: Build objects / edges",
+        "Step 3/3: Return and validate JSON"
+      ]);
       preview.textContent = "Waiting for GPT response...";
 
       try {
@@ -457,36 +1257,104 @@
         if (!res.ok) {
           const msg = data.error || data.detail || "Edit failed";
           status.textContent = "Failed";
+          setFeedbackBadge("Failed", "warn");
+          setFeedbackText("Model call failed. Please check the prompt or backend logs.");
+          setFeedbackList([msg]);
           preview.textContent = msg;
-          alert(msg);
-          if (triggerBtn) triggerBtn.disabled = false;
-          return;
+          if (!opts.silentError) alert(msg);
+          return { ok: false, error: msg };
         }
+
+        const elapsed = Math.round(performance.now() - interactionState.startedAt);
+        const analysis = analyzeSceneJson(data.json);
+        interactionState.lastJson = data.json;
 
         status.textContent = "Done";
         const pretty = JSON.stringify(data.json, null, 2);
         preview.textContent = `Input: ${data.input}\nOutput: ${data.output}\n\n${pretty}`;
+        document.getElementById("metaObjects").textContent = analysis.objects;
+        document.getElementById("metaEdges").textContent = analysis.edges;
+
+        if (analysis.warnings.length) {
+          setFeedbackBadge(`Score ${analysis.score}`, "warn");
+          setFeedbackText(`JSON generated (${elapsed} ms), but improvements were detected.`);
+          setFeedbackList(analysis.warnings.slice(0, 4));
+        } else {
+          setFeedbackBadge(`Score ${analysis.score}`, "ok");
+          setFeedbackText(`JSON generated (${elapsed} ms), structure looks complete and ready to render.`);
+          setFeedbackList([
+            `Objects: ${analysis.objects}, edges: ${analysis.edges}`,
+            "For finer control, add more spatial constraints or relation details."
+          ]);
+        }
+
+        return { ok: true, data, analysis, pretty, elapsed };
       } catch (err) {
         console.error(err);
         status.textContent = "Failed";
+        setFeedbackBadge("Network Error", "warn");
+        setFeedbackText("Request failed. Please confirm the backend is reachable.");
+        setFeedbackList([String(err)]);
         preview.textContent = "Request failed";
-        alert("Request failed");
+        if (!opts.silentError) alert("Request failed");
+        return { ok: false, error: String(err) };
+      } finally {
+        if (triggerBtn) triggerBtn.disabled = false;
       }
-
-      if (triggerBtn) triggerBtn.disabled = false;
     }
 
-    // Use left conversation text to call GPT JSON edit
-    function editJsonFromConversation() {
+    async function sendChatMessage() {
       const sceneText = document.getElementById("sceneInput").value.trim();
       if (!sceneText) {
         alert("Please enter a description on the left first");
         return;
       }
-      editJson({ instruction: sceneText, btn: document.getElementById("editJsonFromConversationBtn") });
+      appendChatMessage("user", sceneText);
+      document.getElementById("sceneInput").value = "";
+      updateInputMeta();
+      setTypingMessage();
+
+      const sendBtn = document.getElementById("editJsonFromConversationBtn");
+      sendBtn.disabled = true;
+      const composedInstruction = composeInstructionWithHistory(sceneText);
+      const result = await editJson({
+        instruction: composedInstruction,
+        btn: sendBtn,
+        silentError: true
+      });
+      clearTypingMessage();
+      sendBtn.disabled = false;
+
+      if (!result || !result.ok) {
+        appendChatMessage("assistant", "Request failed. Please check service status and try again.");
+        return;
+      }
+
+      const summary = `JSON generated: ${result.analysis.objects} objects, ${result.analysis.edges} edges, score ${result.analysis.score}.`;
+      appendChatMessage("assistant", summary + "\n\nThe JSON result modal is open. You can continue with follow-up edits.");
+      openJsonModal(result.pretty);
+      chatState.turns.push({ user: sceneText, assistant: summary });
+    }
+
+    // Backward compatibility
+    function editJsonFromConversation() {
+      sendChatMessage();
     }
 
     // Load Scene Graph file initially
+    document.getElementById("sceneInput").addEventListener("input", updateInputMeta);
+    document.getElementById("sceneInput").addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" && !evt.shiftKey) {
+        evt.preventDefault();
+        sendChatMessage();
+      }
+    });
+    document.getElementById("imageInput").addEventListener("change", updateInputMeta);
+    document.getElementById("classDirPicker").addEventListener("change", updateInputMeta);
+    document.getElementById("jsonModal").addEventListener("click", (evt) => {
+      if (evt.target.id === "jsonModal") closeJsonModal();
+    });
+    updateInputMeta();
     loadSceneGraph();
   </script>
 </body>
