@@ -2,963 +2,804 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Scene Graph Interface</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Scene Intelligence — AI Product UI</title>
 
   <!-- Cytoscape.js -->
   <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
 
   <style>
-    :root {
-      --bg-0: #f6f7fb;
-      --bg-1: #e5ebff;
-      --bg-2: #d7f4e8;
-      --card: rgba(255, 255, 255, 0.86);
-      --border: rgba(15, 23, 42, 0.1);
-      --text-main: #111827;
-      --text-soft: #4b5563;
-      --title: #0f172a;
-      --brand: #0f5eff;
-      --brand-hover: #0b4ddb;
-      --teal: #018f7c;
-      --teal-hover: #007666;
-      --shadow: 0 18px 40px rgba(30, 41, 59, 0.14);
-      --radius-lg: 16px;
-      --radius-md: 12px;
-      --radius-sm: 8px;
+    :root{
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --card-2: #fbfcff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: rgba(15, 23, 42, 0.08);
+      --shadow: 0 10px 30px rgba(2, 6, 23, 0.06);
+      --shadow-2: 0 18px 46px rgba(2, 6, 23, 0.08);
+      --radius: 18px;
+      --radius-sm: 14px;
+      --brand: #2563eb;
+      --brand-2: #1d4ed8;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #ef4444;
+
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial,
+              "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
     }
 
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      color: var(--text-main);
-      font-family: "Avenir Next", "Avenir", "Segoe UI", "Noto Sans SC", "PingFang SC", sans-serif;
-      background:
-        radial-gradient(circle at 85% -10%, #d2f8ec 0, transparent 32%),
-        radial-gradient(circle at -5% 100%, #d6deff 0, transparent 34%),
-        linear-gradient(160deg, var(--bg-0), #f9fafb 38%, #f3f6ff 100%);
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
+    *{ box-sizing: border-box; }
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      font-family: var(--sans);
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 20% -10%, rgba(37,99,235,0.08), transparent 60%),
+                  radial-gradient(900px 500px at 100% 10%, rgba(16,185,129,0.08), transparent 55%),
+                  var(--bg);
     }
 
-    .header {
-      min-height: 68px;
-      background: linear-gradient(92deg, #0f172a, #172554);
-      color: #f8fafc;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0 28px;
-      letter-spacing: 0.02em;
-      font-size: 22px;
-      font-weight: 700;
-      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.3);
+    /* ===== Top Bar ===== */
+    .topbar{
+      position: sticky;
+      top:0;
+      z-index: 20;
+      background: rgba(245,247,251,0.78);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar-inner{
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 14px 18px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 14px;
     }
 
-    .container {
-      flex: 1;
-      display: flex;
-      padding: 18px;
-      gap: 16px;
-      min-height: 0;
-    }
-
-    .conversation {
-      flex: 1;
-      background: var(--card);
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(6px);
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      overflow: hidden;
-    }
-
-    .chat-shell {
-      flex: 1;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
+    .brand{
+      display:flex;
+      align-items:center;
       gap: 12px;
-      overflow: auto;
-      padding-right: 4px;
+      min-width: 240px;
     }
-
-    .chat-stream {
-      flex: 0 0 280px;
-      min-height: 220px;
-      max-height: 320px;
-      overflow: auto;
-      border-radius: var(--radius-md);
-      border: 1px solid #d8e2f7;
-      background: linear-gradient(180deg, rgba(251, 253, 255, 0.94), rgba(240, 247, 255, 0.92));
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+    .logo{
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(37,99,235,1), rgba(29,78,216,1));
+      box-shadow: 0 10px 22px rgba(37,99,235,0.22);
+      position: relative;
     }
-
-    .msg {
-      max-width: 84%;
-      padding: 9px 12px;
-      border-radius: 14px;
-      line-height: 1.45;
-      font-size: 13px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+    .logo::after{
+      content:"";
+      position:absolute;
+      inset: 9px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.22);
     }
-
-    .msg.user {
-      align-self: flex-end;
-      background: linear-gradient(135deg, #1d4ed8, #2563eb);
-      color: #ffffff;
-      border-bottom-right-radius: 6px;
+    .brand-text{
+      display:flex;
+      flex-direction:column;
+      line-height: 1.1;
     }
-
-    .msg.assistant {
-      align-self: flex-start;
-      background: #ffffff;
-      color: #1f2937;
-      border: 1px solid #d8e1f3;
-      border-bottom-left-radius: 6px;
+    .brand-text .title{
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      font-size: 16px;
     }
-
-    .msg.system {
-      align-self: center;
-      background: #ecfeff;
-      color: #0f766e;
-      border: 1px solid #b4eef0;
-      border-radius: 999px;
+    .brand-text .subtitle{
+      color: var(--muted);
       font-size: 12px;
-      padding: 5px 10px;
-      box-shadow: none;
+      margin-top: 2px;
     }
 
-    .msg.typing {
-      font-style: italic;
+    .status-row{
+      display:flex;
+      align-items:center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content:flex-end;
+    }
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      box-shadow: 0 6px 18px rgba(2,6,23,0.04);
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .dot{
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: #cbd5e1;
+    }
+    .dot.ok{ background: var(--green); }
+    .dot.warn{ background: var(--amber); }
+    .dot.err{ background: var(--red); }
+    .pill strong{ color: var(--text); font-weight: 700; }
+
+    /* ===== Layout ===== */
+    .wrap{
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .grid{
+      display:grid;
+      grid-template-columns: 380px 1fr 420px;
+      gap: 16px;
+      min-height: calc(100vh - 74px - 36px);
+    }
+
+    .card{
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+      min-height: 0;
+      display:flex;
+      flex-direction:column;
+    }
+
+    .card-header{
+      padding: 14px 16px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+      background: linear-gradient(180deg, rgba(251,252,255,1), rgba(248,250,255,1));
+    }
+    .card-header h2{
+      margin:0;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #334155;
+    }
+    .card-header .meta{
+      font-size: 12px;
+      color: var(--muted);
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content:flex-end;
+    }
+    .kpi{
+      display:inline-flex;
+      align-items:center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #f8fafc;
+      border: 1px solid rgba(15,23,42,0.06);
+      font-size: 12px;
       color: #475569;
     }
+    .kpi b{ color: var(--text); }
 
-    .chat-composer textarea {
-      width: 100%;
-      min-height: 88px;
-      max-height: 160px;
-      flex: none;
-      display: block;
-    }
-
-    .chat-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .chat-actions button {
-      flex: 1;
-      min-width: 150px;
-    }
-
-    .upload-row,
-    .folder-row {
-      margin-top: 0;
-      margin-bottom: 0;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 10px;
-      padding: 10px 12px;
-      border: 1px solid #cfdbf5;
-      border-radius: 12px;
-      background: linear-gradient(180deg, #f7faff, #edf3ff);
-    }
-
-    .upload-row .status,
-    .folder-row .status {
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid #c6d6fb;
-      background: #eef4ff;
-      color: #315391;
-      font-size: 12px;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-
-    .upload-row .status:empty,
-    .folder-row .status:empty {
-      display: none;
-    }
-
-    .conversation h2,
-    .panel h2 {
-      margin: 0 0 10px 0;
-      font-size: 19px;
-      color: var(--title);
-      border-bottom: 1px solid #d9e1f2;
-      padding-bottom: 8px;
-      letter-spacing: 0.01em;
-    }
-
-    .right-panel {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-      min-height: 0;
-    }
-
-    .panel {
-      flex: 1;
-      background: var(--card);
-      border-radius: var(--radius-lg);
-      border: 1px solid var(--border);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(6px);
-      padding: 18px;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    .service-panel {
-      overflow: auto;
-      padding-right: 10px;
-    }
-
-    textarea {
-      flex: 1;
-      resize: none;
-      min-height: 160px;
-      padding: 14px;
-      font-size: 16px;
-      line-height: 1.55;
-      border-radius: var(--radius-md);
-      border: 1px solid #bfcae0;
-      background: #f8fbff;
-      color: #0f172a;
-      transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-    }
-
-    textarea:focus,
-    input[type="file"]:focus-visible,
-    button:focus-visible {
-      outline: none;
-      border-color: #90b2ff;
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
-      background: #ffffff;
-    }
-
-    .controls {
-      display: flex;
-      align-items: center;
+    .card-body{
+      padding: 14px 16px;
+      display:flex;
+      flex-direction:column;
       gap: 12px;
-      margin-bottom: 12px;
+      min-height: 0;
     }
 
-    .controls.tight {
-      margin-top: 8px;
-    }
-
-    .controls.between {
-      margin-top: 6px;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .controls.wrap {
-      flex-wrap: wrap;
-      gap: 8px 12px;
-    }
-
-    .mt-10 {
-      margin-top: 10px;
-    }
-
-    .mt-8 {
-      margin-top: 8px;
-    }
-
-    .form-label {
-      font-size: 13px;
-      color: var(--text-soft);
-      white-space: nowrap;
-    }
-
-    input[type="file"] {
-      max-width: 100%;
-      min-width: 0;
-      font-size: 13px;
-      color: #1e293b;
-      background: #ffffff;
-      border: 1px solid #bfd0f1;
-      border-radius: var(--radius-sm);
-      padding: 5px 6px;
-      transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-    }
-
-    .upload-row input[type="file"],
-    .folder-row input[type="file"] {
-      flex: 1 1 320px;
-    }
-
-    input[type="file"]::file-selector-button {
-      border: 1px solid #7fb0ff;
-      border-radius: 8px;
-      background: linear-gradient(135deg, #eef4ff, #dbe9ff);
-      color: #1e3a8a;
-      font-weight: 700;
+    /* ===== Inputs ===== */
+    .label{
       font-size: 12px;
-      padding: 6px 10px;
-      margin-right: 10px;
-      cursor: pointer;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 6px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 8px;
+    }
+    .hint{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
     }
 
-    input[type="file"]::file-selector-button:hover {
-      background: linear-gradient(135deg, #dbe9ff, #c8dcff);
+    textarea{
+      width: 100%;
+      min-height: 210px;
+      resize: vertical;
+      padding: 12px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(15,23,42,0.12);
+      background: #fbfcff;
+      font-size: 14px;
+      line-height: 1.55;
+      outline: none;
+      transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    textarea:focus{
+      border-color: rgba(37,99,235,0.55);
+      box-shadow: 0 0 0 4px rgba(37,99,235,0.14);
+      background:#ffffff;
     }
 
-    .folder-row .form-label {
-      font-weight: 600;
+    .row{
+      display:flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .file{
+      flex: 1 1 100%;
+      border: 1px dashed rgba(15,23,42,0.14);
+      background: var(--card-2);
+      border-radius: 14px;
+      padding: 10px;
+      display:flex;
+      flex-direction:column;
+      gap: 8px;
+    }
+    input[type="file"]{
+      width:100%;
+      font-size: 12px;
       color: #334155;
     }
+    input[type="file"]::file-selector-button{
+      border: 1px solid rgba(37,99,235,0.25);
+      background: rgba(37,99,235,0.08);
+      color: var(--brand-2);
+      padding: 6px 10px;
+      border-radius: 10px;
+      font-weight: 700;
+      cursor:pointer;
+      margin-right: 10px;
+    }
 
-    button {
-      padding: 10px 16px;
-      font-size: 14px;
-      font-weight: 600;
-      letter-spacing: 0.01em;
-      border-radius: 999px;
+    /* ===== Buttons ===== */
+    .btns{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    button{
       border: none;
-      background: linear-gradient(135deg, var(--brand), #3475ff);
-      color: #ffffff;
       cursor: pointer;
-      box-shadow: 0 10px 20px rgba(15, 94, 255, 0.22);
-      transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 14px 26px rgba(15, 94, 255, 0.28);
-      filter: saturate(1.05);
-    }
-
-    button:active {
-      transform: translateY(0);
-    }
-
-    button:disabled {
-      opacity: 0.64;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-    }
-
-    .btn-alt {
-      background: linear-gradient(135deg, #0ea5e9, #0284c7);
-      box-shadow: 0 10px 20px rgba(14, 165, 233, 0.22);
-    }
-
-    .btn-service {
-      background: linear-gradient(135deg, var(--teal), #0ba48f);
-      box-shadow: 0 10px 20px rgba(1, 143, 124, 0.22);
-    }
-
-    .btn-service:hover {
-      background: linear-gradient(135deg, var(--teal-hover), #008f7e);
-    }
-
-    .status {
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-weight: 700;
       font-size: 13px;
-      color: var(--text-soft);
+      letter-spacing: 0.01em;
+      transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+    }
+    button:disabled{
+      opacity:0.55;
+      cursor:not-allowed;
+      transform:none;
+      box-shadow:none;
+    }
+    .btn-primary{
+      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      color: #fff;
+      box-shadow: 0 12px 26px rgba(37,99,235,0.22);
+    }
+    .btn-primary:hover{ transform: translateY(-1px); filter: saturate(1.05); }
+    .btn-secondary{
+      background: #f1f5ff;
+      color: #1e3a8a;
+      border: 1px solid rgba(37,99,235,0.18);
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .btn-secondary:hover{ transform: translateY(-1px); }
+
+    .btn-teal{
+      background: linear-gradient(135deg, #10b981, #059669);
+      color:#fff;
+      box-shadow: 0 12px 26px rgba(16,185,129,0.18);
     }
 
-    .placeholder {
-      flex: 1;
-      border: 1px dashed #b8c6e6;
-      border-radius: var(--radius-md);
-      position: relative;
-      overflow: hidden;
-      min-height: 180px;
-      background:
-        linear-gradient(135deg, rgba(224, 238, 255, 0.46), rgba(237, 247, 255, 0.4));
+    .toolbar{
+      display:flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items:center;
+      justify-content:flex-start;
     }
-
-    .service-panel .placeholder {
-      flex: 0 0 230px;
-      min-height: 230px;
-    }
-
-    #sceneSvcResult {
-      flex: 0 0 auto;
-      margin-top: 10px;
-      max-height: 150px;
-      min-height: 64px;
-    }
-
-    #imagePlaceholder {
-      display: inline-flex;
-      width: 100%;
-      height: 100%;
-      align-items: center;
-      justify-content: center;
-      color: #5b6478;
-      font-size: 14px;
-    }
-
-    .json-output {
-      margin-top: 10px;
-      background: linear-gradient(160deg, #0f172a, #1f2937);
-      color: #d9e4ff;
-      padding: 13px;
-      border-radius: var(--radius-md);
-      border: 1px solid rgba(148, 163, 184, 0.22);
-      font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    .toolbtn{
+      padding: 9px 11px;
+      border-radius: 12px;
       font-size: 12px;
-      line-height: 1.45;
-      max-height: 210px;
-      overflow: auto;
+      font-weight: 800;
+      background: #ffffff;
+      border: 1px solid rgba(15,23,42,0.10);
+      color: #0f172a;
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .toolbtn:hover{ transform: translateY(-1px); }
+    .toolbtn.primary{
+      background: rgba(37,99,235,0.10);
+      border-color: rgba(37,99,235,0.22);
+      color: #1e3a8a;
+    }
+    .toolbtn.good{
+      background: rgba(16,185,129,0.10);
+      border-color: rgba(16,185,129,0.18);
+      color: #065f46;
+    }
+
+    /* ===== Graph ===== */
+    .graph-wrap{
+      flex: 1;
+      border-radius: 16px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background:
+        radial-gradient(600px 220px at 20% 10%, rgba(37,99,235,0.10), transparent 55%),
+        radial-gradient(500px 240px at 90% 10%, rgba(16,185,129,0.10), transparent 55%),
+        repeating-linear-gradient(0deg, rgba(148,163,184,0.12), rgba(148,163,184,0.12) 1px, transparent 1px, transparent 34px),
+        repeating-linear-gradient(90deg, rgba(148,163,184,0.12), rgba(148,163,184,0.12) 1px, transparent 1px, transparent 34px),
+        #ffffff;
+      overflow:hidden;
+      min-height: 420px;
+      position: relative;
+    }
+    #sceneGraph{
+      width:100%;
+      height:100%;
+    }
+    .graph-tip{
+      position:absolute;
+      right: 12px;
+      bottom: 12px;
+      font-size: 11px;
+      color: #475569;
+      background: rgba(255,255,255,0.86);
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 999px;
+      padding: 6px 10px;
+      pointer-events:none;
+    }
+
+    /* ===== Simulation ===== */
+    .imgbox{
+      flex: 1;
+      border-radius: 16px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: #ffffff;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      overflow:hidden;
+      position: relative;
+      min-height: 240px;
+    }
+    .imgbox img{
+      width:100%;
+      height:100%;
+      object-fit: contain;
+      display:none;
+      background:#fff;
+    }
+    .imgbox .empty{
+      color: #64748b;
+      font-size: 13px;
+      padding: 24px;
+      text-align:center;
+    }
+
+    .codebox{
+      background: #0b1220;
+      color: #dbe7ff;
+      border-radius: 16px;
+      border: 1px solid rgba(148,163,184,0.18);
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      max-height: 220px;
+      overflow:auto;
       white-space: pre-wrap;
     }
 
-    .feedback-card {
-      margin-top: 4px;
-      border: 1px solid #d7e0f3;
-      background: linear-gradient(140deg, rgba(255, 255, 255, 0.86), rgba(239, 246, 255, 0.9));
-      border-radius: var(--radius-md);
-      padding: 10px 12px;
+    /* ===== Drawer ===== */
+    .drawer{
+      margin-top: 16px;
+      border-radius: var(--radius);
+      overflow:hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      background: #fff;
     }
-
-    .feedback-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-
-    .feedback-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: #0f172a;
-      letter-spacing: 0.01em;
-    }
-
-    .feedback-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      padding: 3px 9px;
-      font-size: 11px;
-      font-weight: 700;
-      border: 1px solid #bfd0f5;
-      color: #1d4ed8;
-      background: #e8f0ff;
-    }
-
-    .feedback-badge.pending {
-      color: #0369a1;
-      border-color: #bce6fb;
-      background: #e0f2fe;
-    }
-
-    .feedback-badge.ok {
-      color: #0f766e;
-      border-color: #b8ece2;
-      background: #def7f2;
-    }
-
-    .feedback-badge.warn {
-      color: #92400e;
-      border-color: #f4d9a4;
-      background: #fef3c7;
-    }
-
-    .feedback-text {
-      margin: 0;
-      font-size: 12px;
-      line-height: 1.45;
-      color: #334155;
-    }
-
-    .feedback-grid {
-      margin-top: 8px;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .feedback-item {
-      border: 1px solid #d6dff2;
-      border-radius: 8px;
-      background: #f8fbff;
-      padding: 7px 8px;
-    }
-
-    .feedback-item strong {
-      display: block;
-      font-size: 11px;
-      color: #64748b;
-      margin-bottom: 2px;
-      font-weight: 600;
-    }
-
-    .feedback-item span {
-      font-size: 13px;
-      color: #0f172a;
-      font-weight: 700;
-    }
-
-    .feedback-list {
-      margin: 8px 0 0 0;
-      padding-left: 18px;
-      color: #334155;
-      font-size: 12px;
-      line-height: 1.5;
-    }
-
-    .feedback-list li + li {
-      margin-top: 3px;
-    }
-
-    #sceneGraph {
-      width: 100%;
-      height: 100%;
-      background:
-        radial-gradient(circle at 15% 10%, rgba(255, 255, 255, 0.7), transparent 35%),
-        repeating-linear-gradient(
-          0deg,
-          rgba(148, 163, 184, 0.08),
-          rgba(148, 163, 184, 0.08) 1px,
-          transparent 1px,
-          transparent 30px
-        ),
-        repeating-linear-gradient(
-          90deg,
-          rgba(148, 163, 184, 0.08),
-          rgba(148, 163, 184, 0.08) 1px,
-          transparent 1px,
-          transparent 30px
-        );
-    }
-
-    .graph-hint {
-      position: absolute;
-      right: 10px;
-      bottom: 10px;
-      z-index: 5;
-      font-size: 11px;
-      color: #334155;
-      background: rgba(248, 250, 252, 0.9);
-      border: 1px solid rgba(148, 163, 184, 0.45);
-      border-radius: 999px;
-      padding: 4px 8px;
-      pointer-events: none;
-    }
-
-    .json-modal {
-      position: fixed;
-      inset: 0;
-      z-index: 80;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      background: rgba(15, 23, 42, 0.5);
-      backdrop-filter: blur(4px);
-      padding: 20px;
-    }
-
-    .json-modal.open {
-      display: flex;
-    }
-
-    .json-modal-card {
-      width: min(920px, 96vw);
-      max-height: 86vh;
-      background: #ffffff;
-      border: 1px solid #d6dff1;
-      border-radius: 16px;
-      box-shadow: 0 24px 58px rgba(15, 23, 42, 0.34);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    .json-modal-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
+    .drawer-head{
       padding: 12px 14px;
-      border-bottom: 1px solid #dbe5f7;
-      background: linear-gradient(120deg, #eff6ff, #ecfeff);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      cursor: pointer;
+      user-select:none;
+      background: linear-gradient(180deg, rgba(251,252,255,1), rgba(248,250,255,1));
+      border-bottom: 1px solid rgba(15,23,42,0.06);
     }
-
-    .json-modal-title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #0f172a;
+    .drawer-head .left{
+      display:flex;
+      align-items:center;
+      gap: 10px;
     }
-
-    .json-modal-close {
+    .chev{
+      width: 28px;
+      height: 28px;
       border-radius: 10px;
-      padding: 6px 10px;
+      border: 1px solid rgba(15,23,42,0.10);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:#334155;
+      background:#fff;
+    }
+    .drawer-head h3{
+      margin:0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color:#334155;
+    }
+    .drawer-head .right{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      color: var(--muted);
       font-size: 12px;
-      background: #1f2937;
-      box-shadow: none;
+      flex-wrap: wrap;
+      justify-content:flex-end;
+    }
+    .drawer-body{
+      padding: 14px;
+      display:none;
+      gap: 12px;
+    }
+    .drawer.open .drawer-body{ display:grid; }
+    .drawer-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
     }
 
-    .json-modal-body {
-      padding: 12px;
-      overflow: auto;
+    /* ===== Toast ===== */
+    .toasts{
+      position: fixed;
+      right: 16px;
+      top: 82px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      z-index: 99;
+      pointer-events:none;
     }
-
-    .placeholder img {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      display: none;
+    .toast{
+      pointer-events:none;
+      width: min(360px, calc(100vw - 32px));
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 16px;
+      box-shadow: var(--shadow-2);
+      padding: 10px 12px;
+      display:flex;
+      gap: 10px;
+      align-items:flex-start;
+      backdrop-filter: blur(10px);
+      animation: toastIn 180ms ease-out;
     }
-
-    @media (max-width: 1080px) {
-      .container {
-        flex-direction: column;
-        padding: 14px;
-      }
-
-      .conversation,
-      .panel {
-        min-height: 360px;
-      }
-
-      .header {
-        justify-content: flex-start;
-        font-size: 19px;
-      }
+    @keyframes toastIn{
+      from{ transform: translateY(-6px); opacity: 0; }
+      to{ transform: translateY(0); opacity: 1; }
     }
+    .toast .ico{
+      width: 28px; height: 28px;
+      border-radius: 12px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:#fff;
+      font-weight: 900;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    .toast .ico.ok{ background: var(--green); }
+    .toast .ico.warn{ background: var(--amber); }
+    .toast .ico.err{ background: var(--red); }
+    .toast .ico.info{ background: var(--brand); }
+    .toast .txt{
+      display:flex;
+      flex-direction:column;
+      gap: 2px;
+      min-width:0;
+    }
+    .toast .txt b{ font-size: 13px; color: var(--text); }
+    .toast .txt span{ font-size: 12px; color: var(--muted); line-height: 1.35; }
 
-    @media (max-width: 640px) {
-      .container {
-        gap: 12px;
-        padding: 10px;
-      }
-
-      .header {
-        min-height: 56px;
-        padding: 0 14px;
-        font-size: 17px;
-      }
-
-      button {
-        width: 100%;
-      }
-
-      .controls {
-        flex-wrap: wrap;
-      }
-
-      .feedback-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .chat-stream {
-        flex-basis: 220px;
-        max-height: 260px;
-      }
-
-      .chat-actions {
-        gap: 6px;
-      }
-
-      .service-panel .placeholder {
-        flex-basis: 180px;
-        min-height: 180px;
-      }
-
-      #sceneSvcResult {
-        max-height: 120px;
-      }
+    /* ===== Responsive ===== */
+    @media (max-width: 1180px){
+      .grid{ grid-template-columns: 360px 1fr; }
+      .grid .col-right{ grid-column: 1 / -1; }
+    }
+    @media (max-width: 820px){
+      .grid{ grid-template-columns: 1fr; }
+      .btns{ grid-template-columns: 1fr; }
+      textarea{ min-height: 180px; }
+      .drawer-grid{ grid-template-columns: 1fr; }
+      .topbar-inner{ flex-direction:column; align-items:flex-start; }
+      .status-row{ justify-content:flex-start; }
     }
   </style>
 </head>
 
 <body>
-  <div class="header">Scene Graph Generation & Visualization</div>
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
 
-  <div class="container">
-
-    <!-- Left: Conversation -->
-    <div class="conversation">
-      <h2>JSON Chat Assistant</h2>
-      <div class="chat-shell">
-        <div class="chat-stream" id="chatMessages" aria-live="polite">
-          <div class="msg assistant">I can convert your description into Scene Graph JSON. You can keep asking follow-up edits.</div>
-        </div>
-
-        <div class="chat-composer">
-          <textarea
-            id="sceneInput"
-            placeholder='Type like GPT: e.g. "There is a table in the room, a chair is to the left of the table, and a lamp is near the wall."'
-          ></textarea>
-        </div>
-
-        <div class="chat-actions">
-          <button id="editJsonFromConversationBtn" class="btn-alt" onclick="sendChatMessage()">
-            Send Message
-          </button>
-          <button onclick="generateSceneGraph()">Generate Scene Graph</button>
-        </div>
-
-        <div class="controls tight upload-row">
-          <input id="imageInput" type="file" accept="image/*" />
-          <span class="status" id="uploadStatus">Image optional</span>
-        </div>
-
-        <div class="controls tight folder-row">
-          <label class="form-label">Or pick a folder locally:</label>
-          <input id="classDirPicker" type="file" webkitdirectory multiple />
-          <span class="status" id="classStatus"></span>
-        </div>
-
-        <div class="controls between">
-          <span class="status" id="jsonStatus">Idle</span>
-        </div>
-
-        <div class="feedback-card" id="interactionFeedback" aria-live="polite">
-          <div class="feedback-head">
-            <span class="feedback-title">Language Interaction Feedback</span>
-            <span class="feedback-badge" id="feedbackBadge">Ready</span>
-          </div>
-          <p class="feedback-text" id="feedbackText">After you enter a prompt, you will see structure analysis and JSON quality feedback.</p>
-          <div class="feedback-grid">
-            <div class="feedback-item"><strong>Input Length</strong><span id="metaLength">0</span></div>
-            <div class="feedback-item"><strong>Objects</strong><span id="metaObjects">-</span></div>
-            <div class="feedback-item"><strong>Edges</strong><span id="metaEdges">-</span></div>
-          </div>
-          <ul class="feedback-list" id="feedbackList">
-            <li>Try describing object count, relative positions, and directional relations (left/right/front/behind).</li>
-          </ul>
-        </div>
-      </div>
-      <div class="json-output" id="jsonPreview" aria-live="polite" style="display:none;">Waiting for GPT JSON result...</div>
-    </div>
-
-    <!-- Right -->
-    <div class="right-panel">
-
-      <!-- Scene Graph -->
-      <div class="panel">
-        <h2>Scene Graph Visualization</h2>
-        <div class="placeholder">
-          <div id="sceneGraph"></div>
-          <span class="graph-hint">Click node to focus</span>
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="logo"></div>
+        <div class="brand-text">
+          <div class="title">Scene Intelligence</div>
+          <div class="subtitle">LLM → Scene Graph → Real2Sim / Isaac</div>
         </div>
       </div>
 
-      <!-- Isaac Sim / Scene Service -->
-      <div class="panel service-panel">
-        <h2>Isaac Sim & Scene Service</h2>
-
-        <div class="controls wrap">
-          <button id="generateBtn" class="btn-service" onclick="generateScene()">Generate Scene</button>
-          <button id="real2simBtn" class="btn-service" onclick="runReal2Sim()">Real2Sim</button>
-          <button class="btn-service" onclick="callSceneService('scene')">POST /scene</button>
-          <button class="btn-service" onclick="callSceneService('scene_new')">POST /scene_new</button>
-          <span id="status" class="status">Idle</span>
-          <span id="sceneSvcStatus" class="status">Idle</span>
-        </div>
-
-        <div class="placeholder">
-          <img id="renderImage" src="assets/renders/render.png" />
-          <span id="imagePlaceholder">No image yet</span>
-        </div>
-
-        <div class="json-output" id="sceneSvcResult">Waiting for response...</div>
+      <div class="status-row">
+        <div class="pill"><span class="dot" id="dotModel"></span><strong>Model</strong> <span id="statusModel">Idle</span></div>
+        <div class="pill"><span class="dot" id="dotGraph"></span><strong>Graph</strong> <span id="statusGraph">Idle</span></div>
+        <div class="pill"><span class="dot" id="dotSim"></span><strong>Sim</strong> <span id="statusSim">Idle</span></div>
       </div>
-
     </div>
   </div>
 
-  <div class="json-modal" id="jsonModal" aria-hidden="true">
-    <div class="json-modal-card">
-      <div class="json-modal-head">
-        <span class="json-modal-title">Generated JSON</span>
-        <button class="json-modal-close" onclick="closeJsonModal()">Close</button>
+  <div class="wrap">
+    <div class="grid">
+
+      <!-- Left Column: Prompt + Inputs -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Prompt</h2>
+          <div class="meta">
+            <span class="kpi"><b id="metaChars">0</b> chars</span>
+            <span class="kpi"><b id="metaTok">0</b> tok</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <div class="label">
+              Describe the scene
+              <span class="hint">Use objects + relations (left/right/front/near/on)</span>
+            </div>
+            <textarea id="sceneInput" placeholder='e.g. "A table in the center. A chair is to the left of the table. A lamp is near the wall."'></textarea>
+          </div>
+
+          <div class="file">
+            <div class="label">Reference Image (Optional) <span class="hint" id="uploadStatus">Using text</span></div>
+            <input id="imageInput" type="file" accept="image/*"/>
+          </div>
+
+          <div class="file">
+            <div class="label">Class Names Folder (Optional) <span class="hint" id="classStatus">No folder selected</span></div>
+            <input id="classDirPicker" type="file" webkitdirectory multiple />
+          </div>
+
+          <div class="btns">
+            <button class="btn-primary" id="btnGenerate" onclick="generateFromPrompt()">Generate Graph</button>
+            <button class="btn-secondary" id="btnEditJson" onclick="editJson()">Edit JSON (LLM)</button>
+          </div>
+
+          <div class="toolbar">
+            <button class="toolbtn good" id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
+            <button class="toolbtn primary" onclick="callSceneService('scene')">Edit Scene</button>
+            <button class="toolbtn primary" onclick="callSceneService('scene_new')">Resample</button>
+          </div>
+
+          <div class="row">
+            <span class="kpi">Objects: <b id="metaObjects">-</b></span>
+            <span class="kpi">Edges: <b id="metaEdges">-</b></span>
+            <span class="kpi">Score: <b id="metaScore">-</b></span>
+          </div>
+        </div>
       </div>
-      <div class="json-modal-body">
-        <div class="json-output" id="jsonModalContent">No result yet</div>
+
+      <!-- Center Column: Graph -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Scene Graph</h2>
+          <div class="meta">
+            <span class="kpi">Tip: <b>Click node</b> to focus</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding:14px;">
+          <div class="graph-wrap">
+            <div id="sceneGraph"></div>
+            <div class="graph-tip">Scroll / drag • Click node to focus</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Simulation -->
+      <div class="card col-right">
+        <div class="card-header">
+          <h2>Simulation Preview</h2>
+          <div class="meta">
+            <span class="kpi"><b id="sceneSvcStatus">Idle</b></span>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="imgbox">
+            <img id="renderImage" src="assets/renders/render.png" alt="render"/>
+            <div class="empty" id="imagePlaceholder">
+              No render yet. Run <b>Real2Sim</b> or <b>Scene Service</b> to refresh the preview.
+            </div>
+          </div>
+
+          <div>
+            <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
+            <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Drawer: JSON + Diagnostics -->
+    <div class="drawer" id="drawer">
+      <div class="drawer-head" onclick="toggleDrawer()">
+        <div class="left">
+          <div class="chev" id="chev">▾</div>
+          <h3>JSON & Diagnostics</h3>
+        </div>
+        <div class="right">
+          <span id="jsonStatus">Idle</span>
+          <span>•</span>
+          <span id="diagText">No diagnostics yet</span>
+        </div>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-grid">
+          <div>
+            <div class="label">Generated / Edited JSON <span class="hint">Preview</span></div>
+            <div class="codebox" id="jsonPreview">Waiting for result...</div>
+          </div>
+          <div>
+            <div class="label">Hints <span class="hint">Quality feedback</span></div>
+            <div class="codebox" id="feedbackBox">-</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
     let cy = null;
-    let typingMessageEl = null;
+
     const interactionState = {
       startedAt: null,
       lastInstruction: "",
       lastJson: null
     };
-    const chatState = {
-      turns: []
-    };
 
-    function setFeedbackBadge(text, tone = "") {
-      const badge = document.getElementById("feedbackBadge");
-      badge.textContent = text;
-      badge.className = `feedback-badge${tone ? " " + tone : ""}`;
+    /* ===== Toast ===== */
+    function toast(type, title, msg){
+      const root = document.getElementById("toasts");
+      const el = document.createElement("div");
+      el.className = "toast";
+      const ico = document.createElement("div");
+      ico.className = `ico ${type}`;
+      ico.textContent = type === "ok" ? "✓" : type === "warn" ? "!" : type === "err" ? "×" : "i";
+      const txt = document.createElement("div");
+      txt.className = "txt";
+      const b = document.createElement("b");
+      b.textContent = title;
+      const s = document.createElement("span");
+      s.textContent = msg;
+      txt.appendChild(b); txt.appendChild(s);
+      el.appendChild(ico); el.appendChild(txt);
+      root.appendChild(el);
+      setTimeout(() => { el.style.opacity = "0"; el.style.transform = "translateY(-6px)"; }, 2600);
+      setTimeout(() => { el.remove(); }, 3000);
     }
 
-    function setFeedbackText(text) {
-      document.getElementById("feedbackText").textContent = text;
+    /* ===== Status Pills ===== */
+    function setPill(which, state, text){
+      const dot = document.getElementById(which === "model" ? "dotModel" : which === "graph" ? "dotGraph" : "dotSim");
+      const label = document.getElementById(which === "model" ? "statusModel" : which === "graph" ? "statusGraph" : "statusSim");
+      dot.className = "dot " + (state || "");
+      label.textContent = text || "Idle";
     }
 
-    function setFeedbackList(items) {
-      const list = document.getElementById("feedbackList");
-      list.innerHTML = "";
-      for (const item of items) {
-        const li = document.createElement("li");
-        li.textContent = item;
-        list.appendChild(li);
-      }
+    function toggleDrawer(){
+      const d = document.getElementById("drawer");
+      const chev = document.getElementById("chev");
+      const open = d.classList.toggle("open");
+      chev.textContent = open ? "▴" : "▾";
     }
 
-    function appendChatMessage(role, text) {
-      const stream = document.getElementById("chatMessages");
-      const msg = document.createElement("div");
-      msg.className = `msg ${role}`;
-      msg.textContent = text;
-      stream.appendChild(msg);
-      stream.scrollTop = stream.scrollHeight;
-      return msg;
-    }
-
-    function setTypingMessage(text = "Assistant is generating JSON...") {
-      clearTypingMessage();
-      typingMessageEl = appendChatMessage("assistant typing", text);
-    }
-
-    function clearTypingMessage() {
-      if (typingMessageEl) {
-        typingMessageEl.remove();
-        typingMessageEl = null;
-      }
-    }
-
-    function openJsonModal(content) {
-      document.getElementById("jsonModalContent").textContent = content;
-      const modal = document.getElementById("jsonModal");
-      modal.classList.add("open");
-      modal.setAttribute("aria-hidden", "false");
-    }
-
-    function closeJsonModal() {
-      const modal = document.getElementById("jsonModal");
-      modal.classList.remove("open");
-      modal.setAttribute("aria-hidden", "true");
-    }
-
-    function composeInstructionWithHistory(currentInput) {
-      const history = chatState.turns.slice(-6)
-        .map((turn, idx) => {
-          const user = turn.user || "";
-          const assistant = turn.assistant || "";
-          return `Turn ${idx + 1}\nUser: ${user}\nAssistant summary: ${assistant}`;
-        })
-        .join("\n\n");
-
-      if (!history) return currentInput;
-      return `Conversation context:\n${history}\n\nCurrent user request:\n${currentInput}`;
-    }
-
-    function updateInputMeta() {
+    function updateInputMeta(){
       const text = document.getElementById("sceneInput").value.trim();
-      const imageCount = document.getElementById("imageInput").files.length;
-      const classCount = document.getElementById("classDirPicker").files.length;
       const chars = text.length;
       const approxTokens = Math.ceil(chars / 3.6) || 0;
+      document.getElementById("metaChars").textContent = chars;
+      document.getElementById("metaTok").textContent = approxTokens;
 
-      document.getElementById("metaLength").textContent = `${chars} chars (~${approxTokens} tok)`;
+      const imageCount = document.getElementById("imageInput").files.length;
+      const classCount = document.getElementById("classDirPicker").files.length;
+      document.getElementById("uploadStatus").textContent = imageCount ? `${imageCount} image selected` : "Using text";
+      document.getElementById("classStatus").textContent = classCount ? `${classCount} files selected` : "No folder selected";
+    }
 
-      if (!text && !imageCount) {
-        setFeedbackBadge("Ready");
-        setFeedbackText("After you enter a prompt, you will see structure analysis and JSON quality feedback.");
-        document.getElementById("metaObjects").textContent = "-";
-        document.getElementById("metaEdges").textContent = "-";
-        setFeedbackList([
-          "Try describing object count, relative positions, and directional relations (left/right/front/behind)."
-        ]);
-        return;
-      }
+    function setFeedback(lines){
+      const box = document.getElementById("feedbackBox");
+      box.textContent = (lines && lines.length) ? lines.map(s => "• " + s).join("\n") : "-";
+    }
 
-      const hints = [];
-      if (text && chars < 25) hints.push("The prompt is short. Consider adding count, direction, and hierarchy details.");
-      if (text && !/(left|right|front|behind|near|on|under|in|next to)/i.test(text)) {
-        hints.push("Add spatial relation words to make edge relations clearer.");
-      }
-      if (!imageCount) hints.push("No image uploaded. The result will rely on text only.");
-      if (imageCount) hints.push("Image detected. Visual cues will be combined with text.");
-      if (classCount) hints.push(`${classCount} local class-name files selected.`);
-
-      setFeedbackBadge("Draft", "pending");
-      setFeedbackText("Input parsed. Ready to generate structured JSON.");
-      setFeedbackList(hints.slice(0, 4));
+    function setMetrics({objects="-", edges="-", score="-"}){
+      document.getElementById("metaObjects").textContent = objects;
+      document.getElementById("metaEdges").textContent = edges;
+      document.getElementById("metaScore").textContent = score;
     }
 
     function analyzeSceneJson(json) {
       const objects = Array.isArray(json?.objects) ? json.objects : [];
       const edges = Array.isArray(json?.edges) ? json.edges : [];
       const warnings = [];
+      if (!objects.length) warnings.push("`objects` is empty — graph nodes may not render.");
+      if (!edges.length) warnings.push("`edges` is empty — relations are weak.");
 
-      if (!objects.length) warnings.push("`objects` is empty, so scene nodes may not render.");
-      if (!edges.length) warnings.push("`edges` is empty, so relation information is weak.");
-
-      const unnamed = objects.filter((o) => !o?.class_name).length;
-      const noPath = objects.filter((o) => !o?.path).length;
-      const badEdge = edges.filter((e) => !e?.source || !e?.target || !e?.relation).length;
+      const unnamed = objects.filter(o => !o?.class_name).length;
+      const noPath = objects.filter(o => !o?.path).length;
+      const badEdge = edges.filter(e => !e?.source || !e?.target || !e?.relation).length;
 
       if (unnamed) warnings.push(`${unnamed} object(s) missing class_name.`);
       if (noPath) warnings.push(`${noPath} object(s) missing path.`);
       if (badEdge) warnings.push(`${badEdge} edge(s) missing source/target/relation.`);
 
       const score = Math.max(0, 100 - warnings.length * 12);
-      return {
-        objects: objects.length,
-        edges: edges.length,
-        warnings,
-        score
-      };
+      return { objects: objects.length, edges: edges.length, warnings, score };
     }
 
-    /* ========= Render Scene Graph ========= */
-    function renderSceneGraph(graph) {
-      const elements = [];
+    async function getSceneGraphAnalysisFallback() {
+      try {
+        const res = await fetch("/scene_graph");
+        const graph = await res.json();
+        if (!res.ok) throw new Error(graph?.error || "Failed to load scene graph");
+        return analyzeSceneJson(graph);
+      } catch (err) {
+        console.warn("Fallback analysis failed:", err);
+        return null;
+      }
+    }
 
-      for (const obj of graph.objects) {
-        const depth = String(obj.path || "")
-          .split("/")
-          .filter(Boolean).length;
+    /* ===== Cytoscape render ===== */
+    function renderSceneGraph(graph){
+      const elements = [];
+      for (const obj of (graph.objects || [])) {
+        const depth = String(obj.path || "").split("/").filter(Boolean).length;
         elements.push({
-          data: {
-            id: obj.path,
-            label: obj.class_name,
-            depth: depth
-          }
+          data: { id: obj.path, label: obj.class_name, depth }
         });
       }
-
-      for (const e of graph.edges) {
+      for (const e of (graph.edges || [])) {
         elements.push({
-          data: {
-            id: e.source + "->" + e.target,
-            source: e.source,
-            target: e.target,
-            label: e.relation
-          }
+          data: { id: e.source + "->" + e.target, source: e.source, target: e.target, label: e.relation }
         });
       }
 
@@ -966,27 +807,27 @@
 
       cy = cytoscape({
         container: document.getElementById("sceneGraph"),
-        elements: elements,
+        elements,
         style: [
           {
             selector: "node",
             style: {
-              "background-color": "mapData(depth, 1, 6, #7cc6ff, #1f45d9)",
+              "background-color": "mapData(depth, 1, 6, #93c5fd, #1d4ed8)",
               "border-color": "#1d4ed8",
               "border-width": "1.5px",
               "label": "data(label)",
-              "color": "white",
+              "color": "#ffffff",
               "text-valign": "center",
               "shape": "round-rectangle",
-              "padding": "11px",
+              "padding": "10px",
               "font-size": "11px",
               "text-wrap": "wrap",
-              "text-max-width": "120px",
+              "text-max-width": "130px",
               "text-outline-width": 2,
-              "text-outline-color": "rgba(15, 23, 42, 0.22)",
-              "shadow-color": "rgba(30, 64, 175, 0.34)",
-              "shadow-blur": 12,
-              "shadow-offset-y": 4,
+              "text-outline-color": "rgba(15, 23, 42, 0.18)",
+              "shadow-color": "rgba(29, 78, 216, 0.25)",
+              "shadow-blur": 14,
+              "shadow-offset-y": 5,
               "transition-property": "background-color, border-color, shadow-blur, shadow-color, opacity",
               "transition-duration": "180ms"
             }
@@ -998,35 +839,30 @@
               "target-arrow-shape": "triangle",
               "label": "data(label)",
               "font-size": "10px",
-              "line-color": "#7ca3f8",
-              "target-arrow-color": "#7ca3f8",
+              "line-color": "rgba(37, 99, 235, 0.55)",
+              "target-arrow-color": "rgba(37, 99, 235, 0.55)",
               "width": 2,
               "arrow-scale": 0.9,
               "text-rotation": "autorotate",
-              "text-background-color": "#f8fbff",
-              "text-background-opacity": 0.94,
+              "text-background-color": "#ffffff",
+              "text-background-opacity": 0.92,
               "text-background-padding": "4px",
               "color": "#0f172a",
               "text-border-width": 1,
-              "text-border-color": "rgba(148, 163, 184, 0.45)",
+              "text-border-color": "rgba(148, 163, 184, 0.55)",
               "text-margin-y": -3,
               "transition-property": "line-color, target-arrow-color, width, opacity",
               "transition-duration": "180ms"
             }
           },
-          {
-            selector: ".dim",
-            style: {
-              "opacity": 0.16
-            }
-          },
+          { selector: ".dim", style: { "opacity": 0.16 } },
           {
             selector: ".focus-node",
             style: {
               "border-color": "#f59e0b",
               "border-width": 3,
-              "shadow-color": "rgba(245, 158, 11, 0.5)",
-              "shadow-blur": 20
+              "shadow-color": "rgba(245, 158, 11, 0.45)",
+              "shadow-blur": 22
             }
           },
           {
@@ -1042,7 +878,7 @@
         layout: {
           name: "cose",
           animate: true,
-          animationDuration: 480,
+          animationDuration: 420,
           fit: true,
           padding: 28,
           nodeRepulsion: 5200,
@@ -1053,10 +889,7 @@
         }
       });
 
-      const clearFocus = () => {
-        cy.elements().removeClass("dim focus-node focus-edge");
-      };
-
+      const clearFocus = () => cy.elements().removeClass("dim focus-node focus-edge");
       cy.on("tap", "node", (evt) => {
         const node = evt.target;
         clearFocus();
@@ -1065,123 +898,135 @@
         node.connectedEdges().removeClass("dim").addClass("focus-edge");
         node.neighborhood().removeClass("dim");
       });
-
-      cy.on("tap", (evt) => {
-        if (evt.target === cy) clearFocus();
-      });
+      cy.on("tap", (evt) => { if (evt.target === cy) clearFocus(); });
     }
 
-    /* ========= Load initial graph from file ========= */
-    async function loadSceneGraph() {
-      const res = await fetch("/scene_graph");
-      const graph = await res.json();
-      renderSceneGraph(graph);
+    /* ===== init load ===== */
+    async function loadSceneGraph(){
+      try{
+        setPill("graph", "", "Loading...");
+        const res = await fetch("/scene_graph");
+        const graph = await res.json();
+        if (!res.ok) throw new Error(graph?.error || "Failed to load /scene_graph");
+        renderSceneGraph(graph);
+        const analysis = analyzeSceneJson(graph);
+        setMetrics(analysis);
+        document.getElementById("diagText").textContent = `Objects ${analysis.objects} • Edges ${analysis.edges} • Score ${analysis.score}`;
+        setFeedback(analysis.warnings.length ? analysis.warnings : ["Looks good. Add more relations for finer control."]);
+        setPill("graph", "ok", "Ready");
+      }catch(err){
+        console.error(err);
+        setPill("graph", "err", "Error");
+        toast("err","Graph load failed", String(err));
+      }
     }
 
-    /* ========= Text or Image → Scene Graph ========= */
-    async function generateSceneGraph() {
-      const text = document.getElementById("sceneInput").value;
+    /* ===== Generate graph from prompt/image ===== */
+    async function generateSceneGraph(opts = {}) {
+      const text = (opts.text ?? document.getElementById("sceneInput").value).trim();
       const fileInput = document.getElementById("imageInput");
-      const uploadStatus = document.getElementById("uploadStatus");
       const classDirPicker = document.getElementById("classDirPicker");
-      const classStatus = document.getElementById("classStatus");
 
       const formData = new FormData();
-      if (text.trim()) formData.append("text", text);
-      if (fileInput.files.length > 0) {
-        formData.append("image", fileInput.files[0]);
-        uploadStatus.textContent = "Using uploaded image";
-      } else {
-        uploadStatus.textContent = "Using text description";
-      }
+      if (text) formData.append("text", text);
+
+      if (fileInput.files.length > 0) formData.append("image", fileInput.files[0]);
+
       if (classDirPicker.files.length > 0) {
         const names = Array.from(classDirPicker.files)
           .map((f) => {
             const parts = f.name.split(".");
             parts.pop();
-            return parts.join("."); // drop extension
+            return parts.join(".");
           })
           .filter(Boolean);
         formData.append("class_names", JSON.stringify(names));
-        classStatus.textContent = `${names.length} file names added`;
-      } else {
-        classStatus.textContent = "";
       }
 
       try {
-        const res = await fetch("/scene_from_input", {
-          method: "POST",
-          body: formData
-        });
-
+        const res = await fetch("/scene_from_input", { method:"POST", body: formData });
         const graph = await res.json();
         if (!res.ok) {
-          alert(graph.error || "Generation failed");
-          return;
+          const msg = graph.error || "Generation failed";
+          if (!opts.silentError) toast("err","Generation failed", msg);
+          return { ok:false, error: msg };
         }
         renderSceneGraph(graph);
+        const analysis = analyzeSceneJson(graph);
+        setMetrics(analysis);
+        document.getElementById("diagText").textContent = `Objects ${analysis.objects} • Edges ${analysis.edges} • Score ${analysis.score}`;
+        setFeedback(analysis.warnings.length ? analysis.warnings : ["Graph looks complete. You can now run Real2Sim or Scene Service."]);
+        return { ok:true, graph, analysis };
       } catch (err) {
         console.error(err);
-        alert("Failed to generate scene graph");
+        const msg = "Failed to generate scene graph";
+        if (!opts.silentError) toast("err","Network error", msg);
+        return { ok:false, error: String(err || msg) };
       }
     }
 
-    /* ========= Isaac Sim ========= */
-    async function generateScene() {
-      const btn = document.getElementById("generateBtn");
-      const status = document.getElementById("status");
-      const img = document.getElementById("renderImage");
-      const placeholder = document.getElementById("imagePlaceholder");
-
-      btn.disabled = true;
-      status.textContent = "Generating scene...";
-
-      try {
-        await fetch("/generate");
-        img.src = "assets/renders/render.png?ts=" + Date.now();
-        img.style.display = "block";
-        placeholder.style.display = "none";
-        status.textContent = "Done";
-      } catch (err) {
-        console.error(err);
-        status.textContent = "Failed";
+    async function generateFromPrompt(){
+      const text = document.getElementById("sceneInput").value.trim();
+      if (!text && document.getElementById("imageInput").files.length === 0){
+        toast("warn","Missing input","Please enter a prompt or upload a reference image.");
+        return;
       }
 
-      btn.disabled = false;
+      setPill("graph","warn","Generating...");
+      document.getElementById("jsonStatus").textContent = "Generating graph...";
+      document.getElementById("btnGenerate").disabled = true;
+
+      const result = await generateSceneGraph({ text, silentError: true });
+
+      document.getElementById("btnGenerate").disabled = false;
+      if (!result || !result.ok){
+        setPill("graph","err","Failed");
+        document.getElementById("jsonStatus").textContent = "Failed";
+        toast("err","Graph generation failed", result?.error || "Unknown error");
+        return;
+      }
+
+      setPill("graph","ok","Ready");
+      document.getElementById("jsonStatus").textContent = "Graph updated";
+      toast("ok","Graph updated", `${result.analysis.objects} objects • ${result.analysis.edges} edges • score ${result.analysis.score}`);
+      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
     }
 
-    /* ========= Real2Sim Pipeline ========= */
+    /* ===== Real2Sim ===== */
     async function runReal2Sim() {
       const btn = document.getElementById("real2simBtn");
-      const status = document.getElementById("status");
       const img = document.getElementById("renderImage");
       const placeholder = document.getElementById("imagePlaceholder");
 
       btn.disabled = true;
-      status.textContent = "Running Real2Sim...";
+      setPill("sim","warn","Real2Sim...");
+      document.getElementById("statusSimText").textContent = "Running Real2Sim...";
 
       try {
         const res = await fetch("/real2sim");
         const data = await res.json();
         if (!res.ok) {
-          status.textContent = "Failed";
-          alert((data && (data.detail || data.msg)) || "Real2Sim failed");
+          setPill("sim","err","Failed");
+          toast("err","Real2Sim failed", (data && (data.detail || data.msg)) || "Unknown error");
           btn.disabled = false;
           return;
         }
         img.src = "assets/renders/render.png?ts=" + Date.now();
         img.style.display = "block";
         placeholder.style.display = "none";
-        status.textContent = "Done";
+        setPill("sim","ok","Ready");
+        document.getElementById("statusSimText").textContent = "Real2Sim done";
+        toast("ok","Real2Sim done","Preview refreshed.");
       } catch (err) {
         console.error(err);
-        status.textContent = "Failed";
+        setPill("sim","err","Failed");
+        document.getElementById("statusSimText").textContent = "Failed";
+        toast("err","Real2Sim error", "Check backend logs / service status.");
       }
-
       btn.disabled = false;
     }
 
-    /* ========= Isaac Scene Service (FastAPI) ========= */
+    /* ===== Isaac Scene Service ===== */
     async function callSceneService(endpoint) {
       const statusEl = document.getElementById("sceneSvcStatus");
       const resultEl = document.getElementById("sceneSvcResult");
@@ -1189,9 +1034,11 @@
       const placeholder = document.getElementById("imagePlaceholder");
 
       const base = "http://127.0.0.1:8001";
-      const payload = {}; // Fixed command, empty JSON
+      const payload = {};
 
-      statusEl.textContent = `Calling /${endpoint} ...`;
+      statusEl.textContent = `Calling /${endpoint}...`;
+      setPill("sim","warn","Calling...");
+      document.getElementById("statusSimText").textContent = `Calling /${endpoint}...`;
       resultEl.textContent = "Requesting...";
 
       try {
@@ -1201,50 +1048,52 @@
           body: JSON.stringify(payload),
         });
         const data = await res.json();
+
         statusEl.textContent = res.ok ? "Done" : "Failed";
         resultEl.textContent = JSON.stringify(data, null, 2);
+
         if (!res.ok) {
-          alert(data.detail || data.error || "Request failed");
+          setPill("sim","err","Failed");
+          toast("err","Scene service failed", data.detail || data.error || "Request failed");
         } else {
-          // Refresh render.png
           img.src = "assets/renders/render.png?ts=" + Date.now();
           img.style.display = "block";
           placeholder.style.display = "none";
+          setPill("sim","ok","Ready");
+          toast("ok","Scene service done", `Endpoint /${endpoint} finished.`);
         }
       } catch (err) {
         console.error(err);
         statusEl.textContent = "Failed";
         resultEl.textContent = String(err);
-        alert("Request failed, possibly a port or CORS issue");
+        setPill("sim","err","Failed");
+        toast("err","Request failed", "Possibly CORS / port / service not running.");
       }
     }
 
-    /* ========= GPT JSON Editing ========= */
+    /* ===== LLM JSON Editing ===== */
     async function editJson(opts = {}) {
       const status = document.getElementById("jsonStatus");
       const preview = document.getElementById("jsonPreview");
-      const triggerBtn = opts.btn || null;
-      const instruction =
-        (opts.instruction && opts.instruction.trim()) ||
-        document.getElementById("sceneInput").value.trim(); // Directly use the left description
+      const instruction = (opts.instruction && opts.instruction.trim()) || document.getElementById("sceneInput").value.trim();
 
       if (!instruction) {
-        alert("Please enter a description on the left first");
+        toast("warn","Missing prompt","Please enter a description first.");
         return;
       }
 
       interactionState.startedAt = performance.now();
       interactionState.lastInstruction = instruction;
-      if (triggerBtn) triggerBtn.disabled = true;
+
+      document.getElementById("btnEditJson").disabled = true;
+      setPill("model","warn","Calling...");
       status.textContent = "Calling model...";
-      setFeedbackBadge("Calling", "pending");
-      setFeedbackText("Converting natural language into scene JSON...");
-      setFeedbackList([
-        "Step 1/3: Parse prompt intent",
-        "Step 2/3: Build objects / edges",
-        "Step 3/3: Return and validate JSON"
+      preview.textContent = "Waiting for LLM response...";
+      setFeedback([
+        "Parsing prompt intent…",
+        "Building objects / edges…",
+        "Validating JSON…"
       ]);
-      preview.textContent = "Waiting for GPT response...";
 
       try {
         const res = await fetch("/edit_json", {
@@ -1252,109 +1101,68 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ instruction }),
         });
-
         const data = await res.json();
         if (!res.ok) {
           const msg = data.error || data.detail || "Edit failed";
+          setPill("model","err","Failed");
           status.textContent = "Failed";
-          setFeedbackBadge("Failed", "warn");
-          setFeedbackText("Model call failed. Please check the prompt or backend logs.");
-          setFeedbackList([msg]);
           preview.textContent = msg;
-          if (!opts.silentError) alert(msg);
-          return { ok: false, error: msg };
+          toast("err","Model call failed", msg);
+          return { ok:false, error: msg };
         }
 
         const elapsed = Math.round(performance.now() - interactionState.startedAt);
-        const analysis = analyzeSceneJson(data.json);
+        const fallbackAnalysis = await getSceneGraphAnalysisFallback();
+        const analysis = fallbackAnalysis || analyzeSceneJson(data.json);
         interactionState.lastJson = data.json;
 
-        status.textContent = "Done";
         const pretty = JSON.stringify(data.json, null, 2);
-        preview.textContent = `Input: ${data.input}\nOutput: ${data.output}\n\n${pretty}`;
-        document.getElementById("metaObjects").textContent = analysis.objects;
-        document.getElementById("metaEdges").textContent = analysis.edges;
+        preview.textContent = pretty;
 
-        if (analysis.warnings.length) {
-          setFeedbackBadge(`Score ${analysis.score}`, "warn");
-          setFeedbackText(`JSON generated (${elapsed} ms), but improvements were detected.`);
-          setFeedbackList(analysis.warnings.slice(0, 4));
-        } else {
-          setFeedbackBadge(`Score ${analysis.score}`, "ok");
-          setFeedbackText(`JSON generated (${elapsed} ms), structure looks complete and ready to render.`);
-          setFeedbackList([
-            `Objects: ${analysis.objects}, edges: ${analysis.edges}`,
-            "For finer control, add more spatial constraints or relation details."
-          ]);
+        setMetrics(analysis);
+        document.getElementById("diagText").textContent = `Objects ${analysis.objects} • Edges ${analysis.edges} • Score ${analysis.score}`;
+        status.textContent = `Done (${elapsed} ms)`;
+        setPill("model","ok","Ready");
+
+        if (analysis.warnings.length){
+          setFeedback(analysis.warnings.slice(0, 6));
+          toast("warn","JSON generated with warnings", `${analysis.score}/100 • see diagnostics drawer`);
+        }else{
+          setFeedback([`JSON looks complete (${analysis.score}/100).`, "Tip: add more spatial constraints for finer control."]);
+          toast("ok","JSON generated", `${analysis.objects} objects • ${analysis.edges} edges • ${elapsed} ms`);
         }
 
-        return { ok: true, data, analysis, pretty, elapsed };
+        if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
+        return { ok:true, data, analysis, pretty, elapsed };
       } catch (err) {
         console.error(err);
+        setPill("model","err","Failed");
         status.textContent = "Failed";
-        setFeedbackBadge("Network Error", "warn");
-        setFeedbackText("Request failed. Please confirm the backend is reachable.");
-        setFeedbackList([String(err)]);
         preview.textContent = "Request failed";
-        if (!opts.silentError) alert("Request failed");
-        return { ok: false, error: String(err) };
+        setFeedback([String(err)]);
+        toast("err","Network error","Please confirm backend is reachable.");
+        return { ok:false, error: String(err) };
       } finally {
-        if (triggerBtn) triggerBtn.disabled = false;
+        document.getElementById("btnEditJson").disabled = false;
       }
     }
 
-    async function sendChatMessage() {
-      const sceneText = document.getElementById("sceneInput").value.trim();
-      if (!sceneText) {
-        alert("Please enter a description on the left first");
-        return;
-      }
-      appendChatMessage("user", sceneText);
-      document.getElementById("sceneInput").value = "";
-      updateInputMeta();
-      setTypingMessage();
-
-      const sendBtn = document.getElementById("editJsonFromConversationBtn");
-      sendBtn.disabled = true;
-      const composedInstruction = composeInstructionWithHistory(sceneText);
-      const result = await editJson({
-        instruction: composedInstruction,
-        btn: sendBtn,
-        silentError: true
-      });
-      clearTypingMessage();
-      sendBtn.disabled = false;
-
-      if (!result || !result.ok) {
-        appendChatMessage("assistant", "Request failed. Please check service status and try again.");
-        return;
-      }
-
-      const summary = `JSON generated: ${result.analysis.objects} objects, ${result.analysis.edges} edges, score ${result.analysis.score}.`;
-      appendChatMessage("assistant", summary + "\n\nThe JSON result modal is open. You can continue with follow-up edits.");
-      openJsonModal(result.pretty);
-      chatState.turns.push({ user: sceneText, assistant: summary });
-    }
-
-    // Backward compatibility
-    function editJsonFromConversation() {
-      sendChatMessage();
-    }
-
-    // Load Scene Graph file initially
+    /* ===== Wire events ===== */
     document.getElementById("sceneInput").addEventListener("input", updateInputMeta);
+    document.getElementById("imageInput").addEventListener("change", updateInputMeta);
+    document.getElementById("classDirPicker").addEventListener("change", updateInputMeta);
+
     document.getElementById("sceneInput").addEventListener("keydown", (evt) => {
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
-        sendChatMessage();
+        generateFromPrompt();
       }
     });
-    document.getElementById("imageInput").addEventListener("change", updateInputMeta);
-    document.getElementById("classDirPicker").addEventListener("change", updateInputMeta);
-    document.getElementById("jsonModal").addEventListener("click", (evt) => {
-      if (evt.target.id === "jsonModal") closeJsonModal();
-    });
+
     updateInputMeta();
+    setPill("model","", "Idle");
+    setPill("graph","", "Idle");
+    setPill("sim","", "Idle");
     loadSceneGraph();
   </script>
 </body>

@@ -816,7 +816,7 @@ def main() -> None:
     parser.add_argument(
         "--asset-root",
         type=Path,
-        default=Path("/home/lbw/Downloads/isaac-sim-standalone-5.0.0-linux-x86_64/manu_converted_wrapped"),
+        default=Path("/home/lbw/3dgen-project/scene_graph_ui_test/isaac_local/my_viewer/test_usd"),
         help="Root directory to search for USD files.",
     )
     parser.add_argument(
