@@ -33,8 +33,8 @@ This repo contains the scene graph web UI, the Real2Sim pipeline, and the Isaac 
 
 Active Real2Sim flow:
 
-1. `python pipelines/real2sim/segment_objects.py`
-2. `python pipelines/real2sim/predict_stream_client.py`
+1. `python pipelines/real2sim/object_segmentation_pipeline.py`
+2. `python pipelines/real2sim/streaming_generation_client.py`
 
 The web UI uses the async endpoints:
 

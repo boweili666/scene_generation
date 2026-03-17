@@ -44,5 +44,5 @@
 
 Current active Real2Sim flow:
 
-1. `pipelines/real2sim/segment_objects.py`
-2. `pipelines/real2sim/predict_stream_client.py`
+1. `pipelines/real2sim/object_segmentation_pipeline.py`
+2. `pipelines/real2sim/streaming_generation_client.py`

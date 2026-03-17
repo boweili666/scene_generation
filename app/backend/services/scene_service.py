@@ -35,7 +35,7 @@ from ..config import (
     SCENE_SERVICE_USD_DIR as CFG_SCENE_SERVICE_USD_DIR,
 )
 
-# Import pipelines/isaac/save_figure.py
+# Import pipelines/isaac/scene_renderer.py
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = Path(BASE_DIR).resolve()
 ISAAC_SCRIPT_DIR = PROJECT_ROOT / "pipelines" / "isaac"
@@ -47,7 +47,7 @@ for candidate in (THIS_DIR, ISAAC_SCRIPT_DIR):
 
 # pylint: disable=wrong-import-position
 from isaacsim import SimulationApp
-import save_figure as sf
+import scene_renderer as sf
 
 # Default paths aligned with this repo's config.py.
 DEFAULT_SCENE_GRAPH_PATH = str(CFG_SCENE_GRAPH_PATH)

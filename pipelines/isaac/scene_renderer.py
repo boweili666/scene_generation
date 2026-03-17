@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 from isaacsim import SimulationApp
 from PIL import Image
-from room_usd_builder import generate_room_usd_from_scene
+from room_shell_builder import generate_room_usd_from_scene
 
 SCENE_GRAPH_UI_ROOT = Path(__file__).resolve().parents[2]
 

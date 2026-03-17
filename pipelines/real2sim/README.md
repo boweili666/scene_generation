@@ -19,13 +19,13 @@ pip install torch transformers pillow numpy requests
 
 The active pipeline is only two executable steps:
 
-1. `segment_objects.py`
+1. `object_segmentation_pipeline.py`
    - reads the latest input image and scene graph
    - derives object prompts from the scene graph
    - writes masks to `runtime/real2sim/masks`
    - optionally reuses mesh files
 
-2. `predict_stream_client.py`
+2. `streaming_generation_client.py`
    - sends `image.png` plus masks to `/predict_stream`
    - streams back per-object GLBs, merged scene GLB, and poses JSON
    - writes outputs to `runtime/real2sim/scene_results`
@@ -34,8 +34,8 @@ The old top-view / relative-xy / arrange-from-csv workflow is no longer part of 
 
 ## Directory Layout
 
-- active step1: `segment_objects.py`
-- active step2: `predict_stream_client.py`
+- active step1: `object_segmentation_pipeline.py`
+- active step2: `streaming_generation_client.py`
 - runtime: `runtime/real2sim/`
 
 Default active output directories:
@@ -50,7 +50,7 @@ Default active output directories:
 
 ```bash
 cd /home/lbw/3dgen-project/scene_graph_ui_test
-python pipelines/real2sim/segment_objects.py \
+python pipelines/real2sim/object_segmentation_pipeline.py \
   --image runtime/uploads/latest_input.jpg \
   --scene-graph runtime/scene_graph/current_scene_graph.json \
   --output-root runtime/real2sim/masks \
@@ -70,7 +70,7 @@ Success criteria:
 ## Step2 Standalone Test
 
 ```bash
-python pipelines/real2sim/predict_stream_client.py \
+python pipelines/real2sim/streaming_generation_client.py \
   --server http://128.2.204.110:8000 \
   --image runtime/real2sim/masks/image.png \
   --mask-dir runtime/real2sim/masks \

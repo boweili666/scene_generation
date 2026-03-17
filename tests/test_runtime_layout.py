@@ -25,8 +25,14 @@ class RuntimeLayoutTest(unittest.TestCase):
         self.assertEqual(DEFAULT_PLACEMENTS_PATH.parent, RUNTIME_DIR / "scene_service" / "placements")
 
     def test_real2sim_scripts_use_current_flow(self) -> None:
-        self.assertEqual(Path(REAL2SIM_SEGMENT_SCRIPT), Path("pipelines/real2sim/segment_objects.py"))
-        self.assertEqual(Path(REAL2SIM_PREDICT_STREAM_CLIENT), Path("pipelines/real2sim/predict_stream_client.py"))
+        self.assertEqual(
+            Path(REAL2SIM_SEGMENT_SCRIPT),
+            Path("pipelines/real2sim/object_segmentation_pipeline.py"),
+        )
+        self.assertEqual(
+            Path(REAL2SIM_PREDICT_STREAM_CLIENT),
+            Path("pipelines/real2sim/streaming_generation_client.py"),
+        )
 
 
 if __name__ == "__main__":
