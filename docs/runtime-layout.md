@@ -9,10 +9,10 @@ The project now keeps mutable outputs out of source directories.
 - `runtime/scene_graph`: current scene graph JSON
 - `runtime/real2sim`: masks, meshes, GLBs, poses, intermediate pipeline outputs
 - `runtime/scene_service/usd`: generated USD scene files
+- `runtime/scene_service/placements`: persisted scene-service placements
 - `logs`: runtime log files
 
-## Compatibility
+## Entry Points
 
-- Legacy `server/*.py` entrypoints still work.
-- `server/config.py` and related modules forward to `app/backend/*`.
-- `scripts/migrate_runtime_layout.py` can seed the new layout from old paths.
+- Web app: `python -m app.backend.app`
+- Scene service: `python -m app.backend.services.scene_service`

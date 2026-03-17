@@ -6,9 +6,8 @@
 - `app/frontend`: active frontend shell, CSS, JS, vendor assets
 - `runtime`: mutable runtime artifacts
 - `logs`: mutable log files
-- `server`: compatibility wrappers for old entrypoints
-- `option2_pipeline`: legacy Real2Sim pipeline scripts
-- `isaac_local`: legacy Isaac scene building scripts
+- `pipelines/real2sim`: active Real2Sim pipeline scripts
+- `pipelines/isaac`: Isaac helper scripts and static USD assets
 
 ## Backend
 
@@ -37,5 +36,13 @@
 - `runtime/scene_graph/current_scene_graph.json`: active scene graph
 - `runtime/real2sim/*`: masks, meshes, GLBs, poses, intermediate artifacts
 - `runtime/scene_service/usd/*`: generated USD outputs
+- `runtime/scene_service/placements/placements_default.json`: persisted placements snapshot
 - `logs/real2sim.log`: Real2Sim streaming log
 - `logs/scene_service.log`: scene service process log
+
+## Real2Sim Flow
+
+Current active Real2Sim flow:
+
+1. `pipelines/real2sim/segment_objects.py`
+2. `pipelines/real2sim/predict_stream_client.py`

@@ -13,13 +13,11 @@ import numpy as np
 from PIL import Image
 
 
-DEFAULT_IMAGE_PATH = Path("../sam3/scene_60.jpeg")
-DEFAULT_SCENE_GRAPH = Path(
-    "/home/lbw/Downloads/isaac-sim-standalone-5.0.0-linux-x86_64/bowei/my_viewer/full_scene_graph.json"
-)
-DEFAULT_OUTPUT_ROOT = Path("option2_pipeline/runtime/masks")
-DEFAULT_MESH_OUTPUT = Path("option2_pipeline/runtime/meshes")
-DEFAULT_REUSE_MESH_DIR = Path("option2_pipeline/runtime/meshes")
+DEFAULT_IMAGE_PATH = Path("runtime/uploads/latest_input.jpg")
+DEFAULT_SCENE_GRAPH = Path("runtime/scene_graph/current_scene_graph.json")
+DEFAULT_OUTPUT_ROOT = Path("runtime/real2sim/masks")
+DEFAULT_MESH_OUTPUT = Path("runtime/real2sim/meshes")
+DEFAULT_REUSE_MESH_DIR = Path("runtime/real2sim/meshes")
 DEFAULT_RTS_SOURCE_DIR = Path("../scene60_mesh_rts")
 DEFAULT_SAM3D_URL = "http://128.2.204.116:8000/generate_mesh"
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
@@ -246,7 +244,7 @@ def main() -> None:
             rgba_crop = np.dstack((rgb_crop, alpha_crop))
 
             # Save only full-size RGBA masks into a single flat folder:
-            # option2_pipeline/runtime/masks/0.png, 1.png, 2.png, ...
+            # runtime/real2sim/masks/0.png, 1.png, 2.png, ...
             mask_path = args.output_root / f"{global_mask_idx}.png"
             Image.fromarray(rgba_full).save(mask_path)
 

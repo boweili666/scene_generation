@@ -10,16 +10,15 @@ from pathlib import Path
 from flask import jsonify, request, send_file, send_from_directory
 
 from ..config import (
-    BASE_DIR,
     DEFAULT_MODEL,
     DEFAULT_PLACEMENTS_PATH,
     DEFAULT_RENDER_PATH,
-    LEGACY_SCENE_GRAPH_PATH,
     LATEST_INPUT_IMAGE,
     LOG_PATH,
-    OPTION2_MASK_OUTPUT,
-    OPTION2_RUNTIME_DIR,
-    OPTION2_SCENE_RESULTS_DIR,
+    REAL2SIM_MASK_OUTPUT_DIR,
+    REAL2SIM_ROOT_DIR,
+    REAL2SIM_RUNTIME_DIR,
+    REAL2SIM_SCENE_RESULTS_DIR,
     SCENE_GRAPH_PATH,
     WEB_DIR,
 )
@@ -50,7 +49,7 @@ def _utcnow_iso() -> str:
 
 
 def _to_runtime_file_url(abs_path: Path) -> str | None:
-    runtime_root = Path(OPTION2_RUNTIME_DIR).resolve()
+    runtime_root = REAL2SIM_RUNTIME_DIR.resolve()
     target = abs_path.resolve()
     if target != runtime_root and runtime_root not in target.parents:
         return None
@@ -63,7 +62,7 @@ def _to_artifact_urls(artifacts: dict) -> dict:
     result = dict(artifacts)
     object_urls: list[str] = []
     for rel in artifacts.get("object_glbs", []):
-        p = Path(artifacts["option2_root_dir"]) / rel
+        p = Path(artifacts["real2sim_root_dir"]) / rel
         url = _to_runtime_file_url(p)
         if url:
             object_urls.append(url)
@@ -71,14 +70,14 @@ def _to_artifact_urls(artifacts: dict) -> dict:
 
     scene_glb = artifacts.get("scene_glb")
     if scene_glb:
-        scene_url = _to_runtime_file_url(Path(artifacts["option2_root_dir"]) / scene_glb)
+        scene_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / scene_glb)
         result["scene_glb_url"] = scene_url
     else:
         result["scene_glb_url"] = None
 
     poses_json = artifacts.get("poses_json")
     if poses_json:
-        poses_url = _to_runtime_file_url(Path(artifacts["option2_root_dir"]) / poses_json)
+        poses_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / poses_json)
         result["poses_json_url"] = poses_url
     else:
         result["poses_json_url"] = None
@@ -146,19 +145,19 @@ def _get_real2sim_job_status(job_id: str) -> dict | None:
         job = dict(base)
 
     payload = job.get("payload") or {}
-    option2_root = str(payload.get("option2_root_dir") or BASE_DIR)
-    scene_results_dir = str(payload.get("scene_results_dir") or OPTION2_SCENE_RESULTS_DIR)
-    live_artifacts = collect_scene_result_artifacts(option2_root, scene_results_dir)
+    real2sim_root = str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)
+    scene_results_dir = str(payload.get("scene_results_dir") or REAL2SIM_SCENE_RESULTS_DIR)
+    live_artifacts = collect_scene_result_artifacts(real2sim_root, scene_results_dir)
 
     merged_artifacts = dict(job.get("artifacts") or {})
-    merged_artifacts.setdefault("option2_root_dir", option2_root)
+    merged_artifacts.setdefault("real2sim_root_dir", real2sim_root)
     merged_artifacts.setdefault("scene_results_dir", scene_results_dir)
     merged_artifacts["object_glbs"] = live_artifacts.get("object_glbs", [])
     merged_artifacts["scene_glb"] = live_artifacts.get("scene_glb")
     merged_artifacts["poses_json"] = live_artifacts.get("poses_json")
 
-    mask_output = str(payload.get("mask_output") or OPTION2_MASK_OUTPUT)
-    masks_dir = (Path(option2_root).resolve() / Path(mask_output)).resolve()
+    mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
+    masks_dir = (Path(real2sim_root).resolve() / Path(mask_output)).resolve()
     expected_objects = None
     if masks_dir.exists() and masks_dir.is_dir():
         expected_objects = len(
@@ -210,12 +209,7 @@ def _get_real2sim_job_status(job_id: str) -> dict | None:
 
 
 def _write_scene_graph(scene_graph_json):
-    with open(SCENE_GRAPH_PATH, "w", encoding="utf-8") as f:
-        json.dump(scene_graph_json, f, indent=2)
-    legacy_parent = Path(LEGACY_SCENE_GRAPH_PATH).parent
-    legacy_parent.mkdir(parents=True, exist_ok=True)
-    with open(LEGACY_SCENE_GRAPH_PATH, "w", encoding="utf-8") as f:
-        json.dump(scene_graph_json, f, indent=2)
+    write_json_file(Path(SCENE_GRAPH_PATH), scene_graph_json)
 
 
 def _handle_edit_json(payload):
@@ -292,7 +286,7 @@ def register_routes(app):
 
     @app.route("/runtime_file/<path:relpath>")
     def runtime_file(relpath):
-        runtime_root = Path(OPTION2_RUNTIME_DIR).resolve()
+        runtime_root = REAL2SIM_RUNTIME_DIR.resolve()
         target = (runtime_root / relpath).resolve()
         if target != runtime_root and runtime_root not in target.parents:
             return jsonify({"error": "Invalid runtime file path"}), 400
@@ -346,45 +340,6 @@ def register_routes(app):
         if err_json:
             return err_json, status
         return jsonify(resp)
-
-    @app.route("/real2sim")
-    def real2sim():
-        try:
-            result = run_real2sim()
-            return jsonify({"status": "ok", "artifacts": _to_artifact_urls(result)})
-        except ValueError as e:
-            return jsonify({"status": "error", "msg": str(e)}), 400
-        except subprocess.TimeoutExpired:
-            return jsonify({"status": "error", "msg": "SAM3 segmentation timed out"}), 500
-        except subprocess.CalledProcessError as e:
-            log_pipeline_failure(e)
-            return jsonify(
-                {
-                    "status": "error",
-                    "msg": "SAM3 segmentation failed",
-                    "detail": e.stderr,
-                }
-            ), 500
-
-    @app.route("/real2sim_option2", methods=["POST"])
-    def real2sim_option2():
-        payload = request.json or {}
-        try:
-            result = run_real2sim(payload)
-            return jsonify({"status": "ok", "artifacts": _to_artifact_urls(result), "mode": "sam3-segmentation-plus-glb"})
-        except ValueError as e:
-            return jsonify({"status": "error", "msg": str(e)}), 400
-        except subprocess.TimeoutExpired:
-            return jsonify({"status": "error", "msg": "SAM3 segmentation timed out"}), 500
-        except subprocess.CalledProcessError as e:
-            log_pipeline_failure(e)
-            return jsonify(
-                {
-                    "status": "error",
-                    "msg": "SAM3 segmentation failed",
-                    "detail": e.stderr,
-                }
-            ), 500
 
     @app.route("/real2sim/start", methods=["POST"])
     def real2sim_start():

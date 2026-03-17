@@ -1292,13 +1292,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--json",
         type=Path,
-        default=SCENE_GRAPH_UI_ROOT / "isaac_local" / "my_viewer" / "full_scene_graph.json",
+        default=SCENE_GRAPH_UI_ROOT / "runtime" / "scene_graph" / "current_scene_graph.json",
         help="Path to the scene-graph JSON file.",
     )
     parser.add_argument(
         "--asset-root",
         type=Path,
-        default=SCENE_GRAPH_UI_ROOT / "isaac_local" / "my_viewer" / "test_usd",
+        default=SCENE_GRAPH_UI_ROOT / "pipelines" / "isaac" / "assets",
         help="Root directory to search for USD files.",
     )
     parser.add_argument(

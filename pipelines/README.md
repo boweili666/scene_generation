@@ -2,10 +2,9 @@
 
 This directory is the normalized home for pipeline documentation.
 
-Current executable pipeline code remains in legacy locations to avoid breaking runtime behavior:
+Executable pipeline code now lives here:
 
-- Real2Sim scripts: `option2_pipeline/`
-- Isaac scene scripts: `isaac_local/scripts/`
+- Real2Sim scripts: `pipelines/real2sim/`
+- Isaac helper scripts: `pipelines/isaac/`
 
-The runtime and tests have already been moved to the new `runtime/` and `logs/` layout.
-Future cleanup can physically relocate the legacy scripts after external callers are updated.
+Runtime artifacts stay under `runtime/` and logs under `logs/`.

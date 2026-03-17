@@ -9,16 +9,16 @@ from datetime import datetime
 from ..config import (
     LATEST_INPUT_IMAGE,
     LOG_PATH,
-    OPTION2_MASK_OUTPUT,
-    OPTION2_MESH_OUTPUT_DIR,
-    OPTION2_SCENE_RESULTS_DIR,
-    OPTION2_REUSE_MESH_DIR,
-    OPTION2_ROOT_DIR,
-    OPTION2_STEP1_SEGMENT_SCRIPT,
     PREDICT_STREAM_SERVER,
+    REAL2SIM_MASK_OUTPUT_DIR,
+    REAL2SIM_MESH_OUTPUT_DIR,
+    REAL2SIM_ROOT_DIR,
+    REAL2SIM_REUSE_MESH_DIR,
+    REAL2SIM_SCENE_RESULTS_DIR,
+    REAL2SIM_SEGMENT_SCRIPT,
+    REAL2SIM_PREDICT_STREAM_CLIENT,
     SCENE_GRAPH_PATH,
     SAM3_PYTHON,
-    SEND_MASKS_TO_PREDICT_SCRIPT,
 )
 
 
@@ -220,8 +220,8 @@ def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
     return deduped
 
 
-def collect_scene_result_artifacts(option2_root: str, scene_results_dir: str) -> dict:
-    root = Path(option2_root).resolve()
+def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -> dict:
+    root = Path(real2sim_root).resolve()
     results_root = (root / Path(scene_results_dir)).resolve()
     objects_dir = results_root / "objects"
 
@@ -265,8 +265,8 @@ def collect_scene_result_artifacts(option2_root: str, scene_results_dir: str) ->
 
 def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict:
     payload = payload or {}
-    option2_root = Path(str(payload.get("option2_root_dir") or OPTION2_ROOT_DIR)).resolve()
-    option2_root.mkdir(parents=True, exist_ok=True)
+    real2sim_root = Path(str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)).resolve()
+    real2sim_root.mkdir(parents=True, exist_ok=True)
 
     image_path = str(payload.get("image_path") or LATEST_INPUT_IMAGE)
     scene_graph_path = str(payload.get("scene_graph_path") or SCENE_GRAPH_PATH)
@@ -293,22 +293,22 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     if not Path(scene_graph_path).exists():
         raise ValueError(f"Scene graph not found: {scene_graph_path}. Generate scene graph first.")
 
-    mask_output = str(payload.get("mask_output") or OPTION2_MASK_OUTPUT)
-    mesh_output_dir = str(payload.get("mesh_output_dir") or OPTION2_MESH_OUTPUT_DIR)
-    reuse_mesh_dir = str(payload.get("reuse_mesh_dir") or OPTION2_REUSE_MESH_DIR)
+    mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
+    mesh_output_dir = str(payload.get("mesh_output_dir") or REAL2SIM_MESH_OUTPUT_DIR)
+    reuse_mesh_dir = str(payload.get("reuse_mesh_dir") or REAL2SIM_REUSE_MESH_DIR)
     sam3d_url = str(payload.get("sam3d_url") or "http://128.2.204.116:8000/generate_mesh")
     sam3_python = str(payload.get("sam3_python") or SAM3_PYTHON)
     predict_stream_server = str(payload.get("predict_stream_server") or PREDICT_STREAM_SERVER)
-    scene_results_dir = str(payload.get("scene_results_dir") or OPTION2_SCENE_RESULTS_DIR)
+    scene_results_dir = str(payload.get("scene_results_dir") or REAL2SIM_SCENE_RESULTS_DIR)
 
-    (option2_root / Path(mask_output)).mkdir(parents=True, exist_ok=True)
-    (option2_root / Path(mesh_output_dir)).mkdir(parents=True, exist_ok=True)
-    (option2_root / Path(scene_results_dir)).mkdir(parents=True, exist_ok=True)
+    (real2sim_root / Path(mask_output)).mkdir(parents=True, exist_ok=True)
+    (real2sim_root / Path(mesh_output_dir)).mkdir(parents=True, exist_ok=True)
+    (real2sim_root / Path(scene_results_dir)).mkdir(parents=True, exist_ok=True)
 
     step1_cmd = [
         sam3_python,
         "-u",
-        OPTION2_STEP1_SEGMENT_SCRIPT,
+        REAL2SIM_SEGMENT_SCRIPT,
         "--image",
         image_path,
         "--scene-graph",
@@ -329,20 +329,20 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         step1_cmd,
         timeout=1800,
         label="sam3_segment_objects_only",
-        cwd=str(option2_root),
+        cwd=str(real2sim_root),
         job_id=job_id,
     )
 
-    masks_dir_abs = (option2_root / Path(mask_output)).resolve()
+    masks_dir_abs = (real2sim_root / Path(mask_output)).resolve()
     image_png_abs = (masks_dir_abs / "image.png").resolve()
     if not image_png_abs.exists():
         raise ValueError(f"Expected segmented image not found: {image_png_abs}")
 
-    scene_results_abs = (option2_root / Path(scene_results_dir)).resolve()
+    scene_results_abs = (real2sim_root / Path(scene_results_dir)).resolve()
     step2_cmd = [
         sam3_python,
         "-u",
-        SEND_MASKS_TO_PREDICT_SCRIPT,
+        REAL2SIM_PREDICT_STREAM_CLIENT,
         "--server",
         predict_stream_server,
         "--image",
@@ -356,11 +356,11 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         step2_cmd,
         timeout=7200,
         label="predict_stream_generate_glbs",
-        cwd=str(option2_root),
+        cwd=str(real2sim_root),
         job_id=job_id,
     )
 
-    scene_artifacts = collect_scene_result_artifacts(str(option2_root), scene_results_dir)
+    scene_artifacts = collect_scene_result_artifacts(str(real2sim_root), scene_results_dir)
     log_real2sim_event(
         "Real2Sim artifacts ready: "
         f"{len(scene_artifacts.get('object_glbs', []))} object GLB(s), "
@@ -370,7 +370,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
 
     return {
         "mode": "sam3-segmentation-plus-glb",
-        "option2_root_dir": str(option2_root),
+        "real2sim_root_dir": str(real2sim_root),
         "image_path": image_path,
         "scene_graph_path": scene_graph_path,
         "prompts": prompts,
@@ -379,10 +379,6 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         "predict_stream_server": predict_stream_server,
         **scene_artifacts,
     }
-
-
-def run_real2sim_option2(payload: dict | None = None) -> dict:
-    return run_real2sim(payload)
 
 
 def log_pipeline_failure(error: subprocess.CalledProcessError) -> None:

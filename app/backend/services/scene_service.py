@@ -2,7 +2,7 @@
 FastAPI service wrapper: keep Isaac Sim alive and rebuild/sample scenes on demand
 without restarting the simulator each time.
 Run example:
-    python server/scene_service.py --host 0.0.0.0 --port 8001 --headless
+    python -m app.backend.services.scene_service --host 0.0.0.0 --port 8001 --headless
 Request example:
     curl -X POST http://localhost:8001/scene \
          -H "Content-Type: application/json" \
@@ -30,13 +30,15 @@ from ..config import (
     DEFAULT_PLACEMENTS_PATH as CFG_DEFAULT_PLACEMENTS_PATH,
     DEFAULT_RENDER_PATH as CFG_DEFAULT_RENDER_PATH,
     GENMESH_ROOT as CFG_GENMESH_ROOT,
+    ISAAC_ASSET_ROOT as CFG_ISAAC_ASSET_ROOT,
     SCENE_GRAPH_PATH as CFG_SCENE_GRAPH_PATH,
+    SCENE_SERVICE_USD_DIR as CFG_SCENE_SERVICE_USD_DIR,
 )
 
-# Import isaac_local/scripts/save_figure.py
+# Import pipelines/isaac/save_figure.py
 THIS_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = Path(BASE_DIR).resolve()
-ISAAC_SCRIPT_DIR = PROJECT_ROOT / "isaac_local" / "scripts"
+ISAAC_SCRIPT_DIR = PROJECT_ROOT / "pipelines" / "isaac"
 import sys
 
 for candidate in (THIS_DIR, ISAAC_SCRIPT_DIR):
@@ -62,7 +64,7 @@ class SceneRequest(BaseModel):
         None, description="Inline scene graph object; provide either this or scene_graph_path."
     )
     asset_root: str = Field(
-        default="/home/lbw/3dgen-project/scene_graph_ui_test/isaac_local/my_viewer/test_usd",
+        default=str(CFG_ISAAC_ASSET_ROOT),
         description="USD asset root directory for matching object names.",
     )
     plane_size: float = 10.0
@@ -428,11 +430,7 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         if req.generate_room:
             # Use a unique per-request path to avoid USD layer identifier cache collisions.
             room_usd_path = (
-                PROJECT_ROOT
-                / "isaac_local"
-                / "my_viewer"
-                / "runtime"
-                / "generated_rooms"
+                Path(CFG_SCENE_SERVICE_USD_DIR)
                 / f"generated_room.scene_service.{time.time_ns()}.usd"
             )
             room_texture_dir = PROJECT_ROOT / "third_party" / "stable_material"
