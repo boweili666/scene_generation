@@ -1,23 +1,16 @@
-import os
-
-from flask import Flask
-
-try:
-    from .config import WEB_DIR
-    from .routes import register_routes
-except ImportError:
-    from config import WEB_DIR
-    from routes import register_routes
+from pathlib import Path
+import sys
 
 
-app = Flask(
-    __name__,
-    static_folder=os.path.join(WEB_DIR, "assets"),
-    static_url_path="/assets",
-)
-register_routes(app)
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.backend.app import app
 
 
 if __name__ == "__main__":
+    import os
+
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)

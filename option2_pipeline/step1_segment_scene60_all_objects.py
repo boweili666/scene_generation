@@ -200,14 +200,14 @@ def main() -> None:
     args.mesh_output_dir.mkdir(parents=True, exist_ok=True)
     runtime_dir = args.output_root.parent
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    image.save(args.output_root / "image.png")
 
     total_masks = 0
     total_meshes = 0
+    global_mask_idx = 0
 
     for prompt in prompts:
         prompt_key = normalize_label(prompt)
-        class_dir = args.output_root / prompt_key
-        class_dir.mkdir(parents=True, exist_ok=True)
         print(f"\n[SEGMENT] {prompt}")
 
         inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
@@ -245,34 +245,17 @@ def main() -> None:
             alpha_crop = (mask_crop * 255).astype(np.uint8)
             rgba_crop = np.dstack((rgb_crop, alpha_crop))
 
-            mask_img = (mask * 255).astype(np.uint8)
-
-            instance_key = f"{prompt_key}_{saved_idx}"
-            mask_path = class_dir / f"{instance_key}.png"
-            rgba_full_path = class_dir / f"{instance_key}_rgba_fullsize.png"
-            rgba_crop_path = class_dir / f"{instance_key}_rgba_crop.png"
-
-            Image.fromarray(mask_img).save(mask_path)
-            Image.fromarray(rgba_full).save(rgba_full_path)
-            Image.fromarray(rgba_crop).save(rgba_crop_path)
-
-            if saved_idx == 0:
-                flat_rgba = runtime_dir / f"{prompt_key}_0_rgba.png"
-                flat_full = runtime_dir / f"{prompt_key}_0_rgba_fullsize.png"
-                flat_white = runtime_dir / f"{prompt_key}_0_rgba_whitebg.png"
-
-                Image.fromarray(rgba_crop).save(flat_rgba)
-                Image.fromarray(rgba_full).save(flat_full)
-
-                white_bg = np.full_like(image_np, 255, dtype=np.uint8)
-                white_bg[mask > 0] = image_np[mask > 0]
-                Image.fromarray(white_bg).save(flat_white)
+            # Save only full-size RGBA masks into a single flat folder:
+            # option2_pipeline/runtime/masks/0.png, 1.png, 2.png, ...
+            mask_path = args.output_root / f"{global_mask_idx}.png"
+            Image.fromarray(rgba_full).save(mask_path)
 
             total_masks += 1
             saved_idx += 1
+            global_mask_idx += 1
 
             print(
-                f"[SAVE] {mask_path} | bbox=({x_min},{y_min})-({x_max},{y_max})"
+                f"[SAVE] {mask_path} | prompt={prompt_key} | bbox=({x_min},{y_min})-({x_max},{y_max})"
             )
 
             if args.skip_sam3d:

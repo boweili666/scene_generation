@@ -28,12 +28,13 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   echo "[WARN] OPENAI_API_KEY is not set. OpenAI-dependent routes may fail."
 fi
 
-SCENE_LOG="$ROOT_DIR/scene_service.log"
+mkdir -p "$ROOT_DIR/logs" "$ROOT_DIR/runtime"
+SCENE_LOG="${SCENE_LOG:-$ROOT_DIR/logs/scene_service.log}"
 echo "[INFO] Starting scene service on ${SCENE_HOST}:${SCENE_PORT} (${SCENE_MODE})"
 if [[ "$SCENE_MODE" == "windowed" ]]; then
-  "$SCENE_PYTHON" server/scene_service.py --host "$SCENE_HOST" --port "$SCENE_PORT" --windowed >"$SCENE_LOG" 2>&1 &
+  "$SCENE_PYTHON" -m app.backend.services.scene_service --host "$SCENE_HOST" --port "$SCENE_PORT" --windowed >"$SCENE_LOG" 2>&1 &
 else
-  "$SCENE_PYTHON" server/scene_service.py --host "$SCENE_HOST" --port "$SCENE_PORT" --headless >"$SCENE_LOG" 2>&1 &
+  "$SCENE_PYTHON" -m app.backend.services.scene_service --host "$SCENE_HOST" --port "$SCENE_PORT" --headless >"$SCENE_LOG" 2>&1 &
 fi
 SCENE_PID=$!
 
@@ -66,4 +67,4 @@ if ! curl -fsS "http://${SCENE_HOST}:${SCENE_PORT}/health" >/dev/null 2>&1; then
 fi
 
 echo "[INFO] Starting Flask server on 0.0.0.0:${WEB_PORT}"
-PORT="$WEB_PORT" python server/server.py
+PORT="$WEB_PORT" python -m app.backend.app

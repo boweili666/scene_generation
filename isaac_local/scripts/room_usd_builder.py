@@ -114,6 +114,9 @@ def generate_room_usd_from_scene(
     output_usd: Path,
     floor_z: float = 0.0,
     include_ceiling: bool = False,
+    include_back_wall: bool = True,
+    include_left_wall: bool = True,
+    include_right_wall: bool = True,
     include_front_wall: bool = False,
     texture_dir: Optional[Path] = None,
 ) -> Path:
@@ -202,46 +205,49 @@ def generate_room_usd_from_scene(
     )
 
     # Back wall (x = -half_l)
-    _add_quad(
-        stage,
-        "/World/Room/back_wall",
-        [
-            (-half_l, -half_w, z0),
-            (-half_l, half_w, z0),
-            (-half_l, half_w, z1),
-            (-half_l, -half_w, z1),
-        ],
-        color=wall_color,
-        material_path="/World/RoomLooks/WallMat",
-    )
+    if include_back_wall:
+        _add_quad(
+            stage,
+            "/World/Room/back_wall",
+            [
+                (-half_l, -half_w, z0),
+                (-half_l, half_w, z0),
+                (-half_l, half_w, z1),
+                (-half_l, -half_w, z1),
+            ],
+            color=wall_color,
+            material_path="/World/RoomLooks/WallMat",
+        )
 
     # Left wall (y = -half_w)
-    _add_quad(
-        stage,
-        "/World/Room/left_wall",
-        [
-            (-half_l, -half_w, z0),
-            (half_l, -half_w, z0),
-            (half_l, -half_w, z1),
-            (-half_l, -half_w, z1),
-        ],
-        color=wall_color,
-        material_path="/World/RoomLooks/WallMat",
-    )
+    if include_left_wall:
+        _add_quad(
+            stage,
+            "/World/Room/left_wall",
+            [
+                (-half_l, -half_w, z0),
+                (half_l, -half_w, z0),
+                (half_l, -half_w, z1),
+                (-half_l, -half_w, z1),
+            ],
+            color=wall_color,
+            material_path="/World/RoomLooks/WallMat",
+        )
 
     # Right wall (y = +half_w)
-    _add_quad(
-        stage,
-        "/World/Room/right_wall",
-        [
-            (-half_l, half_w, z0),
-            (half_l, half_w, z0),
-            (half_l, half_w, z1),
-            (-half_l, half_w, z1),
-        ],
-        color=wall_color,
-        material_path="/World/RoomLooks/WallMat",
-    )
+    if include_right_wall:
+        _add_quad(
+            stage,
+            "/World/Room/right_wall",
+            [
+                (-half_l, half_w, z0),
+                (half_l, half_w, z0),
+                (half_l, half_w, z1),
+                (-half_l, half_w, z1),
+            ],
+            color=wall_color,
+            material_path="/World/RoomLooks/WallMat",
+        )
 
     if include_front_wall:
         _add_quad(

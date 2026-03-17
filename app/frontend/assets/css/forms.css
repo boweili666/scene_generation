@@ -1,0 +1,177 @@
+    /* ===== Inputs ===== */
+    .label{
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      margin-bottom: 6px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 8px;
+    }
+    .hint{
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    textarea{
+      width: 100%;
+      min-height: 210px;
+      resize: vertical;
+      padding: 12px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(15,23,42,0.12);
+      background: #fbfcff;
+      font-size: 14px;
+      line-height: 1.55;
+      outline: none;
+      transition: box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    textarea:focus{
+      border-color: rgba(37,99,235,0.55);
+      box-shadow: 0 0 0 4px rgba(37,99,235,0.14);
+      background:#ffffff;
+    }
+
+    .row{
+      display:flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .file{
+      flex: 1 1 100%;
+      border: 1px dashed rgba(15,23,42,0.14);
+      background: var(--card-2);
+      border-radius: 14px;
+      padding: 10px;
+      display:flex;
+      flex-direction:column;
+      gap: 8px;
+    }
+    input[type="file"]{
+      width:100%;
+      font-size: 12px;
+      color: #334155;
+    }
+    input[type="file"]::file-selector-button{
+      border: 1px solid rgba(37,99,235,0.25);
+      background: rgba(37,99,235,0.08);
+      color: var(--brand-2);
+      padding: 6px 10px;
+      border-radius: 10px;
+      font-weight: 700;
+      cursor:pointer;
+      margin-right: 10px;
+    }
+    .upload-preview{
+      display:none;
+      gap: 10px;
+      align-items:flex-start;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: rgba(255,255,255,0.76);
+    }
+    .upload-preview.is-visible{
+      display:flex;
+    }
+    .upload-preview img{
+      width: 104px;
+      height: 104px;
+      object-fit: cover;
+      border-radius: 10px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: linear-gradient(180deg, #f8fbff, #edf3fb);
+      flex: 0 0 auto;
+    }
+    .upload-preview-meta{
+      min-width: 0;
+      display:flex;
+      flex-direction:column;
+      gap: 4px;
+      padding-top: 2px;
+    }
+    .upload-preview-meta b{
+      font-size: 12px;
+      color: #334155;
+      word-break: break-word;
+    }
+    .upload-preview-meta span{
+      font-size: 12px;
+      color: #64748b;
+      line-height: 1.45;
+    }
+
+    /* ===== Buttons ===== */
+    .btns{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    button{
+      border: none;
+      cursor: pointer;
+      padding: 10px 12px;
+      border-radius: 14px;
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.01em;
+      transition: transform 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
+    }
+    button:disabled{
+      opacity:0.55;
+      cursor:not-allowed;
+      transform:none;
+      box-shadow:none;
+    }
+    .btn-primary{
+      background: linear-gradient(135deg, var(--brand), var(--brand-2));
+      color: #fff;
+      box-shadow: 0 12px 26px rgba(37,99,235,0.22);
+    }
+    .btn-primary:hover{ transform: translateY(-1px); filter: saturate(1.05); }
+    .btn-secondary{
+      background: #f1f5ff;
+      color: #1e3a8a;
+      border: 1px solid rgba(37,99,235,0.18);
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .btn-secondary:hover{ transform: translateY(-1px); }
+
+    .btn-teal{
+      background: linear-gradient(135deg, #10b981, #059669);
+      color:#fff;
+      box-shadow: 0 12px 26px rgba(16,185,129,0.18);
+    }
+
+    .toolbar{
+      display:flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items:center;
+      justify-content:flex-start;
+    }
+    .toolbtn{
+      padding: 9px 11px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 800;
+      background: #ffffff;
+      border: 1px solid rgba(15,23,42,0.10);
+      color: #0f172a;
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .toolbtn:hover{ transform: translateY(-1px); }
+    .toolbtn.primary{
+      background: rgba(37,99,235,0.10);
+      border-color: rgba(37,99,235,0.22);
+      color: #1e3a8a;
+    }
+    .toolbtn.good{
+      background: rgba(16,185,129,0.10);
+      border-color: rgba(16,185,129,0.18);
+      color: #065f46;
+    }
+

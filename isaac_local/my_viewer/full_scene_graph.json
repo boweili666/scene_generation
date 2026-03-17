@@ -1,35 +1,222 @@
 {
-  "objects": [
-    {
-      "path": "/World/Table_0",
-      "class_name": "table",
-      "id": 0
+  "scene": {
+    "room_type": "home office",
+    "dimensions": {
+      "length": 3.5,
+      "width": 3.0,
+      "height": 2.6,
+      "unit": "m"
     },
-    {
-      "path": "/World/Chair_1",
-      "class_name": "chair",
-      "id": 1
-    },
-    {
-      "path": "/World/Lamp_2",
-      "class_name": "lamp",
-      "id": 2
+    "materials": {
+      "floor": "wood",
+      "walls": "painted drywall"
     }
-  ],
-  "edges": [
-    {
-      "source": "/World/Chair_1",
-      "source_name": "chair",
-      "target": "/World/Table_0",
-      "target_name": "table",
-      "relation": "left"
+  },
+  "obj": {
+    "//World/table_0": {
+      "id": 0,
+      "class": "table",
+      "caption": "wooden table"
     },
-    {
-      "source": "/World/Table_0",
-      "source_name": "table",
-      "target": "/World/Chair_1",
-      "target_name": "chair",
-      "relation": "right"
+    "//World/laptop_1": {
+      "id": 1,
+      "class": "laptop",
+      "caption": "open laptop centered"
+    },
+    "//World/headphones_2": {
+      "id": 2,
+      "class": "headphones",
+      "caption": "black over-ear headphones"
+    },
+    "//World/mug_3": {
+      "id": 3,
+      "class": "mug",
+      "caption": "white ceramic mug"
+    },
+    "//World/glass_4": {
+      "id": 4,
+      "class": "glass",
+      "caption": "glass with wooden lid"
+    },
+    "//World/mouse_5": {
+      "id": 5,
+      "class": "mouse",
+      "caption": "wireless mouse"
+    },
+    "//World/paper_roll_6": {
+      "id": 6,
+      "class": "paper_roll",
+      "caption": "white paper roll"
+    },
+    "//World/cable_7": {
+      "id": 7,
+      "class": "cable",
+      "caption": "white charging cable"
     }
-  ]
+  },
+  "edges": {
+    "obj-obj": [
+      {
+        "source": "//World/laptop_1",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/laptop_1",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/headphones_2",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/headphones_2",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/mug_3",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/mug_3",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/glass_4",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/glass_4",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/mouse_5",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/mouse_5",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/paper_roll_6",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/paper_roll_6",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/cable_7",
+        "target": "//World/table_0",
+        "relation": "supported by"
+      },
+      {
+        "source": "//World/table_0",
+        "target": "//World/cable_7",
+        "relation": "supports"
+      },
+      {
+        "source": "//World/headphones_2",
+        "target": "//World/mug_3",
+        "relation": "left"
+      },
+      {
+        "source": "//World/mug_3",
+        "target": "//World/headphones_2",
+        "relation": "right"
+      },
+      {
+        "source": "//World/mug_3",
+        "target": "//World/glass_4",
+        "relation": "left"
+      },
+      {
+        "source": "//World/glass_4",
+        "target": "//World/mug_3",
+        "relation": "right"
+      },
+      {
+        "source": "//World/glass_4",
+        "target": "//World/laptop_1",
+        "relation": "left"
+      },
+      {
+        "source": "//World/laptop_1",
+        "target": "//World/glass_4",
+        "relation": "right"
+      },
+      {
+        "source": "//World/laptop_1",
+        "target": "//World/mouse_5",
+        "relation": "left"
+      },
+      {
+        "source": "//World/mouse_5",
+        "target": "//World/laptop_1",
+        "relation": "right"
+      },
+      {
+        "source": "//World/mouse_5",
+        "target": "//World/paper_roll_6",
+        "relation": "left"
+      },
+      {
+        "source": "//World/paper_roll_6",
+        "target": "//World/mouse_5",
+        "relation": "right"
+      },
+      {
+        "source": "//World/cable_7",
+        "target": "//World/laptop_1",
+        "relation": "left"
+      },
+      {
+        "source": "//World/laptop_1",
+        "target": "//World/cable_7",
+        "relation": "right"
+      },
+      {
+        "source": "//World/headphones_2",
+        "target": "//World/mug_3",
+        "relation": "adjacent"
+      },
+      {
+        "source": "//World/mug_3",
+        "target": "//World/glass_4",
+        "relation": "adjacent"
+      },
+      {
+        "source": "//World/glass_4",
+        "target": "//World/laptop_1",
+        "relation": "adjacent"
+      },
+      {
+        "source": "//World/laptop_1",
+        "target": "//World/mouse_5",
+        "relation": "adjacent"
+      },
+      {
+        "source": "//World/mouse_5",
+        "target": "//World/paper_roll_6",
+        "relation": "adjacent"
+      },
+      {
+        "source": "//World/cable_7",
+        "target": "//World/laptop_1",
+        "relation": "adjacent"
+      }
+    ],
+    "obj-wall": []
+  }
 }

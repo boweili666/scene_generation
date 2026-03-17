@@ -1,0 +1,237 @@
+    /* ===== Graph ===== */
+    .graph-wrap{
+      flex: 1;
+      border-radius: 16px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background:
+        radial-gradient(600px 220px at 20% 10%, rgba(37,99,235,0.10), transparent 55%),
+        radial-gradient(500px 240px at 90% 10%, rgba(16,185,129,0.10), transparent 55%),
+        repeating-linear-gradient(0deg, rgba(148,163,184,0.12), rgba(148,163,184,0.12) 1px, transparent 1px, transparent 34px),
+        repeating-linear-gradient(90deg, rgba(148,163,184,0.12), rgba(148,163,184,0.12) 1px, transparent 1px, transparent 34px),
+        #ffffff;
+      overflow:hidden;
+      min-height: 420px;
+      position: relative;
+    }
+    #sceneGraph{
+      width:100%;
+      height:100%;
+    }
+    .graph-tip{
+      position:absolute;
+      right: 12px;
+      bottom: 12px;
+      font-size: 11px;
+      color: #475569;
+      background: rgba(255,255,255,0.86);
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 999px;
+      padding: 6px 10px;
+      pointer-events:none;
+    }
+
+    /* ===== Simulation ===== */
+    .imgbox{
+      flex: 1;
+      border-radius: 16px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: #ffffff;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      overflow:hidden;
+      position: relative;
+      min-height: 240px;
+    }
+    #threeViewport{
+      position: absolute;
+      inset: 0;
+      display: none;
+      background:
+        radial-gradient(circle at 50% 16%, rgba(255,255,255,0.96), rgba(255,255,255,0.72) 28%, rgba(226,236,252,0.58) 58%, rgba(210,223,244,0.82) 100%),
+        linear-gradient(180deg, #f8fbff 0%, #edf3fb 46%, #e2ebf8 100%);
+    }
+    #threeViewport canvas{
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+    }
+    .imgbox img{
+      width:100%;
+      height:100%;
+      object-fit: contain;
+      display:none;
+      background:#fff;
+    }
+    .imgbox .empty{
+      color: #64748b;
+      font-size: 13px;
+      padding: 24px;
+      text-align:center;
+    }
+
+    .codebox{
+      background: #0b1220;
+      color: #dbe7ff;
+      border-radius: 16px;
+      border: 1px solid rgba(148,163,184,0.18);
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.5;
+      max-height: 220px;
+      overflow:auto;
+      white-space: pre-wrap;
+    }
+    .progress-card{
+      border: 1px solid rgba(15,23,42,0.08);
+      background: #f8fbff;
+      border-radius: 14px;
+      padding: 10px;
+    }
+    .progress-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: #334155;
+      margin-bottom: 8px;
+    }
+    .progress-bar{
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #e5edf8;
+      overflow: hidden;
+      border: 1px solid rgba(37,99,235,0.12);
+    }
+    .progress-fill{
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #10b981);
+      transition: width 200ms ease;
+    }
+    .progress-meta{
+      margin-top: 8px;
+      font-size: 12px;
+      color: #64748b;
+    }
+
+    /* ===== Drawer ===== */
+    .drawer{
+      margin-top: 16px;
+      border-radius: var(--radius);
+      overflow:hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      background: #fff;
+    }
+    .drawer-head{
+      padding: 12px 14px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      cursor: pointer;
+      user-select:none;
+      background: linear-gradient(180deg, rgba(251,252,255,1), rgba(248,250,255,1));
+      border-bottom: 1px solid rgba(15,23,42,0.06);
+    }
+    .drawer-head .left{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+    }
+    .chev{
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      border: 1px solid rgba(15,23,42,0.10);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:#334155;
+      background:#fff;
+    }
+    .drawer-head h3{
+      margin:0;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color:#334155;
+    }
+    .drawer-head .right{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      flex-wrap: wrap;
+      justify-content:flex-end;
+    }
+    .drawer-body{
+      padding: 14px;
+      display:none;
+      gap: 12px;
+    }
+    .drawer.open .drawer-body{ display:grid; }
+    .drawer-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    /* ===== Toast ===== */
+    .toasts{
+      position: fixed;
+      right: 16px;
+      top: 82px;
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+      z-index: 99;
+      pointer-events:none;
+    }
+    .toast{
+      pointer-events:none;
+      width: min(360px, calc(100vw - 32px));
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 16px;
+      box-shadow: var(--shadow-2);
+      padding: 10px 12px;
+      display:flex;
+      gap: 10px;
+      align-items:flex-start;
+      backdrop-filter: blur(10px);
+      animation: toastIn 180ms ease-out;
+    }
+    @keyframes toastIn{
+      from{ transform: translateY(-6px); opacity: 0; }
+      to{ transform: translateY(0); opacity: 1; }
+    }
+    .toast .ico{
+      width: 28px; height: 28px;
+      border-radius: 12px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      color:#fff;
+      font-weight: 900;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    .toast .ico.ok{ background: var(--green); }
+    .toast .ico.warn{ background: var(--amber); }
+    .toast .ico.err{ background: var(--red); }
+    .toast .ico.info{ background: var(--brand); }
+    .toast .txt{
+      display:flex;
+      flex-direction:column;
+      gap: 2px;
+      min-width:0;
+    }
+    .toast .txt b{ font-size: 13px; color: var(--text); }
+    .toast .txt span{ font-size: 12px; color: var(--muted); line-height: 1.35; }
+

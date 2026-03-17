@@ -45,18 +45,18 @@ def validate_and_prepare_scene_graph(data: Dict) -> Dict:
     Validate and prepare the single accepted scene-graph schema:
     {
       "scene": {...},
-      "obj": [ {"usd_path": "...", ...}, ... ],
+      "obj": {"/World/Foo_0": {...}, ...},
       "edges": {"obj-obj": [...], "obj-wall": [...]}
     }
-    Returns a copy where `obj` is converted to a dict keyed by prim path for internal use.
+    `obj` must be a dict keyed by prim path.
     """
     if not isinstance(data, dict):
         raise ValueError("Scene graph must be a JSON object.")
     if not isinstance(data.get("scene"), dict):
         raise ValueError("Scene graph must contain a 'scene' object.")
-    obj_list = data.get("obj")
-    if not isinstance(obj_list, list):
-        raise ValueError("Scene graph must contain 'obj' as a list.")
+    obj_map_raw = data.get("obj")
+    if not isinstance(obj_map_raw, dict):
+        raise ValueError("Scene graph must contain 'obj' as a dict keyed by usd path.")
     edges = data.get("edges")
     if not isinstance(edges, dict):
         raise ValueError("Scene graph must contain 'edges' as an object.")
@@ -64,13 +64,13 @@ def validate_and_prepare_scene_graph(data: Dict) -> Dict:
         raise ValueError("Scene graph edges must include list fields: 'obj-obj' and 'obj-wall'.")
 
     obj_map: Dict[str, Dict] = {}
-    for item in obj_list:
-        if not isinstance(item, dict):
-            raise ValueError("Each item in 'obj' must be an object.")
-        prim = item.get("usd_path")
+    for prim, item in obj_map_raw.items():
         if not isinstance(prim, str) or not prim:
-            raise ValueError("Each object must contain a non-empty 'usd_path' string.")
+            raise ValueError("Each key in 'obj' must be a non-empty usd path string.")
+        if not isinstance(item, dict):
+            raise ValueError("Each value in 'obj' must be an object.")
         meta = dict(item)
+        meta.setdefault("usd_path", prim)
         meta.setdefault("class", item.get("class") or item.get("caption") or Path(prim).name)
         obj_map[prim] = meta
 
@@ -198,6 +198,7 @@ def build_stage_from_entries(
     save_usd: Optional[Path],
     plane_size: float,
     plane_height: float,
+    default_ground_z_offset: float = 0.0,
     asset_match_lookup: Optional[Dict[str, Path]] = None,
     room_usd: Optional[Path] = None,
     use_default_ground: bool = True,
@@ -217,13 +218,16 @@ def build_stage_from_entries(
     if room_usd and room_usd.exists():
         add_reference_to_stage(str(room_usd), "/World/GeneratedRoom")
         print(f"[ROOM] referenced room USD: {room_usd}")
-    elif use_default_ground:
-        # Use Isaac Sim World helper to add a physics-ready ground plane.
+
+    if use_default_ground:
+        # Use Isaac Sim default ground plane style and allow a slight Z offset.
         from isaacsim.core.api import World
 
         world_for_ground = World(stage_units_in_meters=1.0)
-        world_for_ground.scene.add_default_ground_plane(z_position=plane_height)
-    else:
+        world_for_ground.scene.add_default_ground_plane(
+            z_position=plane_height + float(default_ground_z_offset)
+        )
+    elif not (room_usd and room_usd.exists()):
         _add_ground_plane(stage, plane_size, plane_height)
     _add_default_lighting(stage)
 

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Scene Intelligence — AI Product UI</title>
+
+  <link rel="stylesheet" href="/assets/css/base.css"/>
+  <link rel="stylesheet" href="/assets/css/forms.css"/>
+  <link rel="stylesheet" href="/assets/css/panels.css"/>
+  <link rel="stylesheet" href="/assets/css/responsive.css"/>
+</head>
+
+<body>
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="logo"></div>
+        <div class="brand-text">
+          <div class="title">Scene Intelligence</div>
+          <div class="subtitle">LLM → Scene Graph → Real2Sim / Isaac</div>
+        </div>
+      </div>
+
+      <div class="status-row">
+        <div class="pill"><span class="dot" id="dotModel"></span><strong>Model</strong> <span id="statusModel">Idle</span></div>
+        <div class="pill"><span class="dot" id="dotGraph"></span><strong>Graph</strong> <span id="statusGraph">Idle</span></div>
+        <div class="pill"><span class="dot" id="dotSim"></span><strong>Sim</strong> <span id="statusSim">Idle</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="grid">
+
+      <!-- Left Column: Prompt + Inputs -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Prompt</h2>
+          <div class="meta">
+            <span class="kpi"><b id="metaChars">0</b> chars</span>
+            <span class="kpi"><b id="metaTok">0</b> tok</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <div class="label">
+              Describe the scene
+              <span class="hint">Use objects + relations (left/right/front/near/on)</span>
+            </div>
+            <textarea id="sceneInput" placeholder='e.g. "A table in the center. A chair is to the left of the table. A lamp is near the wall."'></textarea>
+          </div>
+
+          <div class="file">
+            <div class="label">Reference Image (Optional) <span class="hint" id="uploadStatus">Using text</span></div>
+            <input id="imageInput" type="file" accept="image/*"/>
+            <div class="upload-preview" id="imagePreview">
+              <img id="imagePreviewImg" alt="Reference preview"/>
+              <div class="upload-preview-meta">
+                <b id="imagePreviewName">No image selected</b>
+                <span id="imagePreviewMeta">Choose an image to preview it here.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="file">
+            <div class="label">Class Names Folder (Optional) <span class="hint" id="classStatus">No folder selected</span></div>
+            <input id="classDirPicker" type="file" webkitdirectory multiple />
+          </div>
+
+          <div class="btns">
+            <button class="btn-primary" id="btnGenerate" onclick="generateFromPrompt()">Generate Graph</button>
+            <button class="btn-secondary" id="btnEditJson" onclick="editJson()">Edit JSON (LLM)</button>
+          </div>
+
+          <div class="toolbar">
+            <button class="toolbtn good" id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
+            <button class="toolbtn primary" onclick="callSceneService('scene')">Edit Scene</button>
+            <button class="toolbtn primary" onclick="callSceneService('scene_new')">Resample</button>
+          </div>
+
+          <div class="row">
+            <span class="kpi">Objects: <b id="metaObjects">-</b></span>
+            <span class="kpi">Edges: <b id="metaEdges">-</b></span>
+            <span class="kpi">Score: <b id="metaScore">-</b></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center Column: Graph -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Scene Graph</h2>
+          <div class="meta">
+            <span class="kpi">Tip: <b>Click node</b> to focus</span>
+          </div>
+        </div>
+        <div class="card-body" style="padding:14px;">
+          <div class="graph-wrap">
+            <div id="sceneGraph"></div>
+            <div class="graph-tip">Scroll / drag • Click node to focus</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Simulation -->
+      <div class="card col-right">
+        <div class="card-header">
+          <h2>Simulation Preview</h2>
+          <div class="meta">
+            <span class="kpi"><b id="sceneSvcStatus">Idle</b></span>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div class="imgbox">
+            <div id="threeViewport"></div>
+            <img id="renderImage" src="/render_image" alt="render"/>
+            <div class="empty" id="imagePlaceholder">
+              No render yet. Run <b>Real2Sim</b> or <b>Scene Service</b> to refresh the preview.
+            </div>
+          </div>
+
+          <div class="progress-card" id="simProgressCard">
+            <div class="progress-head">
+              <span id="simProgressTitle">Generation Progress</span>
+              <b id="simProgressPct">0%</b>
+            </div>
+            <div class="progress-bar">
+              <div class="progress-fill" id="simProgressFill"></div>
+            </div>
+            <div class="progress-meta" id="simProgressMeta">Waiting...</div>
+          </div>
+
+          <div>
+            <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
+            <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
+          </div>
+
+          <div>
+            <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
+            <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Drawer: JSON + Diagnostics -->
+    <div class="drawer" id="drawer">
+      <div class="drawer-head" onclick="toggleDrawer()">
+        <div class="left">
+          <div class="chev" id="chev">▾</div>
+          <h3>JSON & Diagnostics</h3>
+        </div>
+        <div class="right">
+          <span id="jsonStatus">Idle</span>
+          <span>•</span>
+          <span id="diagText">No diagnostics yet</span>
+        </div>
+      </div>
+      <div class="drawer-body">
+        <div class="drawer-grid">
+          <div>
+            <div class="label">Generated / Edited JSON <span class="hint">Preview</span></div>
+            <div class="codebox" id="jsonPreview">Waiting for result...</div>
+          </div>
+          <div>
+            <div class="label">Hints <span class="hint">Quality feedback</span></div>
+            <div class="codebox" id="feedbackBox">-</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/js/state.js"></script>
+  <script src="/assets/js/ui.js"></script>
+  <script src="/assets/js/graph.js"></script>
+  <script src="/assets/js/sim.js"></script>
+  <script src="/assets/js/model.js"></script>
+  <script src="/assets/js/boot.js"></script>
+</body>
+</html>

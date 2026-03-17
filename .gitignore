@@ -1,6 +1,13 @@
 genmesh/
 outputs/
 option2_pipeline/runtime/
+isaac_local/my_viewer/runtime/generated_rooms/
+runtime/
+logs/
+isaac_local/my_viewer/generated_room.scene_service*.usd
+*.glb
+*.usd
+*.log
 
 # Python cache
 __pycache__/
