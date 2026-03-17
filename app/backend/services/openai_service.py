@@ -2,15 +2,18 @@ import base64
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
-from openai import OpenAI
+try:
+    from openai import OpenAI
+except ModuleNotFoundError:  # pragma: no cover - exercised indirectly in local test envs
+    OpenAI = None  # type: ignore[assignment]
 
 from ..config import DEFAULT_MODEL
 
 
-client = OpenAI()
 SCENE_GRAPH_MODEL = os.getenv("SCENE_GRAPH_MODEL", "gpt-5")
+client: Optional[Any] = None
 
 SYSTEM_PROMPT = r"""
 You are an expert in 3D Scene Graph Construction.
@@ -41,11 +44,15 @@ OBJECT RULES
 2. Do NOT invent objects.
 3. Exclude room, floor, ceiling, walls.
 4. Assign unique integer IDs starting from 0.
-5. Use `obj` as a dictionary keyed by USD path:
-   "/World/<ClassName>_<ID>": { ... }
-6. Class names must be lowercase.
-7. Caption max 6 words.
-8. You may infer implicit object-object pairing relations from common priors when strongly plausible.
+5. Return objects in an `objects` array.
+6. Each object must include:
+   - `path`: "/World/<ClassName>_<ID>"
+   - `id`: integer ID
+   - `class`: lowercase class name
+   - `caption`: short caption
+7. Class names must be lowercase.
+8. Caption max 6 words.
+9. You may infer implicit object-object pairing relations from common priors when strongly plausible.
    Example: chair and table are typically "face to" and "adjacent" unless explicitly contradicted.
 
 --------------------------------
@@ -105,8 +112,8 @@ RELATION CONSTRAINTS
    - Physically impossible relations
 5. Implicit relations from priors must remain conservative and consistent with explicit text.
 6. Edge endpoints must use object prim-path strings exactly.
-   - `source` and `target` in `edges.obj-obj` MUST be keys from `obj`.
-   - `source` in `edges.obj-wall` MUST be a key from `obj`.
+   - `source` and `target` in `edges.obj-obj` MUST be values from `objects[*].path`.
+   - `source` in `edges.obj-wall` MUST be a value from `objects[*].path`.
    - NEVER use numeric ids (e.g. "1", 1) as edge endpoints.
 
 --------------------------------
@@ -150,16 +157,17 @@ SCHEMA = {
             "required": ["room_type", "dimensions", "materials"],
             "additionalProperties": False,
         },
-        "obj": {
-            "type": "object",
-            "additionalProperties": {
+        "objects": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "properties": {
+                    "path": {"type": "string"},
                     "id": {"type": "integer", "minimum": 0},
                     "class": {"type": "string"},
                     "caption": {"type": "string"},
                 },
-                "required": ["id", "class", "caption"],
+                "required": ["path", "id", "class", "caption"],
                 "additionalProperties": False,
             },
         },
@@ -213,7 +221,7 @@ SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["scene", "obj", "edges"],
+    "required": ["scene", "objects", "edges"],
     "additionalProperties": False,
 }
 
@@ -263,17 +271,103 @@ def _scene_graph_schema_format() -> Dict[str, Any]:
     }
 
 
+def _get_openai_client() -> Any:
+    global client
+    if client is None:
+        if OpenAI is None:
+            raise RuntimeError("openai package is not installed in the current Python environment.")
+        client = OpenAI()
+    return client
+
+
 def _parse_scene_graph_response(resp: Any) -> Dict[str, Any]:
     try:
-        return json.loads(resp.output_text)
+        parsed = json.loads(resp.output_text)
     except Exception as exc:
         raise ValueError(f"Model did not return valid scene graph JSON: {exc}") from exc
+    return _normalize_scene_graph_payload(parsed)
+
+
+def _validate_normalized_scene_graph(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Scene graph payload must be a JSON object.")
+
+    obj_map = payload.get("obj")
+    if not isinstance(obj_map, dict):
+        raise ValueError("Scene graph payload must contain 'obj' as a dict keyed by prim path.")
+
+    edges = payload.get("edges")
+    if not isinstance(edges, dict):
+        raise ValueError("Scene graph payload must contain 'edges' as an object.")
+
+    obj_obj_edges = edges.get("obj-obj")
+    obj_wall_edges = edges.get("obj-wall")
+    if not isinstance(obj_obj_edges, list) or not isinstance(obj_wall_edges, list):
+        raise ValueError("Scene graph edges must include 'obj-obj' and 'obj-wall' arrays.")
+
+    obj_paths = set(obj_map.keys())
+    for path, meta in obj_map.items():
+        if not isinstance(path, str) or not path:
+            raise ValueError("Object paths must be non-empty strings.")
+        if not isinstance(meta, dict):
+            raise ValueError("Each object entry must be a JSON object.")
+
+    for edge in obj_obj_edges:
+        if not isinstance(edge, dict):
+            raise ValueError("Each edge in 'obj-obj' must be a JSON object.")
+        source = edge.get("source")
+        target = edge.get("target")
+        if source not in obj_paths or target not in obj_paths:
+            raise ValueError("Each 'obj-obj' edge must reference object paths present in 'obj'.")
+
+    for edge in obj_wall_edges:
+        if not isinstance(edge, dict):
+            raise ValueError("Each edge in 'obj-wall' must be a JSON object.")
+        source = edge.get("source")
+        if source not in obj_paths:
+            raise ValueError("Each 'obj-wall' edge must reference an object path present in 'obj'.")
+
+    return payload
+
+
+def _normalize_scene_graph_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Scene graph payload must be a JSON object.")
+
+    if "objects" in payload:
+        objects = payload.get("objects")
+        if not isinstance(objects, list):
+            raise ValueError("Scene graph payload field 'objects' must be an array.")
+
+        obj_map: Dict[str, Dict[str, Any]] = {}
+        for item in objects:
+            if not isinstance(item, dict):
+                raise ValueError("Each scene graph object must be a JSON object.")
+            path = item.get("path")
+            if not isinstance(path, str) or not path:
+                raise ValueError("Each scene graph object must include a non-empty 'path'.")
+            if path in obj_map:
+                raise ValueError(f"Duplicate object path in scene graph payload: {path}")
+            obj_map[path] = {
+                "id": item.get("id"),
+                "class": item.get("class"),
+                "caption": item.get("caption"),
+            }
+
+        normalized = {
+            "scene": payload.get("scene"),
+            "obj": obj_map,
+            "edges": payload.get("edges"),
+        }
+        return _validate_normalized_scene_graph(normalized)
+
+    return _validate_normalized_scene_graph(payload)
 
 
 def parse_scene_graph_from_text(text: str, class_names_raw: str = "") -> Dict[str, Any]:
     class_hint = _build_class_hint(class_names_raw)
     user_prompt = text if not class_hint else f"{text}\n\n{class_hint}"
-    response = client.responses.create(
+    response = _get_openai_client().responses.create(
         model=SCENE_GRAPH_MODEL,
         instructions=SYSTEM_PROMPT,
         input=user_prompt,
@@ -300,7 +394,7 @@ def parse_scene_graph_from_image(image_bytes: bytes, class_names_raw: str = "") 
             "image_url": f"data:image/jpeg;base64,{image_b64}",
         },
     ]
-    response = client.responses.create(
+    response = _get_openai_client().responses.create(
         model=SCENE_GRAPH_MODEL,
         instructions=SYSTEM_PROMPT,
         input=[
@@ -339,7 +433,7 @@ def call_gpt_json_editor_with_image(
         },
     ]
 
-    resp = client.chat.completions.create(
+    resp = _get_openai_client().chat.completions.create(
         model=model or DEFAULT_MODEL,
         messages=messages,
         response_format={"type": "json_object"},
