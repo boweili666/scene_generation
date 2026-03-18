@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,8 +15,11 @@ from scipy.spatial.transform import Rotation
 Y_AXIS = np.array([0.0, 1.0, 0.0], dtype=float)
 X_AXIS = np.array([1.0, 0.0, 0.0], dtype=float)
 Z_AXIS = np.array([0.0, 0.0, 1.0], dtype=float)
-POSE_TO_GLB_ROTATION = Rotation.from_euler("x", -90.0, degrees=True).as_matrix()
 OUTPUT_NAME_RE = re.compile(r"(\d+)$")
+PRE_SCENE_FILENAME = "scene_merged_pre.glb"
+POST_SCENE_FILENAME = "scene_merged_post.glb"
+PRE_POSES_FILENAME = "poses_pre.json"
+POST_POSES_FILENAME = "poses_post.json"
 
 
 @dataclass
@@ -39,6 +43,16 @@ class PlacementState:
         return transformed.min(axis=0), transformed.max(axis=0)
 
 
+def copy_placement(placement: PlacementState) -> PlacementState:
+    return PlacementState(
+        name=placement.name,
+        mesh=placement.mesh,
+        rotation=placement.rotation.copy(),
+        scale=placement.scale.copy(),
+        translation=placement.translation.copy(),
+    )
+
+
 def _as_float_vector(value: Any, *, length: int) -> np.ndarray:
     array = np.asarray(value, dtype=float)
     if array.ndim == 2 and array.shape[0] == 1:
@@ -53,15 +67,23 @@ def _as_float_vector(value: Any, *, length: int) -> np.ndarray:
     return array.astype(float, copy=False)
 
 
+def _as_float_matrix4(value: Any) -> np.ndarray:
+    matrix = np.asarray(value, dtype=float)
+    if matrix.shape == (16,):
+        matrix = matrix.reshape(4, 4)
+    if matrix.shape != (4, 4):
+        raise ValueError(f"Expected 4x4 transform matrix, got shape {matrix.shape}")
+    return matrix.astype(float, copy=False)
+
+
 def pose_translation_to_glb(translation: Any) -> np.ndarray:
-    return POSE_TO_GLB_ROTATION @ _as_float_vector(translation, length=3)
+    return _as_float_vector(translation, length=3)
 
 
 def pose_rotation_to_glb(rotation_wxyz: Any) -> np.ndarray:
     quat_wxyz = _as_float_vector(rotation_wxyz, length=4)
     quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]], dtype=float)
-    pose_rotation = Rotation.from_quat(quat_xyzw).as_matrix()
-    return POSE_TO_GLB_ROTATION @ pose_rotation @ POSE_TO_GLB_ROTATION.T
+    return Rotation.from_quat(quat_xyzw).as_matrix()
 
 
 def upright_rotation_from_current(rotation: np.ndarray) -> np.ndarray:
@@ -199,7 +221,87 @@ def resolve_support_penetration(
     return total_adjustments
 
 
+def preserve_relative_support_transforms(
+    original_placements: dict[str, PlacementState],
+    placements: dict[str, PlacementState],
+    support_pairs: list[tuple[str, str]],
+) -> int:
+    updated_count = 0
+    if not support_pairs:
+        return updated_count
+
+    max_passes = max(1, len(support_pairs))
+    for _ in range(max_passes):
+        changed = False
+        for top_name, base_name in support_pairs:
+            top_original = original_placements.get(top_name)
+            base_original = original_placements.get(base_name)
+            top_current = placements.get(top_name)
+            base_current = placements.get(base_name)
+            if top_original is None or base_original is None or top_current is None or base_current is None:
+                continue
+
+            delta_rotation = base_current.rotation @ base_original.rotation.T
+            delta_translation = base_current.translation - delta_rotation @ base_original.translation
+            next_rotation = delta_rotation @ top_original.rotation
+            next_translation = delta_rotation @ top_original.translation + delta_translation
+
+            rotation_changed = not np.allclose(top_current.rotation, next_rotation)
+            translation_changed = not np.allclose(top_current.translation, next_translation)
+            if not rotation_changed and not translation_changed:
+                continue
+
+            top_current.rotation = next_rotation
+            top_current.translation = next_translation
+            updated_count += 1
+            changed = True
+        if not changed:
+            break
+
+    return updated_count
+
+
+def ground_unsupported_roots(
+    original_placements: dict[str, PlacementState],
+    placements: dict[str, PlacementState],
+    support_pairs: list[tuple[str, str]],
+    root_objects: set[str],
+    *,
+    floor_y: float = 0.0,
+    epsilon: float = 1e-6,
+) -> int:
+    grounded_count = 0
+    for object_name in sorted(root_objects, key=output_name_sort_key):
+        placement = placements.get(object_name)
+        if placement is None:
+            continue
+        bounds_min, _ = placement.bounds
+        delta_y = floor_y - float(bounds_min[1])
+        if abs(delta_y) <= epsilon:
+            continue
+        placement.translation[1] += delta_y
+        grounded_count += 1
+
+    if grounded_count > 0:
+        preserve_relative_support_transforms(original_placements, placements, support_pairs)
+
+    return grounded_count
+
+
 def _pose_to_placement(name: str, mesh: trimesh.Trimesh, pose_entry: dict[str, Any]) -> PlacementState:
+    scene_transform = pose_entry.get("scene_transform")
+    if scene_transform is not None:
+        matrix = _as_float_matrix4(scene_transform)
+        rotation, scale = _rotation_and_scale_from_linear(matrix[:3, :3])
+        translation = np.asarray(matrix[:3, 3], dtype=float)
+        return PlacementState(
+            name=name,
+            mesh=mesh,
+            rotation=rotation,
+            scale=scale,
+            translation=translation,
+        )
+
     rotation = pose_rotation_to_glb(pose_entry.get("rotation", [1.0, 0.0, 0.0, 0.0]))
     scale = _as_float_vector(pose_entry.get("scale", [1.0, 1.0, 1.0]), length=3)
     translation = pose_translation_to_glb(pose_entry.get("translation", [0.0, 0.0, 0.0]))
@@ -212,6 +314,19 @@ def _pose_to_placement(name: str, mesh: trimesh.Trimesh, pose_entry: dict[str, A
     )
 
 
+def _rotation_and_scale_from_linear(linear: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    linear = np.asarray(linear, dtype=float)
+    scale = np.linalg.norm(linear, axis=0)
+    safe_scale = np.where(scale > 1e-8, scale, 1.0)
+    rotation = linear / safe_scale
+    u, _, vh = np.linalg.svd(rotation)
+    rotation = u @ vh
+    if np.linalg.det(rotation) < 0.0:
+        u[:, -1] *= -1.0
+        rotation = u @ vh
+    return rotation, safe_scale
+
+
 def _update_pose_entry(pose_entry: dict[str, Any], placement: PlacementState) -> dict[str, Any]:
     updated = dict(pose_entry)
     quat_xyzw = Rotation.from_matrix(placement.rotation).as_quat()
@@ -219,7 +334,17 @@ def _update_pose_entry(pose_entry: dict[str, Any], placement: PlacementState) ->
     updated["rotation"] = [quat_wxyz]
     updated["translation"] = [[float(v) for v in placement.translation.tolist()]]
     updated["scale"] = [[float(v) for v in placement.scale.tolist()]]
+    updated["scene_transform"] = [[float(v) for v in row] for row in placement.matrix.tolist()]
+    updated.setdefault("scene_transform_convention", "gltf_y_up")
     return updated
+
+
+def _copy_artifact(source: Path, destination: Path, *, overwrite: bool) -> None:
+    if not source.exists():
+        return
+    if destination.exists() and not overwrite:
+        return
+    shutil.copy2(source, destination)
 
 
 def postprocess_real2sim_outputs(
@@ -232,16 +357,25 @@ def postprocess_real2sim_outputs(
     output_root = Path(output_dir)
     objects_dir = output_root / "objects"
     poses_path = output_root / "poses.json"
+    poses_partial_path = output_root / "poses_partial.json"
     scene_path = output_root / "scene_merged.glb"
+    pre_scene_path = output_root / PRE_SCENE_FILENAME
+    post_scene_path = output_root / POST_SCENE_FILENAME
+    pre_poses_path = output_root / PRE_POSES_FILENAME
+    post_poses_path = output_root / POST_POSES_FILENAME
 
     if not objects_dir.exists():
         raise FileNotFoundError(f"Real2Sim objects directory not found: {objects_dir}")
     if not poses_path.exists():
         raise FileNotFoundError(f"Real2Sim poses file not found: {poses_path}")
 
-    poses = json.loads(poses_path.read_text(encoding="utf-8"))
+    _copy_artifact(scene_path, pre_scene_path, overwrite=False)
+    _copy_artifact(poses_path, pre_poses_path, overwrite=False)
+
+    source_poses_path = poses_partial_path if poses_partial_path.exists() else poses_path
+    poses = json.loads(source_poses_path.read_text(encoding="utf-8"))
     if not isinstance(poses, dict):
-        raise ValueError(f"Expected {poses_path} to contain an object map")
+        raise ValueError(f"Expected {source_poses_path} to contain an object map")
 
     object_names = sorted(
         {p.stem for p in objects_dir.glob("*.glb")} & {str(k) for k in poses.keys()},
@@ -269,7 +403,9 @@ def postprocess_real2sim_outputs(
         if top in scene_path_to_output and base in scene_path_to_output
     ]
     supported_objects = {top for top, _ in support_pairs}
+    unsupported_root_objects = {object_name for object_name in object_names if object_name not in supported_objects}
 
+    original_placements: dict[str, PlacementState] = {}
     placements: dict[str, PlacementState] = {}
     forced_upright_count = 0
     snapped_upright_count = 0
@@ -278,17 +414,27 @@ def postprocess_real2sim_outputs(
         object_path = objects_dir / f"{object_name}.glb"
         mesh_scene = trimesh.load(object_path, force="scene")
         mesh = mesh_scene.to_geometry()
-        placement = _pose_to_placement(object_name, mesh, poses[object_name])
+        original_placement = _pose_to_placement(object_name, mesh, poses[object_name])
+        original_placements[object_name] = original_placement
+        placements[object_name] = copy_placement(original_placement)
 
+    for object_name in object_names:
+        placement = placements[object_name]
         if object_name not in supported_objects:
-            placement.rotation = upright_rotation_from_current(placement.rotation)
+            upright_rotation = upright_rotation_from_current(placement.rotation)
+            if not np.allclose(placement.rotation, upright_rotation):
+                if is_nearly_y_up(placement.rotation, cos_threshold=upright_cos_threshold):
+                    snapped_upright_count += 1
+            placement.rotation = upright_rotation
             forced_upright_count += 1
-        elif is_nearly_y_up(placement.rotation, cos_threshold=upright_cos_threshold):
-            placement.rotation = upright_rotation_from_current(placement.rotation)
-            snapped_upright_count += 1
 
-        placements[object_name] = placement
-
+    preserve_relative_support_transforms(original_placements, placements, support_pairs)
+    grounded_roots = ground_unsupported_roots(
+        original_placements,
+        placements,
+        support_pairs,
+        unsupported_root_objects,
+    )
     penetration_adjustments = resolve_support_penetration(
         placements,
         support_pairs,
@@ -314,11 +460,14 @@ def postprocess_real2sim_outputs(
         json.dumps(updated_poses, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    _copy_artifact(scene_path, post_scene_path, overwrite=True)
+    _copy_artifact(poses_path, post_poses_path, overwrite=True)
 
     return {
         "objects": len(object_names),
         "support_pairs": len(support_pairs),
         "forced_upright": forced_upright_count,
         "snapped_upright": snapped_upright_count,
+        "grounded_roots": grounded_roots,
         "penetration_adjustments": penetration_adjustments,
     }

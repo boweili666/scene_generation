@@ -64,12 +64,11 @@
             if (queued) loadedObjectCount += 1;
           }
 
-          if (artifacts.scene_glb_url && !loadedMerged) {
-            const mergedQueued = enqueueGlbLoad(artifacts.scene_glb_url, { isMerged: true });
-            if (mergedQueued) loadedMerged = true;
-          }
-
           if (job.status === "succeeded") {
+            if (artifacts.scene_glb_url && !loadedMerged) {
+              const mergedQueued = enqueueGlbLoad(artifacts.scene_glb_url, { isMerged: true });
+              if (mergedQueued) loadedMerged = true;
+            }
             done = true;
             finalJobStatus = job.status;
             setSimProgress({ ...(job.progress || {}), phase: "completed", percent: 100 });
@@ -162,4 +161,3 @@
         toast("err","Request failed", "Possibly CORS / port / service not running.");
       }
     }
-

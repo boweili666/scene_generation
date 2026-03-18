@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import re
 import shutil
 from pathlib import Path
@@ -18,7 +17,6 @@ DEFAULT_SCENE_GRAPH = Path("runtime/scene_graph/current_scene_graph.json")
 DEFAULT_OUTPUT_ROOT = Path("runtime/real2sim/masks")
 DEFAULT_MESH_OUTPUT = Path("runtime/real2sim/meshes")
 DEFAULT_REUSE_MESH_DIR = Path("runtime/real2sim/meshes")
-DEFAULT_RTS_SOURCE_DIR = Path("../scene60_mesh_rts")
 DEFAULT_SAM3D_URL = "http://128.2.204.116:8000/generate_mesh"
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
 
@@ -45,7 +43,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam3d-url", default=DEFAULT_SAM3D_URL)
     parser.add_argument("--skip-sam3d", action="store_true")
     parser.add_argument("--reuse-mesh-dir", type=Path, default=DEFAULT_REUSE_MESH_DIR)
-    parser.add_argument("--rts-source-dir", type=Path, default=DEFAULT_RTS_SOURCE_DIR)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--mask-threshold", type=float, default=0.5)
     parser.add_argument("--sam3d-timeout", type=float, default=120.0)
@@ -143,21 +140,6 @@ def copy_reused_meshes(prompts: list[str], reuse_mesh_dir: Path, mesh_output_dir
     return copied
 
 
-def copy_rts_files(rts_source_dir: Path, runtime_dir: Path) -> int:
-    if not rts_source_dir.exists():
-        print(f"[WARN] RTS source directory does not exist: {rts_source_dir}")
-        return 0
-
-    copied = 0
-    for src in sorted(rts_source_dir.glob("*_rts.json")):
-        dst = runtime_dir / src.name
-        if src.resolve() == dst.resolve():
-            continue
-        shutil.copy2(src, dst)
-        copied += 1
-    return copied
-
-
 def main() -> None:
     args = parse_args()
 
@@ -196,8 +178,6 @@ def main() -> None:
 
     args.output_root.mkdir(parents=True, exist_ok=True)
     args.mesh_output_dir.mkdir(parents=True, exist_ok=True)
-    runtime_dir = args.output_root.parent
-    runtime_dir.mkdir(parents=True, exist_ok=True)
     image.save(args.output_root / "image.png")
 
     total_masks = 0
@@ -281,9 +261,6 @@ def main() -> None:
         else:
             reused = copy_reused_meshes(prompts, args.reuse_mesh_dir, args.mesh_output_dir)
             print(f"[INFO] Reused meshes copied: {reused}")
-
-    copied_rts = copy_rts_files(args.rts_source_dir, runtime_dir)
-    print(f"[INFO] RTS files copied: {copied_rts}")
 
     print(f"\n[DONE] Total saved masks: {total_masks}")
     print(f"[DONE] Mask output root: {args.output_root}")

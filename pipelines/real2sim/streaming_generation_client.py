@@ -10,7 +10,13 @@ from typing import Iterable
 
 import requests
 
-from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
+if __package__:
+    from .postprocess import postprocess_real2sim_outputs
+else:
+    import sys
+
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
 
 
 def parse_bool(value: str) -> bool:
@@ -90,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pose-optim-backend", default="gs", choices=["gs", "mesh"])
     parser.add_argument("--with-layout-postprocess", type=parse_bool, default=True)
     parser.add_argument("--gs-enable-manual-alignment", type=parse_bool, default=True)
-    parser.add_argument("--gs-enable-shape-icp", type=parse_bool, default=True)
+    parser.add_argument("--gs-enable-shape-icp", type=parse_bool, default=False)
     parser.add_argument("--gs-enable-occlusion-check", type=parse_bool, default=False)
     parser.add_argument("--allow-mask-resize", type=parse_bool, default=False)
     parser.add_argument(
@@ -153,6 +159,28 @@ def iter_binary_frames(resp: requests.Response):
         except Exception as e:
             raise RuntimeError("Invalid frame header JSON") from e
         yield meta, payload
+
+
+def clear_previous_outputs(output_dir: Path) -> None:
+    objects_dir = output_dir / "objects"
+    objects_dir.mkdir(parents=True, exist_ok=True)
+
+    for object_glb in objects_dir.glob("*.glb"):
+        if object_glb.is_file():
+            object_glb.unlink()
+
+    for artifact_name in (
+        "scene_merged.glb",
+        "scene_merged_pre.glb",
+        "scene_merged_post.glb",
+        "poses.json",
+        "poses_partial.json",
+        "poses_pre.json",
+        "poses_post.json",
+    ):
+        artifact_path = output_dir / artifact_name
+        if artifact_path.exists() and artifact_path.is_file():
+            artifact_path.unlink()
 
 
 def process_stream_response(resp: requests.Response, output_dir: Path) -> None:
@@ -300,6 +328,7 @@ def main() -> None:
             print(
                 f"[INFO] attempt={attempt} timeout=(connect={args.connect_timeout}, read={args.read_timeout})"
             )
+            clear_previous_outputs(output_dir)
             run_once(args, mask_paths, output_dir, url)
             summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=args.scene_graph)
             print(
