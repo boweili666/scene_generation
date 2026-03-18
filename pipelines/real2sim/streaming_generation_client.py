@@ -10,6 +10,8 @@ from typing import Iterable
 
 import requests
 
+from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
+
 
 def parse_bool(value: str) -> bool:
     lowered = value.strip().lower()
@@ -78,6 +80,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional directory to auto-load *.png masks (excluding image.png)",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--scene-graph",
+        type=Path,
+        default=None,
+        help="Optional scene graph JSON used for support-aware postprocessing.",
+    )
     parser.add_argument("--texture-baking", type=parse_bool, default=True)
     parser.add_argument("--pose-optim-backend", default="gs", choices=["gs", "mesh"])
     parser.add_argument("--with-layout-postprocess", type=parse_bool, default=True)
@@ -293,6 +301,15 @@ def main() -> None:
                 f"[INFO] attempt={attempt} timeout=(connect={args.connect_timeout}, read={args.read_timeout})"
             )
             run_once(args, mask_paths, output_dir, url)
+            summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=args.scene_graph)
+            print(
+                "[POST] scene postprocess:"
+                f" objects={summary['objects']}"
+                f" support_pairs={summary['support_pairs']}"
+                f" forced_upright={summary['forced_upright']}"
+                f" snapped_upright={summary['snapped_upright']}"
+                f" penetration_adjustments={summary['penetration_adjustments']}"
+            )
             print(f"[DONE] Saved streamed outputs to: {output_dir}")
             return
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
@@ -310,4 +327,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

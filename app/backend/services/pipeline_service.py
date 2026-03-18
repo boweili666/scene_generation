@@ -347,6 +347,8 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         predict_stream_server,
         "--image",
         str(image_png_abs),
+        "--scene-graph",
+        scene_graph_path,
         "--mask-dir",
         str(masks_dir_abs),
         "--output-dir",
