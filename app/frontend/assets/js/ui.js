@@ -109,6 +109,31 @@
       document.getElementById("simProgressMeta").textContent = "Waiting...";
     }
 
+    function resetSceneDebug() {
+      const box = document.getElementById("sceneDebugBox");
+      const meta = document.getElementById("sceneDebugMeta");
+      if (box) box.textContent = "Waiting for scene generation debug...";
+      if (meta) meta.textContent = "No scene run yet";
+    }
+
+    function setSceneDebug(payload) {
+      const box = document.getElementById("sceneDebugBox");
+      const meta = document.getElementById("sceneDebugMeta");
+      if (!box || !meta) return;
+
+      if (!payload || typeof payload !== "object") {
+        box.textContent = "No debug payload returned.";
+        meta.textContent = "Unavailable";
+        return;
+      }
+
+      const mode = payload.resample_mode || "joint";
+      const counts = payload.asset_resolution_counts || {};
+      meta.textContent =
+        `mode ${mode} • real2sim ${counts.real2sim || 0} • retrieval ${counts.retrieval || 0} • fallback ${counts.fallback || 0} • missing ${counts.missing || 0}`;
+      box.textContent = JSON.stringify(payload, null, 2);
+    }
+
     function resetReal2SimLog(startOffset = 0, logPath = "real2sim.log") {
       real2simLogState.offset = Number.isFinite(Number(startOffset)) ? Number(startOffset) : 0;
       real2simLogState.path = logPath || "real2sim.log";
@@ -175,13 +200,15 @@
         objects = json.objects.map((o) => ({
           path: o?.path,
           class_name: o?.class_name || o?.class,
-          id: o?.id
+          id: o?.id,
+          source: o?.source
         }));
       } else if (json?.obj && typeof json.obj === "object") {
         objects = Object.entries(json.obj).map(([path, meta]) => ({
           path,
           class_name: meta?.class || meta?.class_name || meta?.caption,
-          id: meta?.id
+          id: meta?.id,
+          source: meta?.source
         }));
       }
 
@@ -249,4 +276,3 @@
         return null;
       }
     }
-

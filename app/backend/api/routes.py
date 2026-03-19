@@ -81,6 +81,20 @@ def _to_artifact_urls(artifacts: dict) -> dict:
         result["poses_json_url"] = poses_url
     else:
         result["poses_json_url"] = None
+
+    scene_usd = artifacts.get("scene_usd")
+    if scene_usd:
+        scene_usd_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / scene_usd)
+        result["scene_usd_url"] = scene_usd_url
+    else:
+        result["scene_usd_url"] = None
+
+    manifest_json = artifacts.get("manifest_json")
+    if manifest_json:
+        manifest_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / manifest_json)
+        result["manifest_json_url"] = manifest_url
+    else:
+        result["manifest_json_url"] = None
     return result
 
 
@@ -322,7 +336,11 @@ def register_routes(app):
                 image_bytes = file.read()
                 LATEST_INPUT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
                 LATEST_INPUT_IMAGE.write_bytes(image_bytes)
-                scene_graph_json = parse_scene_graph_from_image(image_bytes, class_names_raw)
+                scene_graph_json = parse_scene_graph_from_image(
+                    image_bytes,
+                    class_names_raw,
+                    text=text,
+                )
             else:
                 if not text:
                     return jsonify({"error": "Empty input"}), 400

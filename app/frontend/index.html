@@ -80,7 +80,13 @@
           <div class="toolbar">
             <button class="toolbtn good" id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
             <button class="toolbtn primary" onclick="callSceneService('scene')">Edit Scene</button>
-            <button class="toolbtn primary" onclick="callSceneService('scene_new')">Resample</button>
+            <div class="resample-controls">
+              <select id="resampleModeSelect" class="toolselect" aria-label="Resample mode">
+                <option value="joint">Joint Resample</option>
+                <option value="lock_real2sim">Lock Real2Sim</option>
+              </select>
+              <button class="toolbtn primary" onclick="runResample()">Resample</button>
+            </div>
           </div>
 
           <div class="row">
@@ -173,6 +179,10 @@
             <div class="label">Hints <span class="hint">Quality feedback</span></div>
             <div class="codebox" id="feedbackBox">-</div>
           </div>
+        </div>
+        <div class="drawer-section">
+          <div class="label">Scene Generation Debug <span class="hint" id="sceneDebugMeta">No scene run yet</span></div>
+          <div class="codebox" id="sceneDebugBox">Waiting for scene generation debug...</div>
         </div>
       </div>
     </div>

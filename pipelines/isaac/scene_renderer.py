@@ -9,6 +9,23 @@ import numpy as np
 from isaacsim import SimulationApp
 from PIL import Image
 from room_shell_builder import generate_room_usd_from_scene
+from asset_resolver import (
+    ResolvedAsset,
+    build_asset_match_lookup as build_asset_match_lookup_by_source,
+    build_real2sim_uniform_scale_lookup,
+    find_asset_matches_by_name as resolver_find_asset_matches_by_name,
+    first_asset_match as resolver_first_asset_match,
+    load_real2sim_manifest,
+    object_label as resolver_object_label,
+)
+from layout_utils import clamp_center_to_room_bounds, normalize_closed_walls
+from usd_asset_utils import (
+    compute_asset_local_to_scene_matrix,
+    compute_stage_local_to_scene_matrix,
+    column_transform_to_row_major,
+    is_identity_matrix,
+    transform_aligned_bbox,
+)
 
 SCENE_GRAPH_UI_ROOT = Path(__file__).resolve().parents[2]
 
@@ -29,6 +46,8 @@ OBJ_WALL_RELATIONS = {
     "against wall",
     "in corner",
 }
+
+OBJECT_SOURCES = {"real2sim", "retrieval"}
 
 
 def load_scene_graph_json(json_path: Path) -> Dict:
@@ -69,6 +88,11 @@ def validate_and_prepare_scene_graph(data: Dict) -> Dict:
             raise ValueError("Each key in 'obj' must be a non-empty usd path string.")
         if not isinstance(item, dict):
             raise ValueError("Each value in 'obj' must be an object.")
+        source = item.get("source")
+        if source is not None and source not in OBJECT_SOURCES:
+            raise ValueError(
+                f"Object '{prim}' has invalid source '{source}'. Allowed: {sorted(OBJECT_SOURCES)}"
+            )
         meta = dict(item)
         meta.setdefault("usd_path", prim)
         meta.setdefault("class", item.get("class") or item.get("caption") or Path(prim).name)
@@ -109,21 +133,15 @@ def discover_usd_assets(asset_root: Path) -> List[Path]:
 
 def find_asset_matches_by_name(name: str, usd_paths: Iterable[Path]) -> List[Path]:
     """Return USD paths that contain the given object name (case-insensitive)."""
-    needle = name.lower()
-    matches: List[Path] = []
-    for p in usd_paths:
-        if needle in p.name.lower():
-            matches.append(p)
-    return matches
+    return resolver_find_asset_matches_by_name(name, usd_paths)
 
 
 def first_asset_match(name: str, usd_paths: Iterable[Path]) -> Optional[Path]:
-    matches = find_asset_matches_by_name(name, usd_paths)
-    return matches[0] if matches else None
+    return resolver_first_asset_match(name, usd_paths)
 
 
 def _object_label(meta: Dict, prim: str) -> str:
-    return meta.get("class") or meta.get("class_name") or Path(prim).name
+    return resolver_object_label(meta, prim)
 
 
 def _is_support_relation(relation: str) -> bool:
@@ -135,7 +153,7 @@ def _supported_sources(edges: List[Dict]) -> set:
     return {edge["source"] for edge in edges if _is_support_relation(edge.get("relation", ""))}
 
 
-def _compute_usd_bbox_info(usd_path: Path):
+def _compute_usd_bbox_info(usd_path: Path, prim_path: Optional[str] = None):
     """
     Return (size, center) of a prim's local bbox from the referenced USD root.
     """
@@ -144,7 +162,9 @@ def _compute_usd_bbox_info(usd_path: Path):
     stage = Usd.Stage.Open(str(usd_path))
     if stage is None:
         return None
-    root = stage.GetDefaultPrim() or stage.GetPseudoRoot()
+    root = stage.GetPrimAtPath(prim_path) if prim_path else (stage.GetDefaultPrim() or stage.GetPseudoRoot())
+    if root is None or not root.IsValid():
+        return None
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
     bbox = bbox_cache.ComputeLocalBound(root)
     rng = bbox.ComputeAlignedRange()
@@ -154,7 +174,23 @@ def _compute_usd_bbox_info(usd_path: Path):
     bmax = rng.GetMax()
     size = (bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2])
     center = ((bmin[0] + bmax[0]) * 0.5, (bmin[1] + bmax[1]) * 0.5, (bmin[2] + bmax[2]) * 0.5)
-    return {"size": size, "center": center}
+    info = {"size": size, "center": center}
+    correction = compute_stage_local_to_scene_matrix(stage, target_up_axis="Z", target_meters_per_unit=1.0)
+    return transform_aligned_bbox(info, correction)
+
+
+def _scale_bbox_info(
+    info: Dict[str, Tuple[float, float, float]],
+    scale: float,
+) -> Dict[str, Tuple[float, float, float]]:
+    if abs(scale - 1.0) <= 1e-6:
+        return info
+    return {
+        "size": tuple(float(v) * scale for v in info["size"]),
+        # Keep the local-space center unscaled. The final transform already carries scale,
+        # so scaling the center here would double-apply the offset in translation solving.
+        "center": tuple(float(v) for v in info["center"]),
+    }
 
 
 def _add_ground_plane(stage, size: float, height: float) -> None:
@@ -191,6 +227,11 @@ def _add_default_lighting(stage) -> None:
     dome.CreateSpecularAttr(1.0)
 
 
+def _add_stage_reference(stage, asset_path: Path | str, prim_path: str) -> None:
+    prim = stage.DefinePrim(prim_path, "Xform")
+    prim.GetReferences().AddReference(str(asset_path))
+
+
 def build_stage_from_entries(
     object_entries: List[Dict],
     usd_paths: List[Path],
@@ -199,24 +240,28 @@ def build_stage_from_entries(
     plane_size: float,
     plane_height: float,
     default_ground_z_offset: float = 0.0,
-    asset_match_lookup: Optional[Dict[str, Path]] = None,
+    asset_match_lookup: Optional[Dict[str, ResolvedAsset]] = None,
     room_usd: Optional[Path] = None,
     use_default_ground: bool = True,
+    skip_support_realign_prims: Optional[set[str]] = None,
+    room_bounds: Optional[Tuple[float, float, float, float]] = None,
+    room_closed_walls: Optional[Dict[str, bool]] = None,
 ) -> None:
     """
     Create a fresh stage, add references for each object, and apply transforms captured in the JSON.
     """
     # Deferred imports that require SimulationApp
     import omni.usd
-    from isaacsim.core.utils.stage import add_reference_to_stage
-    from pxr import Gf, UsdGeom
+    from pxr import Gf, Sdf, UsdGeom
 
     ctx = omni.usd.get_context()
     ctx.new_stage()  # start from an empty stage
     stage = ctx.get_stage()
     stage.SetDefaultPrim(stage.DefinePrim("/World", "Xform"))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     if room_usd and room_usd.exists():
-        add_reference_to_stage(str(room_usd), "/World/GeneratedRoom")
+        _add_stage_reference(stage, room_usd, "/World/GeneratedRoom")
         print(f"[ROOM] referenced room USD: {room_usd}")
 
     if use_default_ground:
@@ -236,18 +281,41 @@ def build_stage_from_entries(
         prim = entry["prim"]
         transform = entry["transform"]
 
-        usd_match = asset_match_lookup.get(prim) if asset_match_lookup else None
-        if usd_match is None:
+        asset_ref = asset_match_lookup.get(prim) if asset_match_lookup else None
+        if asset_ref is None:
             usd_match = first_asset_match(name, usd_paths)
-        if usd_match is None:
+            asset_ref = (
+                ResolvedAsset(asset_path=usd_match, source="fallback")
+                if usd_match is not None
+                else None
+            )
+        if asset_ref is None:
             print(f"[MISS] {name} (prim: {prim}) -> NOT FOUND")
             continue
 
-        print(f"[HIT ] {name} (prim: {prim}) -> {usd_match}")
-        add_reference_to_stage(str(usd_match), prim)
+        print(f"[HIT ] {name} (prim: {prim}) -> {asset_ref.asset_path}")
+        prim_obj = stage.DefinePrim(prim, "Xform")
+        asset_parent = prim_obj
+        asset_correction = compute_asset_local_to_scene_matrix(
+            asset_ref.asset_path,
+            target_up_axis="Z",
+            target_meters_per_unit=1.0,
+        )
+        if not is_identity_matrix(asset_correction):
+            asset_parent = stage.DefinePrim(f"{prim}/AssetRef", "Xform")
+            asset_parent_xform = UsdGeom.Xformable(asset_parent)
+            asset_parent_xform.ClearXformOpOrder()
+            asset_parent_xform.AddTransformOp(opSuffix="assetNormalization").Set(
+                Gf.Matrix4d(column_transform_to_row_major(asset_correction).tolist())
+            )
+
+        refs = asset_parent.GetReferences()
+        if asset_ref.reference_prim_path:
+            refs.AddReference(str(asset_ref.asset_path), Sdf.Path(asset_ref.reference_prim_path))
+        else:
+            refs.AddReference(str(asset_ref.asset_path))
 
         if transform is not None:
-            prim_obj = stage.GetPrimAtPath(prim)
             xform = UsdGeom.Xformable(prim_obj)
             xform.ClearXformOpOrder()
 
@@ -256,7 +324,10 @@ def build_stage_from_entries(
         else:
             print("  (no transform found in JSON; leaving default)")
 
-    _align_support_bottom_to_obb_top(stage, edges)
+    _snap_floor_roots_to_plane(stage, object_entries, edges, plane_height)
+    _align_support_bottom_to_obb_top(stage, edges, skip_sources=skip_support_realign_prims)
+    if room_bounds is not None:
+        _clamp_prims_inside_room_bounds(stage, object_entries, room_bounds, room_closed_walls)
 
     if save_usd:
         stage.GetRootLayer().Export(str(save_usd))
@@ -657,7 +728,12 @@ def _enforce_support_alignment(
         placements[source] = (placements[source][0], placements[source][1], target_top + sdz * 0.5)
 
 
-def _align_support_bottom_to_obb_top(stage, edges: List[Dict]) -> None:
+def _align_support_bottom_to_obb_top(
+    stage,
+    edges: List[Dict],
+    *,
+    skip_sources: Optional[set[str]] = None,
+) -> None:
     """
     Move supported objects so their bottom center lies within the supporter top OBB.
     Uses world-space oriented bounding boxes from UsdGeom.BBoxCache.
@@ -665,12 +741,15 @@ def _align_support_bottom_to_obb_top(stage, edges: List[Dict]) -> None:
     from pxr import Gf, Usd, UsdGeom
 
     processed_sources = set()
+    blocked_sources = skip_sources or set()
     for edge in edges:
         pair = _support_pair(edge)
         if not pair:
             continue
 
         source_path, target_path = pair
+        if source_path in blocked_sources:
+            continue
 
         # Avoid double-processing the same source.
         if source_path in processed_sources:
@@ -768,6 +847,108 @@ def _align_support_bottom_to_obb_top(stage, edges: List[Dict]) -> None:
         ops[0].Set(mat)
 
         processed_sources.add(source_path)
+
+
+def _snap_floor_roots_to_plane(stage, object_entries: List[Dict], edges: List[Dict], plane_height: float) -> None:
+    """
+    Snap objects without support parents onto the ground plane using resolved world bounds.
+    This compensates for missing or approximate pre-layout bbox estimates.
+    """
+    from pxr import Gf, Usd, UsdGeom
+
+    supported_tops = set()
+    for edge in edges:
+        pair = _support_pair(edge)
+        if pair:
+            top, _ = pair
+            supported_tops.add(top)
+
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
+    for entry in object_entries:
+        prim_path = entry.get("prim")
+        if not isinstance(prim_path, str) or prim_path in supported_tops:
+            continue
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            continue
+
+        bbox = cache.ComputeWorldBound(prim)
+        rng = bbox.ComputeAlignedRange()
+        if rng.IsEmpty():
+            continue
+
+        bottom_z = float(rng.GetMin()[2])
+        delta_z = float(plane_height) - bottom_z
+        if abs(delta_z) <= 1e-4:
+            continue
+
+        xform = UsdGeom.Xformable(prim)
+        ops = xform.GetOrderedXformOps()
+        if not ops:
+            continue
+
+        mat = Gf.Matrix4d(ops[0].Get())
+        translate = mat.ExtractTranslation()
+        mat.SetTranslateOnly(translate + Gf.Vec3d(0.0, 0.0, delta_z))
+        ops[0].Set(mat)
+
+
+def _clamp_prims_inside_room_bounds(
+    stage,
+    object_entries: List[Dict],
+    room_bounds: Tuple[float, float, float, float],
+    room_closed_walls: Optional[Dict[str, bool]] = None,
+) -> None:
+    """
+    Final safety clamp: keep each prim's world AABB within the room planes that actually exist.
+    """
+    from pxr import Gf, Usd, UsdGeom
+
+    walls = normalize_closed_walls(room_closed_walls)
+    for entry in object_entries:
+        prim_path = entry.get("prim")
+        if not isinstance(prim_path, str):
+            continue
+
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            continue
+
+        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
+        bbox = cache.ComputeWorldBound(prim)
+        rng = bbox.ComputeAlignedRange()
+        if rng.IsEmpty():
+            continue
+
+        bmin = rng.GetMin()
+        bmax = rng.GetMax()
+        size = (
+            float(bmax[0] - bmin[0]),
+            float(bmax[1] - bmin[1]),
+            float(bmax[2] - bmin[2]),
+        )
+        center = (
+            float((bmin[0] + bmax[0]) * 0.5),
+            float((bmin[1] + bmax[1]) * 0.5),
+            float((bmin[2] + bmax[2]) * 0.5),
+        )
+        clamped = clamp_center_to_room_bounds(center, size, 0.0, room_bounds, walls)
+        delta_x = clamped[0] - center[0]
+        delta_y = clamped[1] - center[1]
+        if abs(delta_x) <= 1e-4 and abs(delta_y) <= 1e-4:
+            continue
+
+        xform = UsdGeom.Xformable(prim)
+        ops = xform.GetOrderedXformOps()
+        if not ops:
+            continue
+
+        mat = Gf.Matrix4d(ops[0].Get())
+        translate = mat.ExtractTranslation()
+        mat.SetTranslateOnly(translate + Gf.Vec3d(delta_x, delta_y, 0.0))
+        ops[0].Set(mat)
+
 
 def _resolve_placement_overlaps(
     placements: Dict[str, Tuple[float, float, float]],
@@ -1003,6 +1184,8 @@ def _build_entries_from_scene_edges(
     spread_scale: float,
     grid_step: float,
     asset_bbox_lookup: Optional[Dict[str, Dict[str, Tuple[float, float, float]]]] = None,
+    object_scale_lookup: Optional[Dict[str, float]] = None,
+    room_closed_walls: Optional[Dict[str, bool]] = None,
 ) -> Tuple[List[Dict], Dict[str, Tuple[float, float, float]]]:
     objs = data.get("obj", {})
     edges_payload = data.get("edges", {})
@@ -1014,6 +1197,7 @@ def _build_entries_from_scene_edges(
     size_lookup: Dict[str, Tuple[float, float, float]] = {}
     center_lookup: Dict[str, Tuple[float, float, float]] = {}
     for prim, meta in objs.items():
+        object_scale = float(object_scale_lookup.get(prim, 1.0)) if object_scale_lookup else 1.0
         if asset_bbox_lookup and prim in asset_bbox_lookup:
             info = asset_bbox_lookup[prim]
             raw_size = info["size"]
@@ -1021,6 +1205,8 @@ def _build_entries_from_scene_edges(
         else:
             raw_size = _estimate_object_size(meta)
             raw_center = (0.0, 0.0, 0.0)
+            if abs(object_scale - 1.0) > 1e-6:
+                raw_size = tuple(float(v) * object_scale for v in raw_size)
 
         size_lookup[prim] = raw_size
         center_lookup[prim] = raw_center
@@ -1254,6 +1440,15 @@ def _build_entries_from_scene_edges(
             placements[prim] = (0.0, 0.0, plane_height + sz * 0.5)
 
     yaw_lookup = _solve_discrete_yaw_from_edges(placements, edges)
+    room_closed_walls = normalize_closed_walls(room_closed_walls)
+    for prim in placements:
+        placements[prim] = clamp_center_to_room_bounds(
+            placements[prim],
+            size_lookup[prim],
+            yaw_lookup.get(prim, 0.0),
+            (room_xmin, room_xmax, room_ymin, room_ymax),
+            room_closed_walls,
+        )
     entries = []
     for prim, meta in objs.items():
         label = _object_label(meta, prim)
@@ -1261,10 +1456,11 @@ def _build_entries_from_scene_edges(
         yaw = yaw_lookup.get(prim, 0.0)
         c = math.cos(yaw)
         s = math.sin(yaw)
+        object_scale = float(object_scale_lookup.get(prim, 1.0)) if object_scale_lookup else 1.0
         rot = [
-            [c, -s, 0.0],
-            [s, c, 0.0],
-            [0.0, 0.0, 1.0],
+            [c * object_scale, -s * object_scale, 0.0],
+            [s * object_scale, c * object_scale, 0.0],
+            [0.0, 0.0, object_scale],
         ]
 
         # 保持对象几何中心落在采样位置：T = placement - R * center
@@ -1299,7 +1495,19 @@ def parse_args() -> argparse.Namespace:
         "--asset-root",
         type=Path,
         default=SCENE_GRAPH_UI_ROOT / "pipelines" / "isaac" / "assets",
-        help="Root directory to search for USD files.",
+        help="Legacy fallback asset root for class-name matching when source is missing.",
+    )
+    parser.add_argument(
+        "--retrieval-asset-root",
+        type=Path,
+        default=SCENE_GRAPH_UI_ROOT / "testusd",
+        help="Asset root used for source=retrieval matching.",
+    )
+    parser.add_argument(
+        "--real2sim-manifest-path",
+        type=Path,
+        default=SCENE_GRAPH_UI_ROOT / "runtime" / "real2sim" / "scene_results" / "real2sim_asset_manifest.json",
+        help="Manifest generated from Real2Sim outputs for source=real2sim matching.",
     )
     parser.add_argument(
         "--headless",
@@ -1400,7 +1608,7 @@ def parse_args() -> argparse.Namespace:
         "--camera-eye",
         type=float,
         nargs=3,
-        default=[30.0, 0, 30.0],
+        default=[18.0, 0.0, 18.0],
         help="Camera position used for the capture (x y z).",
     )
     parser.add_argument(
@@ -1447,30 +1655,38 @@ def initialize_random_seed(seed_arg: Optional[int]) -> int:
 def build_asset_bbox_lookup(
     data: Dict,
     usd_paths: List[Path],
-    asset_match_lookup: Optional[Dict[str, Path]] = None,
+    asset_match_lookup: Optional[Dict[str, ResolvedAsset]] = None,
+    object_scale_lookup: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Dict[str, Tuple[float, float, float]]]:
     """Precompute local bbox size/center from matched USD assets for each object."""
     if asset_match_lookup is None:
         asset_match_lookup = build_asset_match_lookup(data, usd_paths)
     asset_bbox_lookup: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
-    for prim, usd_match in asset_match_lookup.items():
-        if not usd_match:
+    for prim, asset_ref in asset_match_lookup.items():
+        if not asset_ref:
             continue
-        info = _compute_usd_bbox_info(usd_match)
+        info = _compute_usd_bbox_info(asset_ref.asset_path, asset_ref.reference_prim_path)
         if info:
+            if object_scale_lookup and prim in object_scale_lookup:
+                info = _scale_bbox_info(info, float(object_scale_lookup[prim]))
             asset_bbox_lookup[prim] = info
     return asset_bbox_lookup
 
 
-def build_asset_match_lookup(data: Dict, usd_paths: List[Path]) -> Dict[str, Path]:
+def build_asset_match_lookup(
+    data: Dict,
+    usd_paths: List[Path],
+    *,
+    retrieval_usd_paths: Optional[List[Path]] = None,
+    real2sim_manifest: Optional[Dict] = None,
+) -> Dict[str, ResolvedAsset]:
     """Choose one USD match per prim so bbox center and final reference stay consistent."""
-    asset_match_lookup: Dict[str, Path] = {}
-    for prim, meta in data.get("obj", {}).items():
-        label = _object_label(meta, prim)
-        usd_match = first_asset_match(label, usd_paths) or first_asset_match(Path(prim).name, usd_paths)
-        if usd_match:
-            asset_match_lookup[prim] = usd_match
-    return asset_match_lookup
+    return build_asset_match_lookup_by_source(
+        data,
+        usd_paths,
+        retrieval_usd_paths=retrieval_usd_paths,
+        real2sim_manifest=real2sim_manifest,
+    )
 
 
 def print_layout_matches(
@@ -1554,13 +1770,35 @@ def main() -> None:
 
     data = load_and_validate_scene_graph(args.json)
     edges = data.get("edges", {}).get("obj-obj", [])
-    print(f"Scanning USD files under: {args.asset_root}")
-    usd_paths = discover_usd_assets(args.asset_root)
-    print(f"Total USD files found: {len(usd_paths)}")
+    print(f"Scanning retrieval USD files under: {args.retrieval_asset_root}")
+    retrieval_usd_paths = discover_usd_assets(args.retrieval_asset_root)
+    print(f"Total retrieval USD files found: {len(retrieval_usd_paths)}")
+    print(f"Scanning fallback USD files under: {args.asset_root}")
+    fallback_usd_paths = discover_usd_assets(args.asset_root)
+    print(f"Total fallback USD files found: {len(fallback_usd_paths)}")
+    combined_usd_paths = list(dict.fromkeys([*retrieval_usd_paths, *fallback_usd_paths]))
     import time
     start_time = time.time()
-    asset_match_lookup = build_asset_match_lookup(data, usd_paths)
-    asset_bbox_lookup = build_asset_bbox_lookup(data, usd_paths, asset_match_lookup)
+    real2sim_manifest = load_real2sim_manifest(args.real2sim_manifest_path)
+    real2sim_scale_lookup = build_real2sim_uniform_scale_lookup(real2sim_manifest)
+    room_closed_walls = {
+        "behind": True,
+        "left": True,
+        "right": True,
+        "front": bool(args.room_include_front_wall),
+    }
+    asset_match_lookup = build_asset_match_lookup(
+        data,
+        fallback_usd_paths,
+        retrieval_usd_paths=retrieval_usd_paths,
+        real2sim_manifest=real2sim_manifest,
+    )
+    asset_bbox_lookup = build_asset_bbox_lookup(
+        data,
+        combined_usd_paths,
+        asset_match_lookup,
+        object_scale_lookup=real2sim_scale_lookup,
+    )
     room_usd_path: Optional[Path] = None
     if args.generate_room:
         room_usd_path = args.room_usd or (args.json.parent / "generated_room.usd")
@@ -1575,15 +1813,21 @@ def main() -> None:
         print(f"[ROOM] generated room USD: {room_usd_path}")
 
     object_entries, placements = _build_entries_from_scene_edges(
-        data, args.plane_height, args.spread_scale, args.grid_step, asset_bbox_lookup
+        data,
+        args.plane_height,
+        args.spread_scale,
+        args.grid_step,
+        asset_bbox_lookup,
+        object_scale_lookup=real2sim_scale_lookup,
+        room_closed_walls=room_closed_walls,
     )
     end_time = time.time()
     print(f"Time to build entries: {end_time - start_time:.2f}s")
-    print_layout_matches(object_entries, placements, usd_paths)
+    print_layout_matches(object_entries, placements, combined_usd_paths)
 
     build_stage_from_entries(
         object_entries,
-        usd_paths,
+        combined_usd_paths,
         edges,
         args.save_usd,
         args.plane_size,
@@ -1591,6 +1835,8 @@ def main() -> None:
         asset_match_lookup=asset_match_lookup,
         room_usd=room_usd_path,
         use_default_ground=(not args.no_default_ground and room_usd_path is None),
+        room_bounds=_room_bounds_from_scene(data, args.spread_scale),
+        room_closed_walls=room_closed_walls,
     )
     render_and_save_image(args, simulation_app)
 

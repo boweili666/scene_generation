@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import struct
+import subprocess
 import time
 from pathlib import Path
 from typing import Iterable
@@ -11,11 +13,13 @@ from typing import Iterable
 import requests
 
 if __package__:
+    from .manifest import MANIFEST_FILENAME, build_real2sim_asset_manifest
     from .postprocess import postprocess_real2sim_outputs
 else:
     import sys
 
     sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from pipelines.real2sim.manifest import MANIFEST_FILENAME, build_real2sim_asset_manifest
     from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
 
 
@@ -58,6 +62,7 @@ def collect_masks(mask_paths: Iterable[Path], mask_dir: Path | None) -> list[Pat
 
 
 def build_parser() -> argparse.ArgumentParser:
+    project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
         description="Send one image + multiple masks to /predict_stream and save binary streamed outputs."
     )
@@ -129,6 +134,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("outputs/stream_results"),
         help="Output directory for streamed files.",
     )
+    parser.add_argument(
+        "--converter-python",
+        default=os.environ.get("ISAAC_PYTHON", "python"),
+        help="Python executable used to run mesh_to_usd_converter.py",
+    )
+    parser.add_argument(
+        "--asset-converter-script",
+        type=Path,
+        default=project_root / "pipelines" / "isaac" / "mesh_to_usd_converter.py",
+        help="Path to the Isaac mesh-to-USD converter script.",
+    )
     return parser
 
 
@@ -164,15 +180,24 @@ def iter_binary_frames(resp: requests.Response):
 def clear_previous_outputs(output_dir: Path) -> None:
     objects_dir = output_dir / "objects"
     objects_dir.mkdir(parents=True, exist_ok=True)
+    usd_objects_dir = output_dir / "usd_objects"
 
     for object_glb in objects_dir.glob("*.glb"):
         if object_glb.is_file():
             object_glb.unlink()
 
+    if usd_objects_dir.exists() and usd_objects_dir.is_dir():
+        for object_usd in usd_objects_dir.glob("*.usd"):
+            if object_usd.is_file():
+                object_usd.unlink()
+
     for artifact_name in (
+        MANIFEST_FILENAME,
         "scene_merged.glb",
         "scene_merged_pre.glb",
         "scene_merged_post.glb",
+        "scene_merged.usd",
+        "scene_merged_post.usd",
         "poses.json",
         "poses_partial.json",
         "poses_pre.json",
@@ -181,6 +206,75 @@ def clear_previous_outputs(output_dir: Path) -> None:
         artifact_path = output_dir / artifact_name
         if artifact_path.exists() and artifact_path.is_file():
             artifact_path.unlink()
+
+
+def collect_usd_conversion_pairs(output_dir: Path, *, include_scene_glb: bool = False) -> list[tuple[Path, Path]]:
+    objects_dir = output_dir / "objects"
+    usd_objects_dir = output_dir / "usd_objects"
+    pairs: list[tuple[Path, Path]] = []
+
+    if include_scene_glb:
+        scene_post_glb = output_dir / "scene_merged_post.glb"
+        if scene_post_glb.exists() and scene_post_glb.is_file():
+            pairs.append((scene_post_glb, output_dir / "scene_merged_post.usd"))
+
+    for object_glb in sorted(p for p in objects_dir.glob("*.glb") if p.is_file()):
+        pairs.append((object_glb, usd_objects_dir / f"{object_glb.stem}.usd"))
+
+    return pairs
+
+
+def convert_outputs_to_usd(
+    output_dir: Path,
+    *,
+    converter_python: str,
+    asset_converter_script: Path,
+    include_scene_glb: bool = False,
+) -> None:
+    conversion_pairs = collect_usd_conversion_pairs(output_dir, include_scene_glb=include_scene_glb)
+    if not conversion_pairs:
+        return
+
+    converter_script = asset_converter_script.resolve()
+    if not converter_script.exists():
+        raise FileNotFoundError(f"Asset converter script not found: {converter_script}")
+
+    cmd = [
+        converter_python,
+        "-u",
+        str(converter_script),
+        "--input-files",
+        *[str(src.resolve()) for src, _ in conversion_pairs],
+        "--output-files",
+        *[str(dst.resolve()) for _, dst in conversion_pairs],
+        "--load-materials",
+    ]
+    print(f"[POST] convert USD: {len(conversion_pairs)} file(s)")
+    subprocess.run(cmd, check=True)
+
+
+def assemble_scene_usd_from_manifest(
+    manifest_path: Path,
+    *,
+    converter_python: str,
+    asset_converter_script: Path,
+    scene_output_path: Path,
+) -> None:
+    converter_script = asset_converter_script.resolve()
+    if not converter_script.exists():
+        raise FileNotFoundError(f"Asset converter script not found: {converter_script}")
+
+    cmd = [
+        converter_python,
+        "-u",
+        str(converter_script),
+        "--assemble-scene-from-manifest",
+        str(manifest_path.resolve()),
+        "--scene-output",
+        str(scene_output_path.resolve()),
+    ]
+    print(f"[POST] assemble scene USD: {scene_output_path}")
+    subprocess.run(cmd, check=True)
 
 
 def process_stream_response(resp: requests.Response, output_dir: Path) -> None:
@@ -337,8 +431,39 @@ def main() -> None:
                 f" support_pairs={summary['support_pairs']}"
                 f" forced_upright={summary['forced_upright']}"
                 f" snapped_upright={summary['snapped_upright']}"
+                f" support_contact_adjustments={summary['support_contact_adjustments']}"
                 f" penetration_adjustments={summary['penetration_adjustments']}"
+                f" floating_adjustments={summary['floating_adjustments']}"
             )
+            convert_outputs_to_usd(
+                output_dir,
+                converter_python=args.converter_python,
+                asset_converter_script=args.asset_converter_script,
+                include_scene_glb=args.scene_graph is None,
+            )
+            if args.scene_graph is not None:
+                manifest_path, manifest = build_real2sim_asset_manifest(
+                    output_dir,
+                    scene_graph_path=args.scene_graph,
+                )
+                assemble_scene_usd_from_manifest(
+                    manifest_path,
+                    converter_python=args.converter_python,
+                    asset_converter_script=args.asset_converter_script,
+                    scene_output_path=output_dir / "scene_merged_post.usd",
+                )
+                manifest_path, manifest = build_real2sim_asset_manifest(
+                    output_dir,
+                    scene_graph_path=args.scene_graph,
+                )
+                print(
+                    "[POST] asset manifest:"
+                    f" matched={len(manifest.get('objects', {}))}"
+                    f" unmatched_scene_paths={len(manifest.get('unmatched_scene_paths', []))}"
+                    f" unmatched_outputs={len(manifest.get('unmatched_outputs', []))}"
+                    f" scene_usd={manifest.get('scene_usd')}"
+                )
+                print(f"[POST] manifest saved: {manifest_path}")
             print(f"[DONE] Saved streamed outputs to: {output_dir}")
             return
         except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:

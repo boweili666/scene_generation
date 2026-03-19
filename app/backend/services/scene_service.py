@@ -18,6 +18,7 @@ import random
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from typing import Literal
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -31,6 +32,8 @@ from ..config import (
     DEFAULT_RENDER_PATH as CFG_DEFAULT_RENDER_PATH,
     GENMESH_ROOT as CFG_GENMESH_ROOT,
     ISAAC_ASSET_ROOT as CFG_ISAAC_ASSET_ROOT,
+    REAL2SIM_MANIFEST_PATH as CFG_REAL2SIM_MANIFEST_PATH,
+    RETRIEVAL_ASSET_ROOT as CFG_RETRIEVAL_ASSET_ROOT,
     SCENE_GRAPH_PATH as CFG_SCENE_GRAPH_PATH,
     SCENE_SERVICE_USD_DIR as CFG_SCENE_SERVICE_USD_DIR,
 )
@@ -48,11 +51,14 @@ for candidate in (THIS_DIR, ISAAC_SCRIPT_DIR):
 # pylint: disable=wrong-import-position
 from isaacsim import SimulationApp
 import scene_renderer as sf
+import resample_modes as rm
 
 # Default paths aligned with this repo's config.py.
 DEFAULT_SCENE_GRAPH_PATH = str(CFG_SCENE_GRAPH_PATH)
 DEFAULT_PLACEMENTS_PATH: Optional[str] = str(CFG_DEFAULT_PLACEMENTS_PATH)
 DEFAULT_SCREENSHOT_PATH: Optional[str] = str(CFG_DEFAULT_RENDER_PATH)
+DEFAULT_SCENE_USD_PATH: str = str((CFG_SCENE_SERVICE_USD_DIR / "scene_latest.usd").resolve())
+DEFAULT_ROOM_USD_PATH: str = str((CFG_SCENE_SERVICE_USD_DIR / "generated_room.scene_service.usd").resolve())
 
 
 class SceneRequest(BaseModel):
@@ -65,7 +71,19 @@ class SceneRequest(BaseModel):
     )
     asset_root: str = Field(
         default=str(CFG_ISAAC_ASSET_ROOT),
-        description="USD asset root directory for matching object names.",
+        description="Legacy fallback USD asset root for class-name matching when source is missing.",
+    )
+    retrieval_asset_root: str = Field(
+        default=str(CFG_RETRIEVAL_ASSET_ROOT),
+        description="USD asset root directory used for source=retrieval matching.",
+    )
+    real2sim_manifest_path: Optional[str] = Field(
+        default=str(CFG_REAL2SIM_MANIFEST_PATH),
+        description="Manifest generated from the latest Real2Sim outputs for source=real2sim matching.",
+    )
+    resample_mode: Literal["joint", "lock_real2sim"] = Field(
+        default="joint",
+        description="Scene resampling mode: joint samples all objects; lock_real2sim keeps real2sim support chains rigid and only samples their unsupported roots.",
     )
     plane_size: float = 10.0
     plane_height: float = 0.0
@@ -74,9 +92,9 @@ class SceneRequest(BaseModel):
     use_default_ground: bool = True
     generate_room: bool = False
     room_include_back_wall: bool = True
-    room_include_left_wall: bool = False
+    room_include_left_wall: bool = True
     room_include_right_wall: bool = True
-    room_include_front_wall: bool = True
+    room_include_front_wall: bool = False
     unit: str = Field(default="m", description="Scene graph length unit: cm or m.")
     placements: Optional[Dict[str, List[float]]] = Field(
         default=None,
@@ -87,11 +105,12 @@ class SceneRequest(BaseModel):
         description="Optional JSON path to load placements (same format as placements, supports yaw).",
     )
     save_usd: Optional[str] = Field(
-        default=None, description="Export stage to this path if provided."
+        default=DEFAULT_SCENE_USD_PATH,
+        description="Export the full generated stage to this path.",
     )
     frames: int = 15
     capture_frame: int = 5
-    camera_eye: List[float] = Field(default_factory=lambda: [30.0, 0.0, 30.0])
+    camera_eye: List[float] = Field(default_factory=lambda: [18.0, 0.0, 18.0])
     camera_target: List[float] = Field(default_factory=lambda: [0.0, 0.0, 1.0])
     camera_euler: List[float] = Field(default_factory=lambda: [0.0, 90.0, 0.0])
     resolution: List[int] = Field(default_factory=lambda: [1280, 720])
@@ -171,6 +190,19 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         if req.unit.lower() == "cm":
             data = _scale_scene_dimensions_to_m(data)
         return data
+
+    def _resolve_scene_save_path(req: SceneRequest) -> Path:
+        save_path = Path(req.save_usd) if req.save_usd else Path(DEFAULT_SCENE_USD_PATH)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        return save_path
+
+    def _resolve_room_usd_path() -> Path:
+        room_root = Path(DEFAULT_ROOM_USD_PATH)
+        room_root.parent.mkdir(parents=True, exist_ok=True)
+        for legacy_path in room_root.parent.glob("generated_room.scene_service*.usd"):
+            if legacy_path.is_file():
+                legacy_path.unlink()
+        return room_root.parent / f"{room_root.stem}.{time.time_ns()}.usd"
 
     def _load_placements_dict(path: Optional[str], inline: Optional[Dict]) -> Dict[str, Tuple[float, float, float, Optional[float]]]:
         if not path and not inline:
@@ -406,8 +438,32 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
     async def _rebuild(req: SceneRequest, use_overrides: bool = True) -> Dict:
         nonlocal world
         data = _load_scene_graph(req)
-        usd_paths = _get_usd_paths(Path(req.asset_root))
-        asset_bbox = _calc_asset_bbox(data, usd_paths)
+        resample_mode = rm.validate_resample_mode(req.resample_mode)
+        room_closed_walls = {
+            "behind": req.room_include_back_wall,
+            "left": req.room_include_left_wall,
+            "right": req.room_include_right_wall,
+            "front": req.room_include_front_wall,
+        }
+        fallback_usd_paths = _get_usd_paths(Path(req.asset_root))
+        retrieval_usd_paths = _get_usd_paths(Path(req.retrieval_asset_root))
+        combined_usd_paths = list(dict.fromkeys([*retrieval_usd_paths, *fallback_usd_paths]))
+        real2sim_manifest = sf.load_real2sim_manifest(
+            Path(req.real2sim_manifest_path) if req.real2sim_manifest_path else None
+        )
+        real2sim_scale_lookup = sf.build_real2sim_uniform_scale_lookup(real2sim_manifest)
+        asset_match_lookup = sf.build_asset_match_lookup(
+            data,
+            fallback_usd_paths,
+            retrieval_usd_paths=retrieval_usd_paths,
+            real2sim_manifest=real2sim_manifest,
+        )
+        asset_bbox = sf.build_asset_bbox_lookup(
+            data,
+            combined_usd_paths,
+            asset_match_lookup=asset_match_lookup,
+            object_scale_lookup=real2sim_scale_lookup,
+        )
         edges = data.get("edges", {}).get("obj-obj", [])
         placement_overrides = _load_placements_dict(req.placements_path, req.placements) if use_overrides else {}
 
@@ -417,22 +473,39 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
 
         grid_step = 0.25
         object_entries, placements = sf._build_entries_from_scene_edges(  # noqa: SLF001
-            data, req.plane_height, req.spread_scale, grid_step, asset_bbox
+            data,
+            req.plane_height,
+            req.spread_scale,
+            grid_step,
+            asset_bbox,
+            object_scale_lookup=real2sim_scale_lookup,
+            room_closed_walls=room_closed_walls,
         )
+        layout_debug: Dict[str, object] = {
+            "mode_applied": False,
+            "reason": None,
+            "real2sim_roots": [],
+            "locked_real2sim_children": [],
+            "skipped_real2sim_prims": [],
+            "missing_manifest_transforms": [],
+        }
+        if resample_mode == "lock_real2sim":
+            object_entries, placements, layout_debug = rm.apply_lock_real2sim_relative_transforms(
+                data,
+                object_entries,
+                placements,
+                asset_bbox_lookup=asset_bbox,
+                real2sim_manifest=real2sim_manifest,
+            )
         if placement_overrides:
             updated = _apply_placement_overrides(object_entries, placement_overrides, placements)
             placements.update(updated)
         # Backfill yaw from transform when missing to keep exported placements complete.
         _inject_yaw_from_transforms(placements, object_entries)
 
-        asset_match_lookup = sf.build_asset_match_lookup(data, usd_paths)
         room_usd_path: Optional[Path] = None
         if req.generate_room:
-            # Use a unique per-request path to avoid USD layer identifier cache collisions.
-            room_usd_path = (
-                Path(CFG_SCENE_SERVICE_USD_DIR)
-                / f"generated_room.scene_service.{time.time_ns()}.usd"
-            )
+            room_usd_path = _resolve_room_usd_path()
             room_texture_dir = PROJECT_ROOT / "third_party" / "stable_material"
             try:
                 sf.generate_room_usd_from_scene(
@@ -449,17 +522,21 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             except Exception as e:
                 print(f"[WARN] generate_room_usd_from_scene failed, fallback without room: {e}")
                 room_usd_path = None
+        scene_save_path = _resolve_scene_save_path(req)
         sf.build_stage_from_entries(
             object_entries,
-            usd_paths,
+            combined_usd_paths,
             edges,
-            Path(req.save_usd) if req.save_usd else None,
+            scene_save_path,
             req.plane_size,
             req.plane_height,
             default_ground_z_offset=req.default_ground_z_offset,
             asset_match_lookup=asset_match_lookup,
             room_usd=room_usd_path,
             use_default_ground=req.use_default_ground,
+            skip_support_realign_prims=set(layout_debug.get("locked_real2sim_children", [])),
+            room_bounds=sf._room_bounds_from_scene(data, req.spread_scale),  # noqa: SLF001
+            room_closed_walls=room_closed_walls,
         )
 
         # Camera and rendering.
@@ -514,13 +591,42 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             with out_path.open("w", encoding="utf-8") as f:
                 json.dump(serializable, f, ensure_ascii=False, indent=2)
 
+        resolved_assets = []
+        resolved_counts = {"real2sim": 0, "retrieval": 0, "fallback": 0, "missing": 0}
+        locked_children = set(layout_debug.get("locked_real2sim_children", []))
+        for prim, meta in data.get("obj", {}).items():
+            asset = asset_match_lookup.get(prim)
+            resolved_source = asset.source if asset is not None else "missing"
+            resolved_counts[resolved_source] = resolved_counts.get(resolved_source, 0) + 1
+            resolved_assets.append(
+                {
+                    "prim": prim,
+                    "class": meta.get("class"),
+                    "source": meta.get("source"),
+                    "resolved_source": resolved_source,
+                    "asset_path": str(asset.asset_path) if asset is not None else None,
+                    "reference_prim_path": asset.reference_prim_path if asset is not None else None,
+                    "sampled": prim not in locked_children,
+                    "locked_relative": prim in locked_children,
+                }
+            )
+        resolved_assets.sort(key=lambda item: item["prim"])
+
         return {
             "seed": seed,
+            "resample_mode": resample_mode,
             "placements": placements,
             "objects": object_entries,
-            "usd_files": len(usd_paths),
+            "usd_files": len(combined_usd_paths),
             "edges": len(edges),
+            "saved_usd": str(scene_save_path),
             "screenshot_saved": screenshot_saved,
+            "debug": {
+                "resample_mode": resample_mode,
+                "asset_resolution_counts": resolved_counts,
+                "asset_resolution": resolved_assets,
+                "layout": layout_debug,
+            },
         }
 
     @app.get("/health")
@@ -550,7 +656,12 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             if not objs:
                 raise HTTPException(status_code=400, detail="scene_graph.obj is empty")
             _, placements = sf._build_entries_from_scene_edges(  # noqa: SLF001
-                data, req.plane_height, req.spread_scale, 0.25, None
+                data,
+                req.plane_height,
+                req.spread_scale,
+                0.25,
+                None,
+                room_closed_walls={"behind": True, "left": True, "right": True, "front": False},
             )
             return {"placements": placements}
 

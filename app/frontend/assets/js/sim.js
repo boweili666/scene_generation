@@ -106,14 +106,24 @@
     }
 
     /* ===== Isaac Scene Service ===== */
-    async function callSceneService(endpoint) {
+    function getSelectedResampleMode() {
+      const select = document.getElementById("resampleModeSelect");
+      return select && select.value ? select.value : "joint";
+    }
+
+    async function runResample() {
+      return callSceneService("scene_new", { resampleMode: getSelectedResampleMode() });
+    }
+
+    async function callSceneService(endpoint, options = {}) {
       const statusEl = document.getElementById("sceneSvcStatus");
       const resultEl = document.getElementById("sceneSvcResult");
       const img = document.getElementById("renderImage");
 
       const base = "http://127.0.0.1:8001";
+      const resampleMode = options.resampleMode || "joint";
       const payload = {
-        camera_eye: [0.0, -18.0, 18.0],
+        camera_eye: [18.0, 0.0, 18.0],
         camera_target: [0.0, 0.0, 1.0],
         frames: 20,
         capture_frame: 10,
@@ -122,15 +132,18 @@
         default_ground_z_offset: -0.01,
         generate_room: true,
         room_include_back_wall: true,
-        room_include_left_wall: false,
+        room_include_left_wall: true,
         room_include_right_wall: true,
-        room_include_front_wall: true
+        room_include_front_wall: false,
+        resample_mode: endpoint === "scene_new" ? resampleMode : "joint"
       };
 
       statusEl.textContent = `Calling /${endpoint}...`;
       setPill("sim","warn","Calling...");
-      document.getElementById("statusSimText").textContent = `Calling /${endpoint}...`;
+      document.getElementById("statusSimText").textContent =
+        endpoint === "scene_new" ? `Calling /${endpoint} (${payload.resample_mode})...` : `Calling /${endpoint}...`;
       resetSimProgress();
+      resetSceneDebug();
       resultEl.textContent = "Requesting...";
 
       try {
@@ -148,10 +161,12 @@
           setPill("sim","err","Failed");
           toast("err","Scene service failed", data.detail || data.error || "Request failed");
         } else {
+          setSceneDebug(data.debug || { resample_mode: payload.resample_mode });
+          if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
           showImagePreview();
           img.src = "/render_image?ts=" + Date.now();
           setPill("sim","ok","Ready");
-          toast("ok","Scene service done", `Endpoint /${endpoint} finished.`);
+          toast("ok","Scene service done", `Endpoint /${endpoint} finished${endpoint === "scene_new" ? ` (${payload.resample_mode})` : ""}.`);
         }
       } catch (err) {
         console.error(err);

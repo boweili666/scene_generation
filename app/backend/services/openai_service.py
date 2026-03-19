@@ -12,8 +12,9 @@ except ModuleNotFoundError:  # pragma: no cover - exercised indirectly in local 
 from ..config import DEFAULT_MODEL
 
 
-SCENE_GRAPH_MODEL = os.getenv("SCENE_GRAPH_MODEL", "gpt-5")
+SCENE_GRAPH_MODEL = os.getenv("SCENE_GRAPH_MODEL", "gpt-5.4-mini")
 client: Optional[Any] = None
+ALLOWED_OBJECT_SOURCES = {"real2sim", "retrieval"}
 
 SYSTEM_PROMPT = r"""
 You are an expert in 3D Scene Graph Construction.
@@ -50,10 +51,18 @@ OBJECT RULES
    - `id`: integer ID
    - `class`: lowercase class name
    - `caption`: short caption
+   - `source`: one of `real2sim` or `retrieval`
 7. Class names must be lowercase.
 8. Caption max 6 words.
-9. You may infer implicit object-object pairing relations from common priors when strongly plausible.
+9. Choose `source` conservatively:
+   - use `real2sim` for objects that should come from the current observed real scene / uploaded image
+   - use `retrieval` for objects that should come from the asset library or are newly imagined from text
+10. You may infer implicit object-object pairing relations from common priors when strongly plausible.
    Example: chair and table are typically "face to" and "adjacent" unless explicitly contradicted.
+11. One physical object instance must map to exactly one node.
+    - Do NOT create duplicate nodes for the same visible instance because of class ambiguity or synonyms.
+    - If an object could plausibly be described by multiple classes (for example `jar` vs `glass`, `cup` vs `mug`), choose exactly one class.
+    - Put secondary details such as lid/material/style into `caption`, not into an extra object node.
 
 --------------------------------
 RELATION TYPES
@@ -166,8 +175,9 @@ SCHEMA = {
                     "id": {"type": "integer", "minimum": 0},
                     "class": {"type": "string"},
                     "caption": {"type": "string"},
+                    "source": {"type": "string", "enum": ["real2sim", "retrieval"]},
                 },
-                "required": ["path", "id", "class", "caption"],
+                "required": ["path", "id", "class", "caption", "source"],
                 "additionalProperties": False,
             },
         },
@@ -311,6 +321,15 @@ def _validate_normalized_scene_graph(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError("Object paths must be non-empty strings.")
         if not isinstance(meta, dict):
             raise ValueError("Each object entry must be a JSON object.")
+        source = meta.get("source")
+        if source is None:
+            raise ValueError(
+                f"Object '{path}' is missing required source. Allowed: {sorted(ALLOWED_OBJECT_SOURCES)}"
+            )
+        if source not in ALLOWED_OBJECT_SOURCES:
+            raise ValueError(
+                f"Object '{path}' has invalid source '{source}'. Allowed: {sorted(ALLOWED_OBJECT_SOURCES)}"
+            )
 
     for edge in obj_obj_edges:
         if not isinstance(edge, dict):
@@ -352,6 +371,7 @@ def _normalize_scene_graph_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "id": item.get("id"),
                 "class": item.get("class"),
                 "caption": item.get("caption"),
+                "source": item.get("source"),
             }
 
         normalized = {
@@ -376,18 +396,36 @@ def parse_scene_graph_from_text(text: str, class_names_raw: str = "") -> Dict[st
     return _parse_scene_graph_response(response)
 
 
-def parse_scene_graph_from_image(image_bytes: bytes, class_names_raw: str = "") -> Dict[str, Any]:
+def _build_image_scene_graph_prompt(text: str = "", class_names_raw: str = "") -> str:
     class_hint = _build_class_hint(class_names_raw)
+    prompt = (
+        "Analyze this image and produce a scene graph that follows the provided schema."
+        + (f" {class_hint}" if class_hint else "")
+        + " Infer room type/dimensions/materials from visible context when unspecified."
+    )
+    text = text.strip()
+    if text:
+        prompt += (
+            " The user also provided this text instruction: "
+            f"{text} "
+            "Use both the image and the text together. "
+            "Objects clearly present in the uploaded image should usually use source=real2sim. "
+            "Objects explicitly requested in text but not present in the uploaded image should use source=retrieval."
+        )
+    return prompt
+
+
+def parse_scene_graph_from_image(
+    image_bytes: bytes,
+    class_names_raw: str = "",
+    *,
+    text: str = "",
+) -> Dict[str, Any]:
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     prompt_content = [
         {
             "type": "input_text",
-            "text": (
-                "Analyze this image and produce a scene graph that follows "
-                "the provided schema."
-            )
-            + (f" {class_hint}" if class_hint else "")
-            + " Infer room type/dimensions/materials from visible context when unspecified.",
+            "text": _build_image_scene_graph_prompt(text=text, class_names_raw=class_names_raw),
         },
         {
             "type": "input_image",

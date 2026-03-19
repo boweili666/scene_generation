@@ -11,6 +11,12 @@ import numpy as np
 import trimesh
 from scipy.spatial.transform import Rotation
 
+from .manifest import (
+    GLTF_TO_USD_UNIT_SCALE,
+    USD_TRANSFORM_CONVENTION,
+    gltf_scene_transform_to_usd_transform,
+)
+
 
 Y_AXIS = np.array([0.0, 1.0, 0.0], dtype=float)
 X_AXIS = np.array([1.0, 0.0, 0.0], dtype=float)
@@ -20,6 +26,7 @@ PRE_SCENE_FILENAME = "scene_merged_pre.glb"
 POST_SCENE_FILENAME = "scene_merged_post.glb"
 PRE_POSES_FILENAME = "poses_pre.json"
 POST_POSES_FILENAME = "poses_post.json"
+DEFAULT_UPRIGHT_COS_THRESHOLD = 0.8660254037844387  # cos(30 deg)
 
 
 @dataclass
@@ -114,7 +121,7 @@ def upright_rotation_from_current(rotation: np.ndarray) -> np.ndarray:
     return upright
 
 
-def is_nearly_y_up(rotation: np.ndarray, *, cos_threshold: float = 0.97) -> bool:
+def is_nearly_y_up(rotation: np.ndarray, *, cos_threshold: float = DEFAULT_UPRIGHT_COS_THRESHOLD) -> bool:
     up = rotation @ Y_AXIS
     return float(np.dot(up, Y_AXIS)) >= cos_threshold
 
@@ -188,9 +195,32 @@ def resolve_support_penetration(
     *,
     clearance: float = 1e-4,
 ) -> int:
+    summary = align_support_contacts(
+        placements,
+        support_pairs,
+        clearance=clearance,
+        align_floating=False,
+    )
+    return summary["penetration_adjustments"]
+
+
+def align_support_contacts(
+    placements: dict[str, PlacementState],
+    support_pairs: list[tuple[str, str]],
+    *,
+    clearance: float = 1e-4,
+    epsilon: float = 1e-6,
+    align_floating: bool = True,
+) -> dict[str, int]:
     total_adjustments = 0
+    penetration_adjustments = 0
+    floating_adjustments = 0
     if not support_pairs:
-        return total_adjustments
+        return {
+            "contact_adjustments": total_adjustments,
+            "penetration_adjustments": penetration_adjustments,
+            "floating_adjustments": floating_adjustments,
+        }
 
     max_passes = max(1, len(support_pairs))
     for _ in range(max_passes):
@@ -209,16 +239,27 @@ def resolve_support_penetration(
                 continue
 
             target_bottom = base_max[1] + clearance
-            if top_min[1] >= target_bottom:
+            delta_y = target_bottom - float(top_min[1])
+            if abs(delta_y) <= epsilon:
+                continue
+            if delta_y < 0.0 and not align_floating:
                 continue
 
-            top.translation[1] += target_bottom - top_min[1]
+            top.translation[1] += delta_y
             total_adjustments += 1
+            if delta_y > 0.0:
+                penetration_adjustments += 1
+            else:
+                floating_adjustments += 1
             moved_this_pass = True
         if not moved_this_pass:
             break
 
-    return total_adjustments
+    return {
+        "contact_adjustments": total_adjustments,
+        "penetration_adjustments": penetration_adjustments,
+        "floating_adjustments": floating_adjustments,
+    }
 
 
 def preserve_relative_support_transforms(
@@ -331,11 +372,16 @@ def _update_pose_entry(pose_entry: dict[str, Any], placement: PlacementState) ->
     updated = dict(pose_entry)
     quat_xyzw = Rotation.from_matrix(placement.rotation).as_quat()
     quat_wxyz = [float(quat_xyzw[3]), float(quat_xyzw[0]), float(quat_xyzw[1]), float(quat_xyzw[2])]
+    scene_transform = placement.matrix
+    usd_transform = gltf_scene_transform_to_usd_transform(scene_transform, unit_scale=GLTF_TO_USD_UNIT_SCALE)
     updated["rotation"] = [quat_wxyz]
     updated["translation"] = [[float(v) for v in placement.translation.tolist()]]
     updated["scale"] = [[float(v) for v in placement.scale.tolist()]]
-    updated["scene_transform"] = [[float(v) for v in row] for row in placement.matrix.tolist()]
+    updated["scene_transform"] = [[float(v) for v in row] for row in scene_transform.tolist()]
     updated.setdefault("scene_transform_convention", "gltf_y_up")
+    updated["usd_transform"] = [[float(v) for v in row] for row in usd_transform.tolist()]
+    updated["usd_transform_convention"] = USD_TRANSFORM_CONVENTION
+    updated["usd_unit_scale"] = float(GLTF_TO_USD_UNIT_SCALE)
     return updated
 
 
@@ -351,7 +397,7 @@ def postprocess_real2sim_outputs(
     output_dir: str | Path,
     scene_graph_path: str | Path | None = None,
     *,
-    upright_cos_threshold: float = 0.97,
+    upright_cos_threshold: float = DEFAULT_UPRIGHT_COS_THRESHOLD,
     support_clearance: float = 1e-4,
 ) -> dict[str, int]:
     output_root = Path(output_dir)
@@ -435,11 +481,13 @@ def postprocess_real2sim_outputs(
         support_pairs,
         unsupported_root_objects,
     )
-    penetration_adjustments = resolve_support_penetration(
+    contact_alignment = align_support_contacts(
         placements,
         support_pairs,
         clearance=support_clearance,
     )
+    penetration_adjustments = contact_alignment["penetration_adjustments"]
+    floating_adjustments = contact_alignment["floating_adjustments"]
 
     merged_scene = trimesh.Scene()
     for object_name in object_names:
@@ -469,5 +517,7 @@ def postprocess_real2sim_outputs(
         "forced_upright": forced_upright_count,
         "snapped_upright": snapped_upright_count,
         "grounded_roots": grounded_roots,
+        "support_contact_adjustments": contact_alignment["contact_adjustments"],
         "penetration_adjustments": penetration_adjustments,
+        "floating_adjustments": floating_adjustments,
     }

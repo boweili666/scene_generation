@@ -18,5 +18,6 @@
     setPill("graph","", "Idle");
     setPill("sim","", "Idle");
     resetSimProgress();
+    resetSceneDebug();
     clearReferenceImagePreview();
     loadSceneGraph();

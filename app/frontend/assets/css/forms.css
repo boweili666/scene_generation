@@ -153,6 +153,12 @@
       align-items:center;
       justify-content:flex-start;
     }
+    .resample-controls{
+      display:flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items:center;
+    }
     .toolbtn{
       padding: 9px 11px;
       border-radius: 12px;
@@ -174,4 +180,20 @@
       border-color: rgba(16,185,129,0.18);
       color: #065f46;
     }
-
+    .toolselect{
+      appearance: none;
+      padding: 9px 34px 9px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(15,23,42,0.10);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.96), rgba(245,249,255,0.92));
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .toolselect:focus{
+      outline: none;
+      border-color: rgba(37,99,235,0.36);
+      box-shadow: 0 0 0 4px rgba(37,99,235,0.12);
+    }

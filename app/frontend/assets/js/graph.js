@@ -4,8 +4,11 @@
       const elements = [];
       for (const obj of (normalized.objects || [])) {
         const depth = String(obj.path || "").split("/").filter(Boolean).length;
+        const source = obj.source || "";
+        const rawLabel = obj.class_name || String(obj.path || "").split("/").pop() || "object";
+        const label = String(rawLabel).replace(/_/g, " ");
         elements.push({
-          data: { id: obj.path, label: obj.class_name, depth }
+          data: { id: obj.path, label, depth, source }
         });
       }
       for (const e of (normalized.edges || [])) {
@@ -23,24 +26,41 @@
           {
             selector: "node",
             style: {
-              "background-color": "mapData(depth, 1, 6, #93c5fd, #1d4ed8)",
-              "border-color": "#1d4ed8",
-              "border-width": "1.5px",
+              "background-color": "#5b6f95",
+              "border-color": "#32435f",
+              "border-width": "1.8px",
               "label": "data(label)",
               "color": "#ffffff",
               "text-valign": "center",
               "shape": "round-rectangle",
-              "padding": "10px",
+              "padding": "11px",
               "font-size": "11px",
+              "font-weight": 700,
               "text-wrap": "wrap",
               "text-max-width": "130px",
-              "text-outline-width": 2,
-              "text-outline-color": "rgba(15, 23, 42, 0.18)",
-              "shadow-color": "rgba(29, 78, 216, 0.25)",
-              "shadow-blur": 14,
-              "shadow-offset-y": 5,
+              "text-outline-width": 2.5,
+              "text-outline-color": "rgba(15, 23, 42, 0.26)",
+              "shadow-color": "rgba(34, 44, 64, 0.18)",
+              "shadow-blur": 18,
+              "shadow-offset-y": 6,
               "transition-property": "background-color, border-color, shadow-blur, shadow-color, opacity",
               "transition-duration": "180ms"
+            }
+          },
+          {
+            selector: 'node[source = "real2sim"]',
+            style: {
+              "background-color": "#1f8a70",
+              "border-color": "#145a4d",
+              "shadow-color": "rgba(21, 92, 78, 0.22)"
+            }
+          },
+          {
+            selector: 'node[source = "retrieval"]',
+            style: {
+              "background-color": "#5967b3",
+              "border-color": "#384584",
+              "shadow-color": "rgba(56, 69, 132, 0.22)"
             }
           },
           {
@@ -50,17 +70,17 @@
               "target-arrow-shape": "triangle",
               "label": "data(label)",
               "font-size": "10px",
-              "line-color": "rgba(37, 99, 235, 0.55)",
-              "target-arrow-color": "rgba(37, 99, 235, 0.55)",
-              "width": 2,
-              "arrow-scale": 0.9,
+              "line-color": "rgba(78, 108, 173, 0.72)",
+              "target-arrow-color": "rgba(78, 108, 173, 0.72)",
+              "width": 2.1,
+              "arrow-scale": 0.95,
               "text-rotation": "autorotate",
-              "text-background-color": "#ffffff",
-              "text-background-opacity": 0.92,
+              "text-background-color": "rgba(255,255,255,0.94)",
+              "text-background-opacity": 1,
               "text-background-padding": "4px",
-              "color": "#0f172a",
+              "color": "#334155",
               "text-border-width": 1,
-              "text-border-color": "rgba(148, 163, 184, 0.55)",
+              "text-border-color": "rgba(148, 163, 184, 0.42)",
               "text-margin-y": -3,
               "transition-property": "line-color, target-arrow-color, width, opacity",
               "transition-duration": "180ms"
@@ -204,4 +224,3 @@
       toast("ok","Graph updated", `${result.analysis.objects} objects • ${result.analysis.edges} edges • score ${result.analysis.score}`);
       if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
     }
-

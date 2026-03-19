@@ -7,6 +7,8 @@ from pathlib import Path
 from datetime import datetime
 
 from ..config import (
+    ASSET_CONVERTER_SCRIPT,
+    ISAAC_PYTHON,
     LATEST_INPUT_IMAGE,
     LOG_PATH,
     PREDICT_STREAM_SERVER,
@@ -198,6 +200,8 @@ def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
+            if obj.get("source") != "real2sim":
+                continue
             val = obj.get("class_name") or obj.get("class")
             if isinstance(val, str) and val.strip():
                 prompts.append(val.strip().lower())
@@ -206,6 +210,8 @@ def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
     if isinstance(obj_map, dict):
         for obj in obj_map.values():
             if not isinstance(obj, dict):
+                continue
+            if obj.get("source") != "real2sim":
                 continue
             val = obj.get("class_name") or obj.get("class")
             if isinstance(val, str) and val.strip():
@@ -255,11 +261,25 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
     if poses_path.exists() and poses_path.is_file():
         poses_json = _rel(poses_path)
 
+    scene_usd = None
+    for scene_usd_name in ("scene_merged_post.usd", "scene_merged.usd"):
+        scene_usd_path = results_root / scene_usd_name
+        if scene_usd_path.exists() and scene_usd_path.is_file():
+            scene_usd = _rel(scene_usd_path)
+            break
+
+    manifest_json = None
+    manifest_path = results_root / "real2sim_asset_manifest.json"
+    if manifest_path.exists() and manifest_path.is_file():
+        manifest_json = _rel(manifest_path)
+
     return {
         "scene_results_dir": str(results_root),
         "object_glbs": object_glbs,
         "scene_glb": scene_glb,
         "poses_json": poses_json,
+        "scene_usd": scene_usd,
+        "manifest_json": manifest_json,
     }
 
 
@@ -353,6 +373,10 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         str(masks_dir_abs),
         "--output-dir",
         str(scene_results_abs),
+        "--converter-python",
+        str(ISAAC_PYTHON),
+        "--asset-converter-script",
+        str(ASSET_CONVERTER_SCRIPT),
     ]
     _run_step(
         step2_cmd,

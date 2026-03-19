@@ -181,6 +181,9 @@
       grid-template-columns: 1fr 1fr;
       gap: 12px;
     }
+    .drawer-section{
+      margin-top: 12px;
+    }
 
     /* ===== Toast ===== */
     .toasts{
@@ -234,4 +237,3 @@
     }
     .toast .txt b{ font-size: 13px; color: var(--text); }
     .toast .txt span{ font-size: 12px; color: var(--muted); line-height: 1.35; }
-

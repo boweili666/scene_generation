@@ -26,6 +26,7 @@ ISAAC_PYTHON = os.environ.get("ISAAC_PYTHON", "python")
 ISAAC_SCRIPT = str(PROJECT_ROOT / "pipelines" / "isaac" / "scene_renderer.py")
 ASSET_CONVERTER_SCRIPT = str(PROJECT_ROOT / "pipelines" / "isaac" / "mesh_to_usd_converter.py")
 ISAAC_ASSET_ROOT = (PROJECT_ROOT / "pipelines" / "isaac" / "assets").resolve()
+RETRIEVAL_ASSET_ROOT = Path(os.environ.get("RETRIEVAL_ASSET_ROOT", PROJECT_ROOT / "testusd")).resolve()
 SAM3_PYTHON = os.environ.get("SAM3_PYTHON", "python")
 SAM3_MESH_GEN = os.path.expanduser(os.environ.get("SAM3_MESH_GEN", "/home/lbw/3dgen-project/sam3/test_mesh_gen.py"))
 SAM3_MESH_OUTPUT = os.path.expanduser(os.environ.get("SAM3_MESH_OUTPUT", "/home/lbw/3dgen-project/sam3/outputs/meshes"))
@@ -48,12 +49,14 @@ REAL2SIM_MASK_OUTPUT_DIR = (REAL2SIM_RUNTIME_DIR / "masks").resolve()
 REAL2SIM_MESH_OUTPUT_DIR = (REAL2SIM_RUNTIME_DIR / "meshes").resolve()
 REAL2SIM_REUSE_MESH_DIR = (REAL2SIM_RUNTIME_DIR / "meshes").resolve()
 REAL2SIM_SCENE_RESULTS_DIR = (REAL2SIM_RUNTIME_DIR / "scene_results").resolve()
+REAL2SIM_MANIFEST_PATH = (REAL2SIM_SCENE_RESULTS_DIR / "real2sim_asset_manifest.json").resolve()
 PREDICT_STREAM_SERVER = os.environ.get("PREDICT_STREAM_SERVER", "http://128.2.204.110:8000")
 
 DIRECTORIES_TO_CREATE = [
     FRONTEND_ASSETS_DIR,
     LOGS_DIR,
     RUNTIME_DIR,
+    RETRIEVAL_ASSET_ROOT,
     REAL2SIM_RUNTIME_DIR,
     SCENE_SERVICE_RUNTIME_DIR,
     SCENE_SERVICE_USD_DIR,

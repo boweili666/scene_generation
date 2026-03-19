@@ -8,6 +8,7 @@ import trimesh
 from scipy.spatial.transform import Rotation
 
 from pipelines.real2sim.postprocess import (
+    align_support_contacts,
     extract_support_pairs,
     pose_rotation_to_glb,
     pose_translation_to_glb,
@@ -80,8 +81,10 @@ class Real2SimPostprocessTest(unittest.TestCase):
             self.assertEqual(summary["grounded_roots"], 1)
             updated_poses = json.loads((output_dir / "poses.json").read_text(encoding="utf-8"))
             self.assertIn("scene_transform", updated_poses["obj_00"])
+            self.assertIn("usd_transform", updated_poses["obj_00"])
             self.assertEqual(updated_poses["obj_00"]["raw_model_pose"], poses["obj_00"]["raw_model_pose"])
             self.assertEqual(updated_poses["obj_00"]["scene_transform_convention"], "gltf_y_up")
+            self.assertEqual(updated_poses["obj_00"]["usd_transform_convention"], "USD z-up, column-vector homogeneous 4x4")
             scene_matrix = np.asarray(updated_poses["obj_00"]["scene_transform"], dtype=float)
             self.assertAlmostEqual(float(scene_matrix[1, 3]), 0.3, places=6)
             self.assertAlmostEqual(float(scene_matrix[0, 3]), 0.25, places=6)
@@ -139,6 +142,32 @@ class Real2SimPostprocessTest(unittest.TestCase):
         top_min, _ = top.bounds
         _, base_max = base.bounds
         self.assertGreaterEqual(float(top_min[1]), float(base_max[1]) + 1e-4 - 1e-8)
+
+    def test_align_support_contacts_lowers_floating_supported_object(self) -> None:
+        base = PlacementState(
+            name="obj_00",
+            mesh=trimesh.creation.box(extents=[2.0, 1.0, 2.0]),
+            rotation=np.eye(3),
+            scale=np.ones(3),
+            translation=np.array([0.0, 0.5, 0.0]),
+        )
+        top = PlacementState(
+            name="obj_01",
+            mesh=trimesh.creation.box(extents=[0.4, 0.4, 0.4]),
+            rotation=np.eye(3),
+            scale=np.ones(3),
+            translation=np.array([0.0, 1.8, 0.0]),
+        )
+        placements = {"obj_00": base, "obj_01": top}
+
+        summary = align_support_contacts(placements, [("obj_01", "obj_00")], clearance=1e-4)
+
+        self.assertEqual(summary["penetration_adjustments"], 0)
+        self.assertEqual(summary["floating_adjustments"], 1)
+        self.assertEqual(summary["contact_adjustments"], 1)
+        top_min, _ = top.bounds
+        _, base_max = base.bounds
+        self.assertAlmostEqual(float(top_min[1]), float(base_max[1]) + 1e-4, places=6)
 
     def test_postprocess_rebuilds_scene_and_keeps_supported_objects_on_support(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,6 +430,87 @@ class Real2SimPostprocessTest(unittest.TestCase):
             post_transform, post_geom_name = post_scene.graph["obj_00"]
             vertices = trimesh.transform_points(post_scene.geometry[post_geom_name].vertices, post_transform)
             self.assertAlmostEqual(float(vertices[:, 1].min()), 0.0, places=6)
+
+    def test_postprocess_aligns_floating_supported_object_to_support_top(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "scene_results"
+            objects_dir = output_dir / "objects"
+            objects_dir.mkdir(parents=True)
+
+            base_mesh = trimesh.creation.box(extents=[2.0, 1.0, 2.0])
+            top_mesh = trimesh.creation.box(extents=[0.4, 0.2, 0.4])
+            (objects_dir / "obj_00.glb").write_bytes(trimesh.Scene(base_mesh).export(file_type="glb"))
+            (objects_dir / "obj_01.glb").write_bytes(trimesh.Scene(top_mesh).export(file_type="glb"))
+
+            poses = {
+                "obj_00": {
+                    "rotation": [[1.0, 0.0, 0.0, 0.0]],
+                    "translation": [[0.0, 0.5, 0.0]],
+                    "scale": [[1.0, 1.0, 1.0]],
+                },
+                "obj_01": {
+                    "rotation": [[1.0, 0.0, 0.0, 0.0]],
+                    "translation": [[0.0, 1.8, 0.0]],
+                    "scale": [[1.0, 1.0, 1.0]],
+                },
+            }
+            (output_dir / "poses.json").write_text(json.dumps(poses), encoding="utf-8")
+
+            raw_scene = trimesh.Scene()
+            raw_scene.add_geometry(
+                base_mesh,
+                node_name="obj_00",
+                geom_name="obj_00",
+                transform=np.array(
+                    [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.5],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ]
+                ),
+            )
+            raw_scene.add_geometry(
+                top_mesh,
+                node_name="obj_01",
+                geom_name="obj_01",
+                transform=np.array(
+                    [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 1.8],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ]
+                ),
+            )
+            (output_dir / "scene_merged.glb").write_bytes(raw_scene.export(file_type="glb"))
+
+            scene_graph = {
+                "obj": {
+                    "/World/Table_0": {"class": "table"},
+                    "/World/Box_1": {"class": "box"},
+                },
+                "edges": {
+                    "obj-obj": [
+                        {"source": "/World/Box_1", "target": "/World/Table_0", "relation": "supported by"},
+                    ]
+                },
+            }
+            scene_graph_path = root / "scene_graph.json"
+            scene_graph_path.write_text(json.dumps(scene_graph), encoding="utf-8")
+
+            summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=scene_graph_path)
+
+            self.assertEqual(summary["floating_adjustments"], 1)
+            self.assertEqual(summary["support_contact_adjustments"], 1)
+
+            post_scene = trimesh.load(output_dir / "scene_merged.glb", force="scene")
+            base_transform, base_geom_name = post_scene.graph["obj_00"]
+            top_transform, top_geom_name = post_scene.graph["obj_01"]
+            base_vertices = trimesh.transform_points(post_scene.geometry[base_geom_name].vertices, base_transform)
+            top_vertices = trimesh.transform_points(post_scene.geometry[top_geom_name].vertices, top_transform)
+            self.assertAlmostEqual(float(top_vertices[:, 1].min()), float(base_vertices[:, 1].max()) + 1e-4, places=6)
 
     def test_preserve_relative_support_transforms(self) -> None:
         base_original = PlacementState(
