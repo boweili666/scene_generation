@@ -3,7 +3,17 @@
     const interactionState = {
       startedAt: null,
       lastInstruction: "",
-      lastJson: null
+      lastJson: null,
+      currentSceneGraph: null
+    };
+
+    const graphEditorState = {
+      selectedElementType: "",
+      selectedElementId: "",
+      linkSourceId: "",
+      saveInFlight: false,
+      lastTapKey: "",
+      lastTapAt: 0
     };
 
     const externalScriptState = new Map();
@@ -729,4 +739,3 @@
         viewerState.queueBusy = false;
       }
     }
-

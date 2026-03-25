@@ -43,7 +43,7 @@
 
       const imageCount = document.getElementById("imageInput").files.length;
       const classCount = document.getElementById("classDirPicker").files.length;
-      document.getElementById("uploadStatus").textContent = imageCount ? `${imageCount} image selected` : "Using text";
+      document.getElementById("uploadStatus").textContent = imageCount ? `${imageCount} image selected` : "No image selected";
       document.getElementById("classStatus").textContent = classCount ? `${classCount} files selected` : "No folder selected";
     }
 
@@ -89,6 +89,15 @@
       };
       img.src = imagePreviewObjectUrl;
       wrap.classList.add("is-visible");
+    }
+
+    function clearReferenceImageInput() {
+      const fileInput = document.getElementById("imageInput");
+      if (fileInput) {
+        fileInput.value = "";
+      }
+      clearReferenceImagePreview();
+      updateInputMeta();
     }
 
     function setFeedback(lines){
@@ -233,13 +242,23 @@
           target: resolveEndpoint(e?.target),
         }));
       } else if (json?.edges && typeof json.edges === "object") {
-        edges = Array.isArray(json.edges["obj-obj"])
+        const objObjEdges = Array.isArray(json.edges["obj-obj"])
           ? json.edges["obj-obj"].map((e) => ({
               ...e,
+              kind: "obj-obj",
               source: resolveEndpoint(e?.source),
               target: resolveEndpoint(e?.target),
             }))
           : [];
+        const objWallEdges = Array.isArray(json.edges["obj-wall"])
+          ? json.edges["obj-wall"].map((e) => ({
+              ...e,
+              kind: "obj-wall",
+              source: resolveEndpoint(e?.source),
+              target: e?.target || `__wall_anchor__:${String(e?.relation || "").replace(/\s+/g, "_")}`,
+            }))
+          : [];
+        edges = [...objObjEdges, ...objWallEdges];
       }
 
       return { objects, edges };

@@ -42,6 +42,30 @@ The web UI uses the async endpoints:
 - `GET /real2sim/status/<job_id>`
 - `GET /real2sim/log`
 
+## Unified Instruction Flow
+
+The main text input now uses a single unified endpoint:
+
+- `POST /apply_instruction`
+
+The backend routes each instruction through:
+
+1. an LLM router
+2. a backend validator
+3. separate scene-graph and placement editors
+
+Scene graph and placements remain stored separately under `runtime/scene_graph` and
+`runtime/scene_service/placements`.
+
+The Scene Graph panel also supports direct graph editing:
+
+- double-click background to add a node
+- double-click a node or edge to edit it
+- shift-click two nodes to create/update a relation
+- right-click or press Delete/Backspace to remove the selected node/edge
+
+Direct graph edits are saved back to `runtime/scene_graph/current_scene_graph.json`.
+
 ## Development
 
 Start the web app:

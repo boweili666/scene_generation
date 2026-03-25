@@ -1,11 +1,27 @@
     /* ===== Responsive ===== */
     @media (max-width: 1180px){
-      .grid{ grid-template-columns: 360px 1fr; }
-      .grid .col-right{ grid-column: 1 / -1; }
+      .grid{
+        grid-template-columns: minmax(340px, 380px) minmax(0, 1fr);
+        grid-template-rows: auto auto auto;
+        grid-template-areas:
+          "prompt graph"
+          "actions graph"
+          "preview preview";
+      }
     }
     @media (max-width: 820px){
-      .grid{ grid-template-columns: 1fr; }
+      .grid{
+        grid-template-columns: 1fr;
+        grid-template-rows: auto;
+        grid-template-areas:
+          "prompt"
+          "actions"
+          "graph"
+          "preview";
+      }
       .btns{ grid-template-columns: 1fr; }
+      .scene-mode-picker{ grid-template-columns: 1fr; }
+      .resample-controls-card{ grid-template-columns: 1fr; }
       textarea{ min-height: 180px; }
       .drawer-grid{ grid-template-columns: 1fr; }
       .topbar-inner{ flex-direction:column; align-items:flex-start; }

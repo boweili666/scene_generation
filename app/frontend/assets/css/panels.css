@@ -10,7 +10,7 @@
         repeating-linear-gradient(90deg, rgba(148,163,184,0.12), rgba(148,163,184,0.12) 1px, transparent 1px, transparent 34px),
         #ffffff;
       overflow:hidden;
-      min-height: 420px;
+      min-height: 560px;
       position: relative;
     }
     #sceneGraph{
@@ -41,7 +41,7 @@
       justify-content:center;
       overflow:hidden;
       position: relative;
-      min-height: 240px;
+      min-height: 420px;
     }
     #threeViewport{
       position: absolute;

@@ -9,7 +9,7 @@
     document.getElementById("sceneInput").addEventListener("keydown", (evt) => {
       if (evt.key === "Enter" && !evt.shiftKey) {
         evt.preventDefault();
-        generateFromPrompt();
+        applyInstruction();
       }
     });
 
@@ -17,6 +17,7 @@
     setPill("model","", "Idle");
     setPill("graph","", "Idle");
     setPill("sim","", "Idle");
+    setResampleMode("joint");
     resetSimProgress();
     resetSceneDebug();
     clearReferenceImagePreview();

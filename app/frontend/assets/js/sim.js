@@ -13,6 +13,7 @@
         console.warn("Three viewer unavailable:", viewerErr);
         setPreviewMessage("Three.js viewer failed to load. Check browser console / CDN access.");
       });
+      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
       resetSimProgress();
       resetReal2SimLog();
       setSimProgress({ phase: "queued", percent: 1, generated_objects: 0, expected_objects: null, has_merged_scene: false });
@@ -106,9 +107,21 @@
     }
 
     /* ===== Isaac Scene Service ===== */
+    function setResampleMode(mode) {
+      const normalized = mode === "lock_real2sim" ? "lock_real2sim" : "joint";
+      const input = document.getElementById("resampleModeSelect");
+      if (input) input.value = normalized;
+
+      document.querySelectorAll(".mode-card").forEach((card) => {
+        const active = card.dataset.mode === normalized;
+        card.classList.toggle("is-active", active);
+        card.setAttribute("aria-checked", active ? "true" : "false");
+      });
+    }
+
     function getSelectedResampleMode() {
-      const select = document.getElementById("resampleModeSelect");
-      return select && select.value ? select.value : "joint";
+      const input = document.getElementById("resampleModeSelect");
+      return input && input.value ? input.value : "joint";
     }
 
     async function runResample() {
@@ -142,6 +155,7 @@
       setPill("sim","warn","Calling...");
       document.getElementById("statusSimText").textContent =
         endpoint === "scene_new" ? `Calling /${endpoint} (${payload.resample_mode})...` : `Calling /${endpoint}...`;
+      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
       resetSimProgress();
       resetSceneDebug();
       resultEl.textContent = "Requesting...";

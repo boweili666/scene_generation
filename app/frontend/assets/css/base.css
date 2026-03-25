@@ -1,4 +1,5 @@
     :root{
+      --content-max: 1760px;
       --bg: #f5f7fb;
       --card: #ffffff;
       --card-2: #fbfcff;
@@ -41,7 +42,7 @@
       border-bottom: 1px solid var(--border);
     }
     .topbar-inner{
-      max-width: 1280px;
+      width: min(var(--content-max), calc(100vw - 32px));
       margin: 0 auto;
       padding: 14px 18px;
       display:flex;
@@ -120,17 +121,26 @@
 
     /* ===== Layout ===== */
     .wrap{
-      max-width: 1280px;
+      width: min(var(--content-max), calc(100vw - 24px));
       margin: 0 auto;
       padding: 18px;
     }
 
     .grid{
       display:grid;
-      grid-template-columns: 380px 1fr 420px;
+      grid-template-columns: minmax(380px, 430px) minmax(620px, 1.45fr) minmax(420px, 1.08fr);
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "prompt graph preview"
+        "actions graph preview";
       gap: 16px;
       min-height: calc(100vh - 74px - 36px);
     }
+
+    .card-prompt{ grid-area: prompt; }
+    .card-actions{ grid-area: actions; }
+    .card-graph{ grid-area: graph; }
+    .card-preview{ grid-area: preview; }
 
     .card{
       background: var(--card);
@@ -188,4 +198,3 @@
       gap: 12px;
       min-height: 0;
     }
-

@@ -30,6 +30,8 @@ from ..services.openai_service import (
     read_json_file,
     write_json_file,
 )
+from ..services.instruction_service import apply_instruction as apply_scene_instruction
+from ..services.instruction_service import save_scene_graph_state
 from ..services.pipeline_service import (
     collect_scene_result_artifacts,
     get_real2sim_log_size,
@@ -308,8 +310,16 @@ def register_routes(app):
             return jsonify({"error": "Runtime file not found"}), 404
         return send_file(target)
 
-    @app.route("/scene_graph")
+    @app.route("/scene_graph", methods=["GET", "POST"])
     def scene_graph():
+        if request.method == "POST":
+            payload = request.json or {}
+            scene_graph_json = payload.get("scene_graph") if "scene_graph" in payload else payload
+            try:
+                result = save_scene_graph_state(scene_graph_json)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            return jsonify(result)
         if not os.path.exists(SCENE_GRAPH_PATH):
             return jsonify({"error": "Scene graph file not found"}), 404
         return send_file(SCENE_GRAPH_PATH, mimetype="application/json")
@@ -350,6 +360,36 @@ def register_routes(app):
 
         _write_scene_graph(scene_graph_json)
         return jsonify(scene_graph_json)
+
+    @app.route("/apply_instruction", methods=["POST"])
+    def apply_instruction():
+        image_bytes = None
+        class_names_raw = ""
+        text = ""
+
+        if request.content_type and request.content_type.startswith("multipart/form-data"):
+            file = request.files.get("image")
+            text = request.form.get("text", "").strip()
+            class_names_raw = request.form.get("class_names", "")
+            if file:
+                image_bytes = file.read()
+        else:
+            payload = request.json or {}
+            text = (payload.get("text") or payload.get("instruction") or "").strip()
+            class_names_raw = payload.get("class_names", "")
+
+        try:
+            result = apply_scene_instruction(
+                text,
+                class_names_raw=class_names_raw,
+                image_bytes=image_bytes,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
+
+        return jsonify(result)
 
     @app.route("/edit_json", methods=["POST"])
     def edit_json():

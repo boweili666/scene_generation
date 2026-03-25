@@ -38,7 +38,7 @@
     <div class="grid">
 
       <!-- Left Column: Prompt + Inputs -->
-      <div class="card">
+      <div class="card card-prompt">
         <div class="card-header">
           <h2>Prompt</h2>
           <div class="meta">
@@ -49,14 +49,14 @@
         <div class="card-body">
           <div>
             <div class="label">
-              Describe the scene
-              <span class="hint">Use objects + relations (left/right/front/near/on)</span>
+              Describe or edit the scene
+              <span class="hint">Use one instruction for new graph, graph edits, or placement edits</span>
             </div>
             <textarea id="sceneInput" placeholder='e.g. "A table in the center. A chair is to the left of the table. A lamp is near the wall."'></textarea>
           </div>
 
           <div class="file">
-            <div class="label">Reference Image (Optional) <span class="hint" id="uploadStatus">Using text</span></div>
+            <div class="label">Reference Image (Optional) <span class="hint" id="uploadStatus">No image selected</span></div>
             <input id="imageInput" type="file" accept="image/*"/>
             <div class="upload-preview" id="imagePreview">
               <img id="imagePreviewImg" alt="Reference preview"/>
@@ -73,20 +73,7 @@
           </div>
 
           <div class="btns">
-            <button class="btn-primary" id="btnGenerate" onclick="generateFromPrompt()">Generate Graph</button>
-            <button class="btn-secondary" id="btnEditJson" onclick="editJson()">Edit JSON (LLM)</button>
-          </div>
-
-          <div class="toolbar">
-            <button class="toolbtn good" id="real2simBtn" onclick="runReal2Sim()">Real2Sim</button>
-            <button class="toolbtn primary" onclick="callSceneService('scene')">Edit Scene</button>
-            <div class="resample-controls">
-              <select id="resampleModeSelect" class="toolselect" aria-label="Resample mode">
-                <option value="joint">Joint Resample</option>
-                <option value="lock_real2sim">Lock Real2Sim</option>
-              </select>
-              <button class="toolbtn primary" onclick="runResample()">Resample</button>
-            </div>
+            <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Apply Instruction</button>
           </div>
 
           <div class="row">
@@ -97,24 +84,86 @@
         </div>
       </div>
 
+      <div class="card card-actions">
+        <div class="card-header">
+          <h2>Run</h2>
+          <div class="meta">
+            <span class="kpi">Pipelines & Preview</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="action-deck">
+            <div class="action-card action-card-real2sim">
+              <div class="action-copy">
+                <span class="action-badge good">Real Pipeline</span>
+                <div class="action-title">Real2Sim</div>
+                <div class="action-note">Extract observed objects from the latest input image and stream them into the preview.</div>
+              </div>
+              <button class="toolbtn good toolbtn-wide" id="real2simBtn" onclick="runReal2Sim()">Run Real2Sim</button>
+            </div>
+
+            <div class="action-card action-card-scene">
+              <div class="action-copy">
+                <span class="action-badge primary">Scene Preview</span>
+                <div class="action-title">Scene Service</div>
+                <div class="action-note">Resample is the main layout action. Use Edit Scene only when you want to keep the current placements.</div>
+              </div>
+              <div class="scene-action-stack">
+                <div class="scene-mode-copy">
+                  <span class="scene-mode-label">Sampling Mode</span>
+                  <span class="scene-mode-note">Choose how Isaac should rebuild the layout.</span>
+                </div>
+                <div class="scene-mode-picker" role="radiogroup" aria-label="Sampling mode">
+                  <button
+                    type="button"
+                    class="mode-card is-active"
+                    data-mode="joint"
+                    role="radio"
+                    aria-checked="true"
+                    onclick="setResampleMode('joint')"
+                  >
+                    <span class="mode-card-title">Joint Resample</span>
+                    <span class="mode-card-copy">Resample every object together for a fresh overall layout.</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="mode-card"
+                    data-mode="lock_real2sim"
+                    role="radio"
+                    aria-checked="false"
+                    onclick="setResampleMode('lock_real2sim')"
+                  >
+                    <span class="mode-card-title">Lock Real2Sim</span>
+                    <span class="mode-card-copy">Keep observed Real2Sim support chains rigid and resample the rest.</span>
+                  </button>
+                </div>
+                <input type="hidden" id="resampleModeSelect" value="joint" />
+                <button class="btn-primary scene-primary-btn" onclick="runResample()">Resample Scene</button>
+                <button class="toolbtn toolbtn-quiet toolbtn-wide" onclick="callSceneService('scene')">Edit Scene (Keep Layout)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Center Column: Graph -->
-      <div class="card">
+      <div class="card card-graph">
         <div class="card-header">
           <h2>Scene Graph</h2>
           <div class="meta">
-            <span class="kpi">Tip: <b>Click node</b> to focus</span>
+            <span class="kpi">Tip: <b>Double-click</b> to edit • <b>Shift-click 2 nodes</b> to link</span>
           </div>
         </div>
         <div class="card-body" style="padding:14px;">
           <div class="graph-wrap">
             <div id="sceneGraph"></div>
-            <div class="graph-tip">Scroll / drag • Click node to focus</div>
+            <div class="graph-tip">Double-click background to add • Right-click or Delete to remove</div>
           </div>
         </div>
       </div>
 
       <!-- Right Column: Simulation -->
-      <div class="card col-right">
+      <div class="card card-preview col-right">
         <div class="card-header">
           <h2>Simulation Preview</h2>
           <div class="meta">
@@ -141,16 +190,6 @@
             </div>
             <div class="progress-meta" id="simProgressMeta">Waiting...</div>
           </div>
-
-          <div>
-            <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
-            <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
-          </div>
-
-          <div>
-            <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
-            <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
-          </div>
         </div>
       </div>
 
@@ -161,7 +200,7 @@
       <div class="drawer-head" onclick="toggleDrawer()">
         <div class="left">
           <div class="chev" id="chev">▾</div>
-          <h3>JSON & Diagnostics</h3>
+          <h3>JSON, Diagnostics & Logs</h3>
         </div>
         <div class="right">
           <span id="jsonStatus">Idle</span>
@@ -172,7 +211,7 @@
       <div class="drawer-body">
         <div class="drawer-grid">
           <div>
-            <div class="label">Generated / Edited JSON <span class="hint">Preview</span></div>
+            <div class="label">Scene State Preview <span class="hint">Graph + placements</span></div>
             <div class="codebox" id="jsonPreview">Waiting for result...</div>
           </div>
           <div>
@@ -183,6 +222,18 @@
         <div class="drawer-section">
           <div class="label">Scene Generation Debug <span class="hint" id="sceneDebugMeta">No scene run yet</span></div>
           <div class="codebox" id="sceneDebugBox">Waiting for scene generation debug...</div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-grid">
+            <div>
+              <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
+              <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
+            </div>
+            <div>
+              <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
+              <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

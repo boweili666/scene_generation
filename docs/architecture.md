@@ -14,6 +14,8 @@
 - `app/backend/app.py`: Flask app factory and static serving
 - `app/backend/api/routes.py`: HTTP routes and job orchestration
 - `app/backend/services/openai_service.py`: scene graph and JSON editing OpenAI calls
+- `app/backend/services/instruction_router.py`: rule-based instruction signals and backend route validation
+- `app/backend/services/instruction_service.py`: unified `/apply_instruction` orchestration across scene graph and placements
 - `app/backend/services/pipeline_service.py`: Real2Sim step execution and log streaming
 - `app/backend/services/scene_service.py`: long-running Isaac FastAPI service
 - `app/backend/config/settings.py`: runtime paths, service endpoints, environment overrides
@@ -24,9 +26,9 @@
 - `app/frontend/assets/css/*.css`: split stylesheets
 - `app/frontend/assets/js/state.js`: shared globals and Three.js viewer primitives
 - `app/frontend/assets/js/ui.js`: UI helpers, progress, upload preview, diagnostics widgets
-- `app/frontend/assets/js/graph.js`: scene-graph fetch/render/generation flow
+- `app/frontend/assets/js/graph.js`: scene-graph fetch/render flow plus direct node/edge editing and save-back
 - `app/frontend/assets/js/sim.js`: Real2Sim polling and scene service calls
-- `app/frontend/assets/js/model.js`: JSON editing workflow
+- `app/frontend/assets/js/model.js`: unified instruction workflow for graph + placement edits
 - `app/frontend/assets/js/boot.js`: event wiring and initial boot
 
 ## Runtime Data

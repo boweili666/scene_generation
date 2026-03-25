@@ -10,9 +10,13 @@ except ModuleNotFoundError:  # pragma: no cover - exercised indirectly in local 
     OpenAI = None  # type: ignore[assignment]
 
 from ..config import DEFAULT_MODEL
+from .instruction_router import build_router_rulebook
 
 
 SCENE_GRAPH_MODEL = os.getenv("SCENE_GRAPH_MODEL", "gpt-5.4-mini")
+SCENE_GRAPH_ROUTER_MODEL = os.getenv("SCENE_GRAPH_ROUTER_MODEL", SCENE_GRAPH_MODEL)
+SCENE_GRAPH_EDITOR_MODEL = os.getenv("SCENE_GRAPH_EDITOR_MODEL", SCENE_GRAPH_MODEL)
+PLACEMENT_EDITOR_MODEL = os.getenv("PLACEMENT_EDITOR_MODEL", DEFAULT_MODEL)
 client: Optional[Any] = None
 ALLOWED_OBJECT_SOURCES = {"real2sim", "retrieval"}
 
@@ -235,6 +239,67 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
+ROUTER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["graph", "placement", "both", "reset"],
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string"},
+    },
+    "required": ["mode", "confidence", "reason"],
+    "additionalProperties": False,
+}
+
+PLACEMENT_UPDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "updates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "z": {"type": "number"},
+                    "yaw_deg": {"type": ["number", "null"]},
+                },
+                "required": ["path", "x", "y", "z", "yaw_deg"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["updates"],
+    "additionalProperties": False,
+}
+
+SCENE_GRAPH_EDITOR_PROMPT = """
+You edit an existing scene graph in response to an instruction.
+
+Editing rules:
+- Preserve unaffected scene metadata, objects, and relations.
+- Only make the minimum graph changes required by the instruction.
+- If the instruction adds an object, assign a unique id and path.
+- If the instruction removes an object, remove all incident edges too.
+- If the instruction changes semantic relations like left/right/on/against wall, update edges accordingly.
+- Do not output placements or numeric coordinates.
+- Return the complete updated scene graph in the provided schema.
+""".strip()
+
+PLACEMENT_EDITOR_PROMPT = """
+You edit object placements for an existing scene.
+
+Editing rules:
+- Update only placements for existing objects already present in the scene graph.
+- Use object paths exactly as provided.
+- Return only the placement updates needed for the instruction.
+- If yaw is not changed, keep yaw_deg as null.
+- Do not add or remove scene-graph objects or relations.
+""".strip()
+
 
 def read_json_file(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -271,12 +336,16 @@ def _build_class_hint(class_names_raw: str) -> str:
 
 
 def _scene_graph_schema_format() -> Dict[str, Any]:
+    return _json_schema_format("scene_graph", SCHEMA)
+
+
+def _json_schema_format(name: str, schema: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "format": {
             "type": "json_schema",
-            "name": "scene_graph",
+            "name": name,
             "strict": True,
-            "schema": SCHEMA,
+            "schema": schema,
         }
     }
 
@@ -382,6 +451,135 @@ def _normalize_scene_graph_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _validate_normalized_scene_graph(normalized)
 
     return _validate_normalized_scene_graph(payload)
+
+
+def normalize_scene_graph_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return _normalize_scene_graph_payload(payload)
+
+
+def _parse_output_json(resp: Any, label: str) -> Dict[str, Any]:
+    try:
+        return json.loads(resp.output_text)
+    except Exception as exc:
+        raise ValueError(f"Model did not return valid {label} JSON: {exc}") from exc
+
+
+def _scene_graph_prompt_payload(scene_graph: Dict[str, Any]) -> Dict[str, Any]:
+    objects = []
+    for path, meta in sorted((scene_graph.get("obj") or {}).items()):
+        if not isinstance(meta, dict):
+            continue
+        objects.append(
+            {
+                "path": path,
+                "id": meta.get("id"),
+                "class": meta.get("class") or meta.get("class_name"),
+                "caption": meta.get("caption"),
+                "source": meta.get("source"),
+            }
+        )
+    return {
+        "scene": scene_graph.get("scene"),
+        "objects": objects,
+        "edges": scene_graph.get("edges", {"obj-obj": [], "obj-wall": []}),
+    }
+
+
+def _placements_prompt_payload(placements: Dict[str, Any]) -> Dict[str, Any]:
+    rows = []
+    for path, payload in sorted((placements or {}).items()):
+        if not isinstance(payload, (list, tuple)) or len(payload) < 3:
+            continue
+        rows.append(
+            {
+                "path": path,
+                "x": payload[0],
+                "y": payload[1],
+                "z": payload[2],
+                "yaw_deg": payload[3] if len(payload) >= 4 else None,
+            }
+        )
+    return {"placements": rows}
+
+
+def route_scene_instruction(
+    instruction: str,
+    scene_graph: Dict[str, Any],
+    placements: Dict[str, Any],
+) -> Dict[str, Any]:
+    prompt = "\n\n".join(
+        [
+            build_router_rulebook(),
+            "Current scene graph objects:",
+            json.dumps(_scene_graph_prompt_payload(scene_graph).get("objects", []), ensure_ascii=False, indent=2),
+            f"Placements available: {bool(placements)}",
+            f'User instruction: "{instruction.strip()}"',
+            "Return JSON only.",
+        ]
+    )
+    response = _get_openai_client().responses.create(
+        model=SCENE_GRAPH_ROUTER_MODEL,
+        input=prompt,
+        text=_json_schema_format("instruction_route", ROUTER_SCHEMA),
+    )
+    return _parse_output_json(response, "routing")
+
+
+def edit_scene_graph_with_instruction(
+    scene_graph: Dict[str, Any],
+    instruction: str,
+    *,
+    image_b64: str | None = None,
+) -> Dict[str, Any]:
+    content = [
+        {
+            "type": "input_text",
+            "text": (
+                f"Instruction:\n{instruction.strip()}\n\n"
+                "Current scene graph:\n"
+                f"{json.dumps(_scene_graph_prompt_payload(scene_graph), ensure_ascii=False, indent=2)}"
+            ),
+        }
+    ]
+    if image_b64:
+        content.append({"type": "input_image", "image_url": image_b64})
+    response = _get_openai_client().responses.create(
+        model=SCENE_GRAPH_EDITOR_MODEL,
+        instructions=f"{SYSTEM_PROMPT}\n\n{SCENE_GRAPH_EDITOR_PROMPT}",
+        input=[{"role": "user", "content": content}],
+        text=_scene_graph_schema_format(),
+    )
+    return _parse_scene_graph_response(response)
+
+
+def edit_placements_with_instruction(
+    scene_graph: Dict[str, Any],
+    placements: Dict[str, Any],
+    instruction: str,
+    *,
+    image_b64: str | None = None,
+) -> Dict[str, Any]:
+    content = [
+        {
+            "type": "input_text",
+            "text": (
+                f"Instruction:\n{instruction.strip()}\n\n"
+                "Scene graph objects:\n"
+                f"{json.dumps(_scene_graph_prompt_payload(scene_graph).get('objects', []), ensure_ascii=False, indent=2)}\n\n"
+                "Current placements:\n"
+                f"{json.dumps(_placements_prompt_payload(placements), ensure_ascii=False, indent=2)}"
+            ),
+        }
+    ]
+    if image_b64:
+        content.append({"type": "input_image", "image_url": image_b64})
+    response = _get_openai_client().responses.create(
+        model=PLACEMENT_EDITOR_MODEL,
+        instructions=PLACEMENT_EDITOR_PROMPT,
+        input=[{"role": "user", "content": content}],
+        text=_json_schema_format("placement_updates", PLACEMENT_UPDATE_SCHEMA),
+    )
+    return _parse_output_json(response, "placement update")
 
 
 def parse_scene_graph_from_text(text: str, class_names_raw: str = "") -> Dict[str, Any]:
