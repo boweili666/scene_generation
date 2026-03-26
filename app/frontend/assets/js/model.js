@@ -63,6 +63,7 @@
         const analysis = analyzeSceneJson(graph);
         const elapsed = Math.round(performance.now() - interactionState.startedAt);
         const previewPayload = {
+          assistant_message: data.assistant_message || null,
           route: data.route,
           placements: data.placements || {},
           scene_graph: graph,
@@ -77,6 +78,9 @@
         setPill("graph","ok","Ready");
 
         const feedbackLines = [];
+        if (data.assistant_message) {
+          feedbackLines.push(`Assistant: ${data.assistant_message}`);
+        }
         if (data.route?.mode) {
           feedbackLines.push(`Route: ${data.route.mode} (${Math.round((data.route.confidence || 0) * 100)}%)`);
         }

@@ -3,7 +3,7 @@ from typing import Dict, Optional
 
 
 def _add_quad(stage, prim_path: str, points, color=(0.75, 0.75, 0.75), material_path: str = ""):
-    from pxr import UsdGeom, UsdShade
+    from pxr import UsdGeom, UsdPhysics, UsdShade
 
     mesh = UsdGeom.Mesh.Define(stage, prim_path)
     mesh.CreatePointsAttr(points)
@@ -17,6 +17,10 @@ def _add_quad(stage, prim_path: str, points, color=(0.75, 0.75, 0.75), material_
     mesh.CreateExtentAttr([(min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))])
     mesh.CreateDisplayColorAttr([color])
     mesh.CreateDoubleSidedAttr(True)
+    UsdPhysics.CollisionAPI.Apply(mesh.GetPrim()).CreateCollisionEnabledAttr(True)
+    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(
+        UsdPhysics.Tokens.none
+    )
     if material_path:
         UsdShade.MaterialBindingAPI(mesh.GetPrim()).Bind(UsdShade.Material.Get(stage, material_path))
 

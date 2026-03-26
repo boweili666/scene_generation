@@ -256,6 +256,7 @@ ROUTER_SCHEMA = {
 PLACEMENT_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
+        "message": {"type": ["string", "null"]},
         "updates": {
             "type": "array",
             "items": {
@@ -272,7 +273,7 @@ PLACEMENT_UPDATE_SCHEMA = {
             },
         }
     },
-    "required": ["updates"],
+    "required": ["message", "updates"],
     "additionalProperties": False,
 }
 
@@ -296,6 +297,13 @@ Editing rules:
 - Update only placements for existing objects already present in the scene graph.
 - Use object paths exactly as provided.
 - Return only the placement updates needed for the instruction.
+- Also return a short `message` in the user's language that summarizes what you changed.
+- If the instruction explicitly mentions one object, return an update only for that object.
+- If the instruction moves object X relative to object Y, infer the new placement for X from the current placements and AABBs, and do not move Y.
+- Do not reposition nearby or supporting objects unless the instruction explicitly asks for them too.
+- Use the provided AABB geometry when deciding relative positions or support-surface positions.
+- Use world coordinates, not camera/view coordinates, when interpreting directions.
+- Direction convention: +y = right, -y = left, +x = front, -x = back.
 - If yaw is not changed, keep yaw_deg as null.
 - Do not add or remove scene-graph objects or relations.
 """.strip()
@@ -488,17 +496,28 @@ def _scene_graph_prompt_payload(scene_graph: Dict[str, Any]) -> Dict[str, Any]:
 def _placements_prompt_payload(placements: Dict[str, Any]) -> Dict[str, Any]:
     rows = []
     for path, payload in sorted((placements or {}).items()):
-        if not isinstance(payload, (list, tuple)) or len(payload) < 3:
+        if isinstance(payload, (list, tuple)) and len(payload) >= 3:
+            rows.append(
+                {
+                    "path": path,
+                    "x": payload[0],
+                    "y": payload[1],
+                    "z": payload[2],
+                    "yaw_deg": payload[3] if len(payload) >= 4 else None,
+                }
+            )
             continue
-        rows.append(
-            {
+        if isinstance(payload, dict) and all(key in payload for key in ("x", "y", "z")):
+            row = {
                 "path": path,
-                "x": payload[0],
-                "y": payload[1],
-                "z": payload[2],
-                "yaw_deg": payload[3] if len(payload) >= 4 else None,
+                "x": payload["x"],
+                "y": payload["y"],
+                "z": payload["z"],
+                "yaw_deg": payload.get("yaw"),
             }
-        )
+            if isinstance(payload.get("aabb"), dict):
+                row["aabb"] = payload["aabb"]
+            rows.append(row)
     return {"placements": rows}
 
 
@@ -558,7 +577,10 @@ def edit_placements_with_instruction(
     instruction: str,
     *,
     image_b64: str | None = None,
+    placement_context: Dict[str, Any] | None = None,
+    editing_hint: str | None = None,
 ) -> Dict[str, Any]:
+    hint_block = f"\n\nEditing hint:\n{editing_hint.strip()}" if editing_hint else ""
     content = [
         {
             "type": "input_text",
@@ -567,7 +589,8 @@ def edit_placements_with_instruction(
                 "Scene graph objects:\n"
                 f"{json.dumps(_scene_graph_prompt_payload(scene_graph).get('objects', []), ensure_ascii=False, indent=2)}\n\n"
                 "Current placements:\n"
-                f"{json.dumps(_placements_prompt_payload(placements), ensure_ascii=False, indent=2)}"
+                f"{json.dumps(_placements_prompt_payload(placement_context or placements), ensure_ascii=False, indent=2)}"
+                f"{hint_block}"
             ),
         }
     ]

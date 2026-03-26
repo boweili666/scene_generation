@@ -3,6 +3,7 @@ from unittest import mock
 
 from app.backend.services import openai_service
 from app.backend.services.openai_service import (
+    PLACEMENT_EDITOR_PROMPT,
     SYSTEM_PROMPT,
     _normalize_scene_graph_payload,
     parse_scene_graph_from_image,
@@ -207,6 +208,13 @@ class OpenAIServicePromptGuardrailTest(unittest.TestCase):
         self.assertIn("Do NOT create duplicate nodes for the same visible instance because of class ambiguity or synonyms.", SYSTEM_PROMPT)
         self.assertIn("jar", SYSTEM_PROMPT)
         self.assertIn("glass", SYSTEM_PROMPT)
+
+    def test_placement_prompt_defines_world_axis_directions(self) -> None:
+        self.assertIn("Use world coordinates, not camera/view coordinates", PLACEMENT_EDITOR_PROMPT)
+        self.assertIn("+y = right", PLACEMENT_EDITOR_PROMPT)
+        self.assertIn("-y = left", PLACEMENT_EDITOR_PROMPT)
+        self.assertIn("+x = front", PLACEMENT_EDITOR_PROMPT)
+        self.assertIn("-x = back", PLACEMENT_EDITOR_PROMPT)
 
 
 if __name__ == "__main__":

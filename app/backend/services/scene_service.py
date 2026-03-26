@@ -17,7 +17,7 @@ import os
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from typing import Literal
 
 import numpy as np
@@ -118,6 +118,7 @@ class SceneRequest(BaseModel):
         default=DEFAULT_SCREENSHOT_PATH, description="Save PNG screenshot to this path if provided."
     )
     seed: Optional[int] = None
+    max_layout_attempts: int = Field(default=5, ge=1, le=20)
 
 
 class SampleRequest(BaseModel):
@@ -341,6 +342,18 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             updated[prim] = (tx, ty, tz, yaw)
         return updated
 
+    def _support_realign_skip_prims(
+        layout_debug: Dict[str, object],
+        placement_overrides: Dict[str, Tuple[float, float, float, Optional[float]]],
+    ) -> set[str]:
+        skip_prims = {
+            str(prim)
+            for prim in (layout_debug.get("locked_real2sim_children") or [])
+            if isinstance(prim, str)
+        }
+        skip_prims.update(str(prim) for prim in placement_overrides.keys())
+        return skip_prims
+
     def _apply_placements_to_usd(
         usd_path: Path,
         placements: Dict[str, Tuple[float, float, float, Optional[float]]],
@@ -387,6 +400,122 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         save_path = out_path or usd_path
         stage.GetRootLayer().Export(str(save_path))
         return save_path
+
+    def _range_to_aabb_payload(rng) -> Dict[str, List[float]]:
+        bmin = rng.GetMin()
+        bmax = rng.GetMax()
+        min_xyz = [float(bmin[0]), float(bmin[1]), float(bmin[2])]
+        max_xyz = [float(bmax[0]), float(bmax[1]), float(bmax[2])]
+        return {
+            "min": min_xyz,
+            "max": max_xyz,
+            "center": [
+                float((min_xyz[0] + max_xyz[0]) * 0.5),
+                float((min_xyz[1] + max_xyz[1]) * 0.5),
+                float((min_xyz[2] + max_xyz[2]) * 0.5),
+            ],
+            "size": [
+                float(max_xyz[0] - min_xyz[0]),
+                float(max_xyz[1] - min_xyz[1]),
+                float(max_xyz[2] - min_xyz[2]),
+            ],
+        }
+
+    def _collect_world_aabbs(stage, prim_paths: List[str]) -> Dict[str, Dict[str, List[float]]]:
+        from pxr import Usd, UsdGeom
+
+        cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "guide"], useExtentsHint=True)
+        aabb_lookup: Dict[str, Dict[str, List[float]]] = {}
+        for prim_path in prim_paths:
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+            rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            if rng.IsEmpty():
+                mins: Optional[List[float]] = None
+                maxs: Optional[List[float]] = None
+                for child in Usd.PrimRange(prim):
+                    child_rng = cache.ComputeWorldBound(child).ComputeAlignedRange()
+                    if child_rng.IsEmpty():
+                        continue
+                    child_min = child_rng.GetMin()
+                    child_max = child_rng.GetMax()
+                    if mins is None:
+                        mins = [float(child_min[0]), float(child_min[1]), float(child_min[2])]
+                        maxs = [float(child_max[0]), float(child_max[1]), float(child_max[2])]
+                    else:
+                        mins = [
+                            min(mins[0], float(child_min[0])),
+                            min(mins[1], float(child_min[1])),
+                            min(mins[2], float(child_min[2])),
+                        ]
+                        maxs = [
+                            max(maxs[0], float(child_max[0])),
+                            max(maxs[1], float(child_max[1])),
+                            max(maxs[2], float(child_max[2])),
+                        ]
+                if mins is None or maxs is None:
+                    continue
+
+                class _FallbackRange:
+                    def __init__(self, min_xyz: List[float], max_xyz: List[float]) -> None:
+                        self._min = tuple(min_xyz)
+                        self._max = tuple(max_xyz)
+
+                    def GetMin(self):
+                        return self._min
+
+                    def GetMax(self):
+                        return self._max
+
+                rng = _FallbackRange(mins, maxs)
+            aabb_lookup[prim_path] = _range_to_aabb_payload(rng)
+        return aabb_lookup
+
+    def _collect_world_placements(
+        stage,
+        prim_paths: List[str],
+    ) -> Dict[str, Tuple[float, float, float, Optional[float]]]:
+        from pxr import Gf, UsdGeom
+
+        placements: Dict[str, Tuple[float, float, float, Optional[float]]] = {}
+        for prim_path in prim_paths:
+            prim = stage.GetPrimAtPath(prim_path)
+            if not prim.IsValid():
+                continue
+            xformable = UsdGeom.Xformable(prim)
+            ops = xformable.GetOrderedXformOps()
+            if not ops:
+                continue
+            mat = Gf.Matrix4d(ops[0].Get())
+            translate = mat.ExtractTranslation()
+            yaw = math.degrees(math.atan2(mat[1][0], mat[0][0]))
+            placements[prim_path] = (
+                float(translate[0]),
+                float(translate[1]),
+                float(translate[2]),
+                float(yaw),
+            )
+        return placements
+
+    def _serialize_placements_payload(
+        placements: Dict[str, Tuple[float, float, float, Optional[float]]],
+        aabb_lookup: Optional[Dict[str, Dict[str, List[float]]]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        serializable: Dict[str, Dict[str, Any]] = {}
+        for prim in sorted(placements):
+            payload = placements[prim]
+            item: Dict[str, Any] = {
+                "x": float(payload[0]),
+                "y": float(payload[1]),
+                "z": float(payload[2]),
+            }
+            if len(payload) >= 4 and payload[3] is not None:
+                item["yaw"] = float(payload[3])
+            if aabb_lookup and prim in aabb_lookup:
+                item["aabb"] = aabb_lookup[prim]
+            serializable[prim] = item
+        return serializable
 
     def _calc_asset_bbox(data: Dict, usd_paths: List[Path]) -> Dict[str, Dict]:
         lookup: Dict[str, Dict] = {}
@@ -467,42 +596,6 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         edges = data.get("edges", {}).get("obj-obj", [])
         placement_overrides = _load_placements_dict(req.placements_path, req.placements) if use_overrides else {}
 
-        seed = req.seed or random.SystemRandom().randrange(0, 2**32 - 1)
-        random.seed(seed)
-        np.random.seed(seed)
-
-        grid_step = 0.25
-        object_entries, placements = sf._build_entries_from_scene_edges(  # noqa: SLF001
-            data,
-            req.plane_height,
-            req.spread_scale,
-            grid_step,
-            asset_bbox,
-            object_scale_lookup=real2sim_scale_lookup,
-            room_closed_walls=room_closed_walls,
-        )
-        layout_debug: Dict[str, object] = {
-            "mode_applied": False,
-            "reason": None,
-            "real2sim_roots": [],
-            "locked_real2sim_children": [],
-            "skipped_real2sim_prims": [],
-            "missing_manifest_transforms": [],
-        }
-        if resample_mode == "lock_real2sim":
-            object_entries, placements, layout_debug = rm.apply_lock_real2sim_relative_transforms(
-                data,
-                object_entries,
-                placements,
-                asset_bbox_lookup=asset_bbox,
-                real2sim_manifest=real2sim_manifest,
-            )
-        if placement_overrides:
-            updated = _apply_placement_overrides(object_entries, placement_overrides, placements)
-            placements.update(updated)
-        # Backfill yaw from transform when missing to keep exported placements complete.
-        _inject_yaw_from_transforms(placements, object_entries)
-
         room_usd_path: Optional[Path] = None
         if req.generate_room:
             room_usd_path = _resolve_room_usd_path()
@@ -522,21 +615,94 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             except Exception as e:
                 print(f"[WARN] generate_room_usd_from_scene failed, fallback without room: {e}")
                 room_usd_path = None
+
+        seed_base = req.seed or random.SystemRandom().randrange(0, 2**32 - 1)
+        room_bounds = sf._room_bounds_from_scene(data, req.spread_scale)  # noqa: SLF001
+        grid_step = 0.25
         scene_save_path = _resolve_scene_save_path(req)
-        sf.build_stage_from_entries(
-            object_entries,
-            combined_usd_paths,
-            edges,
-            scene_save_path,
-            req.plane_size,
-            req.plane_height,
-            default_ground_z_offset=req.default_ground_z_offset,
-            asset_match_lookup=asset_match_lookup,
-            room_usd=room_usd_path,
-            use_default_ground=req.use_default_ground,
-            skip_support_realign_prims=set(layout_debug.get("locked_real2sim_children", [])),
-            room_bounds=sf._room_bounds_from_scene(data, req.spread_scale),  # noqa: SLF001
-            room_closed_walls=room_closed_walls,
+        seed = seed_base
+        object_entries: List[Dict[str, Any]] = []
+        placements: Dict[str, Tuple[float, float, float, Optional[float]]] = {}
+        layout_debug: Dict[str, object] = {}
+        last_layout_error: Optional[sf.LayoutCollisionError] = None
+        attempts_used = 0
+
+        for attempt_idx in range(req.max_layout_attempts):
+            seed = int((seed_base + attempt_idx) % (2**32 - 1))
+            random.seed(seed)
+            np.random.seed(seed)
+
+            object_entries, placements = sf._build_entries_from_scene_edges(  # noqa: SLF001
+                data,
+                req.plane_height,
+                req.spread_scale,
+                grid_step,
+                asset_bbox,
+                object_scale_lookup=real2sim_scale_lookup,
+                room_closed_walls=room_closed_walls,
+            )
+            layout_debug = {
+                "mode_applied": False,
+                "reason": None,
+                "real2sim_roots": [],
+                "locked_real2sim_children": [],
+                "skipped_real2sim_prims": [],
+                "missing_manifest_transforms": [],
+            }
+            if resample_mode == "lock_real2sim":
+                object_entries, placements, layout_debug = rm.apply_lock_real2sim_relative_transforms(
+                    data,
+                    object_entries,
+                    placements,
+                    asset_bbox_lookup=asset_bbox,
+                    real2sim_manifest=real2sim_manifest,
+                )
+            if placement_overrides:
+                updated = _apply_placement_overrides(object_entries, placement_overrides, placements)
+                placements.update(updated)
+            _inject_yaw_from_transforms(placements, object_entries)
+            support_realign_skip_prims = _support_realign_skip_prims(layout_debug, placement_overrides)
+
+            try:
+                sf.build_stage_from_entries(
+                    object_entries,
+                    combined_usd_paths,
+                    edges,
+                    scene_save_path,
+                    req.plane_size,
+                    req.plane_height,
+                    default_ground_z_offset=req.default_ground_z_offset,
+                    asset_match_lookup=asset_match_lookup,
+                    room_usd=room_usd_path,
+                    use_default_ground=req.use_default_ground,
+                    skip_support_realign_prims=support_realign_skip_prims,
+                    room_bounds=room_bounds,
+                    room_closed_walls=room_closed_walls,
+                )
+                attempts_used = attempt_idx + 1
+                break
+            except sf.LayoutCollisionError as e:
+                last_layout_error = e
+                print(
+                    f"[WARN] layout collision on attempt {attempt_idx + 1}/{req.max_layout_attempts} "
+                    f"(seed={seed}): {e}"
+                )
+        else:
+            detail: Dict[str, Any] = {
+                "message": "failed to generate a collision-free layout after all attempts",
+                "attempts": req.max_layout_attempts,
+                "seed_base": seed_base,
+            }
+            if last_layout_error is not None:
+                detail["collisions"] = last_layout_error.collisions
+            raise HTTPException(status_code=409, detail=detail)
+
+        stage = omni.usd.get_context().get_stage()
+        prim_paths = [entry["prim"] for entry in object_entries if isinstance(entry.get("prim"), str)]
+        placements = _collect_world_placements(stage, prim_paths)
+        placement_aabbs = _collect_world_aabbs(
+            stage,
+            prim_paths,
         )
 
         # Camera and rendering.
@@ -581,13 +747,7 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         if DEFAULT_PLACEMENTS_PATH:
             out_path = Path(DEFAULT_PLACEMENTS_PATH)
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            # JSON does not support tuples; convert to lists. Include yaw when present.
-            serializable = {}
-            for k, v in placements.items():
-                if len(v) >= 4 and v[3] is not None:
-                    serializable[k] = [v[0], v[1], v[2], v[3]]
-                else:
-                    serializable[k] = [v[0], v[1], v[2]]
+            serializable = _serialize_placements_payload(placements, placement_aabbs)
             with out_path.open("w", encoding="utf-8") as f:
                 json.dump(serializable, f, ensure_ascii=False, indent=2)
 
@@ -615,7 +775,7 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         return {
             "seed": seed,
             "resample_mode": resample_mode,
-            "placements": placements,
+            "placements": _serialize_placements_payload(placements, placement_aabbs),
             "objects": object_entries,
             "usd_files": len(combined_usd_paths),
             "edges": len(edges),
@@ -626,6 +786,7 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
                 "asset_resolution_counts": resolved_counts,
                 "asset_resolution": resolved_assets,
                 "layout": layout_debug,
+                "layout_attempts": attempts_used,
             },
         }
 

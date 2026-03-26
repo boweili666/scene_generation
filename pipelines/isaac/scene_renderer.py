@@ -48,6 +48,18 @@ OBJ_WALL_RELATIONS = {
 }
 
 OBJECT_SOURCES = {"real2sim", "retrieval"}
+_DYNAMIC_MESH_COLLISION_APPROX = "convexHull"
+
+
+class LayoutCollisionError(RuntimeError):
+    def __init__(self, collisions: List[Dict[str, object]]) -> None:
+        self.collisions = collisions
+        summary = ", ".join(
+            f"{item['group_a']} vs {item['group_b']}" for item in collisions[:3] if item.get("group_a") and item.get("group_b")
+        )
+        if len(collisions) > 3:
+            summary = f"{summary}, ..."
+        super().__init__(f"final world-AABB overlaps remain ({len(collisions)}): {summary}")
 
 
 def load_scene_graph_json(json_path: Path) -> Dict:
@@ -232,6 +244,152 @@ def _add_stage_reference(stage, asset_path: Path | str, prim_path: str) -> None:
     prim.GetReferences().AddReference(str(asset_path))
 
 
+def _ensure_physics_scene(stage, scene_path: str = "/World/PhysicsScene"):
+    from pxr import Gf, UsdPhysics
+
+    scene = UsdPhysics.Scene.Get(stage, scene_path)
+    if not scene.GetPrim().IsValid():
+        scene = UsdPhysics.Scene.Define(stage, scene_path)
+    scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
+    scene.CreateGravityMagnitudeAttr().Set(9.81)
+    return scene
+
+
+def _mesh_prims_under(root_prim):
+    from pxr import Usd, UsdGeom
+
+    if not root_prim or not root_prim.IsValid():
+        return []
+
+    meshes = []
+    for prim in Usd.PrimRange(root_prim):
+        if prim.IsA(UsdGeom.Mesh):
+            meshes.append(prim)
+    return meshes
+
+
+def _is_proxy_collision_prim(prim) -> bool:
+    return bool(prim and prim.IsValid() and prim.GetName().startswith("CollisionProxy"))
+
+
+def _apply_mesh_collision(mesh_prim, approximation):
+    from pxr import UsdPhysics
+
+    if not mesh_prim or not mesh_prim.IsValid():
+        return
+
+    collision_api = UsdPhysics.CollisionAPI.Apply(mesh_prim)
+    collision_api.CreateCollisionEnabledAttr(True)
+    mesh_collision_api = UsdPhysics.MeshCollisionAPI.Apply(mesh_prim)
+    mesh_collision_api.CreateApproximationAttr(approximation)
+
+
+def _assign_simulation_owner(api_schema, physics_scene_path) -> None:
+    rel = api_schema.CreateSimulationOwnerRel()
+    if physics_scene_path:
+        rel.SetTargets([physics_scene_path])
+
+
+def _remove_collision_proxy_prims(root_prim) -> None:
+    if not root_prim or not root_prim.IsValid():
+        return
+    stage = root_prim.GetStage()
+    to_remove = []
+    root_prefix = str(root_prim.GetPath()) + "/"
+    for prim in stage.Traverse():
+        prim_path = str(prim.GetPath())
+        if not prim_path.startswith(root_prefix):
+            continue
+        if prim.GetName().startswith("CollisionProxy"):
+            to_remove.append(prim_path)
+    for prim_path in sorted(to_remove, key=len, reverse=True):
+        stage.RemovePrim(prim_path)
+
+
+def _create_collision_cube(stage, prim_path: str, center, size, physics_scene_path: str) -> None:
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    cube = UsdGeom.Cube.Define(stage, prim_path)
+    cube.CreateSizeAttr(1.0)
+    cube.CreateVisibilityAttr("invisible")
+    cube.CreatePurposeAttr(UsdGeom.Tokens.guide)
+
+    xform = UsdGeom.Xformable(cube.GetPrim())
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in center]))
+    xform.AddScaleOp().Set(Gf.Vec3f(*[max(1e-3, float(v)) for v in size]))
+
+    collision_api = UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    collision_api.CreateCollisionEnabledAttr(True)
+    _assign_simulation_owner(collision_api, physics_scene_path)
+
+
+def _upsert_collision_proxy(root_prim, center, size, physics_scene_path: str) -> None:
+    if not root_prim or not root_prim.IsValid():
+        return
+    _remove_collision_proxy_prims(root_prim)
+    _create_collision_cube(root_prim.GetStage(), str(root_prim.GetPath().AppendChild("CollisionProxy")), center, size, physics_scene_path)
+
+def _apply_static_room_colliders(stage, room_root_path: str = "/World/GeneratedRoom/Room") -> None:
+    from pxr import UsdPhysics
+
+    room_root = stage.GetPrimAtPath(room_root_path)
+    if not room_root.IsValid():
+        return
+
+    for mesh_prim in _mesh_prims_under(room_root):
+        _apply_mesh_collision(mesh_prim, UsdPhysics.Tokens.none)
+
+
+def _apply_dynamic_object_physics(
+    stage,
+    object_entries: List[Dict],
+    physics_scene_path: str,
+) -> None:
+    from pxr import UsdPhysics
+
+    for entry in object_entries:
+        prim_path = entry.get("prim")
+        if not isinstance(prim_path, str):
+            continue
+        root_prim = stage.GetPrimAtPath(prim_path)
+        if not root_prim.IsValid():
+            continue
+
+        rigid_body_api = UsdPhysics.RigidBodyAPI.Apply(root_prim)
+        rigid_body_api.CreateRigidBodyEnabledAttr(True)
+        rigid_body_api.CreateKinematicEnabledAttr(False)
+        rigid_body_api.CreateStartsAsleepAttr(False)
+        _assign_simulation_owner(rigid_body_api, physics_scene_path)
+
+        mass_api = UsdPhysics.MassAPI.Apply(root_prim)
+        mass_api.CreateMassAttr(1.0)
+
+        mesh_prims = _mesh_prims_under(root_prim)
+        proxy_mesh_prims = [prim for prim in mesh_prims if _is_proxy_collision_prim(prim)]
+        visual_mesh_prims = [prim for prim in mesh_prims if not _is_proxy_collision_prim(prim)]
+        if visual_mesh_prims:
+            active_collision_prims = visual_mesh_prims
+        elif proxy_mesh_prims:
+            active_collision_prims = proxy_mesh_prims
+        else:
+            _upsert_collision_proxy(
+                root_prim,
+                entry.get("center") or (0.0, 0.0, 0.0),
+                entry.get("size") or (0.5, 0.5, 0.5),
+                physics_scene_path,
+            )
+            active_collision_prims = [prim for prim in _mesh_prims_under(root_prim) if _is_proxy_collision_prim(prim)]
+
+        for mesh_prim in active_collision_prims:
+            collision_api = UsdPhysics.CollisionAPI.Apply(mesh_prim)
+            collision_api.CreateCollisionEnabledAttr(True)
+            _assign_simulation_owner(collision_api, physics_scene_path)
+            UsdPhysics.MeshCollisionAPI.Apply(mesh_prim).CreateApproximationAttr(
+                UsdPhysics.Tokens.convexHull if _is_proxy_collision_prim(mesh_prim) else _DYNAMIC_MESH_COLLISION_APPROX
+            )
+
+
 def build_stage_from_entries(
     object_entries: List[Dict],
     usd_paths: List[Path],
@@ -260,6 +418,7 @@ def build_stage_from_entries(
     stage.SetDefaultPrim(stage.DefinePrim("/World", "Xform"))
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    physics_scene = _ensure_physics_scene(stage)
     if room_usd and room_usd.exists():
         _add_stage_reference(stage, room_usd, "/World/GeneratedRoom")
         print(f"[ROOM] referenced room USD: {room_usd}")
@@ -328,6 +487,9 @@ def build_stage_from_entries(
     _align_support_bottom_to_obb_top(stage, edges, skip_sources=skip_support_realign_prims)
     if room_bounds is not None:
         _clamp_prims_inside_room_bounds(stage, object_entries, room_bounds, room_closed_walls)
+    _resolve_final_world_aabb_overlaps(stage, object_entries, edges, room_bounds, room_closed_walls)
+    _apply_static_room_colliders(stage)
+    _apply_dynamic_object_physics(stage, object_entries, str(physics_scene.GetPath()))
 
     if save_usd:
         stage.GetRootLayer().Export(str(save_usd))
@@ -728,6 +890,20 @@ def _enforce_support_alignment(
         placements[source] = (placements[source][0], placements[source][1], target_top + sdz * 0.5)
 
 
+def _support_xy_bounds_from_aabb(
+    base_center: Tuple[float, float, float],
+    base_size: Tuple[float, float, float],
+) -> Tuple[float, float, float, float]:
+    bx, by, _ = base_center
+    bsx, bsy, _ = base_size
+    return (
+        bx - 0.5 * bsx,
+        bx + 0.5 * bsx,
+        by - 0.5 * bsy,
+        by + 0.5 * bsy,
+    )
+
+
 def _align_support_bottom_to_obb_top(
     stage,
     edges: List[Dict],
@@ -828,9 +1004,10 @@ def _align_support_bottom_to_obb_top(
         if cy_low > cy_high:
             cy_low = cy_high = ty_center
 
-        # Sample a feasible point on the target top surface.
-        sample_x = random.uniform(cx_low, cx_high)
-        sample_y = random.uniform(cy_low, cy_high)
+        # Preserve the sampled support position and only clamp when the real mesh
+        # footprint would otherwise fall outside the supporter top OBB.
+        sample_x = min(max(bottom_in_target[0], cx_low), cx_high)
+        sample_y = min(max(bottom_in_target[1], cy_low), cy_high)
         top_z = t_max[2]
 
         target_top_world = t_mat.Transform(Gf.Vec3d(sample_x, sample_y, top_z))
@@ -948,6 +1125,204 @@ def _clamp_prims_inside_room_bounds(
         translate = mat.ExtractTranslation()
         mat.SetTranslateOnly(translate + Gf.Vec3d(delta_x, delta_y, 0.0))
         ops[0].Set(mat)
+
+
+def _support_groups(object_entries: List[Dict], edges: List[Dict]) -> Dict[str, List[str]]:
+    prim_paths = [prim for entry in object_entries if isinstance((prim := entry.get("prim")), str)]
+    prim_set = set(prim_paths)
+    support_parent: Dict[str, str] = {}
+    for edge in edges:
+        pair = _support_pair(edge)
+        if not pair:
+            continue
+        source_path, target_path = pair
+        if source_path in prim_set and target_path in prim_set:
+            support_parent[source_path] = target_path
+
+    def _group_root(prim_path: str) -> str:
+        seen = set()
+        current = prim_path
+        while current in support_parent and current not in seen:
+            seen.add(current)
+            current = support_parent[current]
+        return current
+
+    groups: Dict[str, List[str]] = {}
+    for prim_path in prim_paths:
+        groups.setdefault(_group_root(prim_path), []).append(prim_path)
+    return {root: sorted(members) for root, members in groups.items()}
+
+
+def _compute_group_world_aabb(
+    stage,
+    group_members: List[str],
+):
+    from pxr import Usd, UsdGeom
+
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render", "guide"], useExtentsHint=True)
+    mins: Optional[List[float]] = None
+    maxs: Optional[List[float]] = None
+    for prim_path in group_members:
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            continue
+        rng = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+        if rng.IsEmpty():
+            continue
+        bmin = rng.GetMin()
+        bmax = rng.GetMax()
+        if mins is None:
+            mins = [float(bmin[0]), float(bmin[1]), float(bmin[2])]
+            maxs = [float(bmax[0]), float(bmax[1]), float(bmax[2])]
+        else:
+            mins = [
+                min(mins[0], float(bmin[0])),
+                min(mins[1], float(bmin[1])),
+                min(mins[2], float(bmin[2])),
+            ]
+            maxs = [
+                max(maxs[0], float(bmax[0])),
+                max(maxs[1], float(bmax[1])),
+                max(maxs[2], float(bmax[2])),
+            ]
+    if mins is None or maxs is None:
+        return None
+    return (mins[0], maxs[0], mins[1], maxs[1], mins[2], maxs[2])
+
+
+def _translate_group_xy(stage, group_members: List[str], delta_x: float, delta_y: float) -> bool:
+    from pxr import Gf, UsdGeom
+
+    if abs(delta_x) <= 1e-6 and abs(delta_y) <= 1e-6:
+        return False
+    moved = False
+    for prim_path in group_members:
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            continue
+        xform = UsdGeom.Xformable(prim)
+        ops = xform.GetOrderedXformOps()
+        if not ops:
+            continue
+        mat = Gf.Matrix4d(ops[0].Get())
+        translate = mat.ExtractTranslation()
+        mat.SetTranslateOnly(translate + Gf.Vec3d(delta_x, delta_y, 0.0))
+        ops[0].Set(mat)
+        moved = True
+    return moved
+
+
+def _clamp_group_inside_room_bounds(
+    stage,
+    group_members: List[str],
+    room_bounds: Optional[Tuple[float, float, float, float]],
+    room_closed_walls: Optional[Dict[str, bool]],
+) -> bool:
+    if room_bounds is None:
+        return False
+    bounds = _compute_group_world_aabb(stage, group_members)
+    if bounds is None:
+        return False
+    walls = normalize_closed_walls(room_closed_walls)
+    center = (
+        float((bounds[0] + bounds[1]) * 0.5),
+        float((bounds[2] + bounds[3]) * 0.5),
+        float((bounds[4] + bounds[5]) * 0.5),
+    )
+    size = (
+        float(bounds[1] - bounds[0]),
+        float(bounds[3] - bounds[2]),
+        float(bounds[5] - bounds[4]),
+    )
+    clamped = clamp_center_to_room_bounds(center, size, 0.0, room_bounds, walls)
+    delta_x = float(clamped[0] - center[0])
+    delta_y = float(clamped[1] - center[1])
+    return _translate_group_xy(stage, group_members, delta_x, delta_y)
+
+
+def _find_group_world_aabb_overlaps(stage, groups: Dict[str, List[str]], eps: float = 1e-4) -> List[Dict[str, object]]:
+    group_bounds: Dict[str, Tuple[float, float, float, float, float, float]] = {}
+    for root, members in groups.items():
+        bounds = _compute_group_world_aabb(stage, members)
+        if bounds is not None:
+            group_bounds[root] = bounds
+
+    overlaps: List[Dict[str, object]] = []
+    roots = sorted(group_bounds)
+    for idx, root_a in enumerate(roots):
+        ax0, ax1, ay0, ay1, az0, az1 = group_bounds[root_a]
+        for root_b in roots[idx + 1:]:
+            bx0, bx1, by0, by1, bz0, bz1 = group_bounds[root_b]
+            ox = min(ax1, bx1) - max(ax0, bx0)
+            oy = min(ay1, by1) - max(ay0, by0)
+            oz = min(az1, bz1) - max(az0, bz0)
+            if ox <= eps or oy <= eps or oz <= eps:
+                continue
+            overlaps.append(
+                {
+                    "group_a": root_a,
+                    "group_b": root_b,
+                    "members_a": list(groups[root_a]),
+                    "members_b": list(groups[root_b]),
+                    "bounds_a": [ax0, ax1, ay0, ay1, az0, az1],
+                    "bounds_b": [bx0, bx1, by0, by1, bz0, bz1],
+                    "center_a": [float((ax0 + ax1) * 0.5), float((ay0 + ay1) * 0.5), float((az0 + az1) * 0.5)],
+                    "center_b": [float((bx0 + bx1) * 0.5), float((by0 + by1) * 0.5), float((bz0 + bz1) * 0.5)],
+                    "overlap_xyz": [float(ox), float(oy), float(oz)],
+                }
+            )
+    return overlaps
+
+
+def _resolve_final_world_aabb_overlaps(
+    stage,
+    object_entries: List[Dict],
+    edges: List[Dict],
+    room_bounds: Optional[Tuple[float, float, float, float]],
+    room_closed_walls: Optional[Dict[str, bool]],
+    *,
+    separation: float = 0.02,
+    max_iters: int = 48,
+) -> None:
+    groups = _support_groups(object_entries, edges)
+    if len(groups) < 2:
+        return
+
+    for _ in range(max_iters):
+        overlaps = _find_group_world_aabb_overlaps(stage, groups)
+        if not overlaps:
+            return
+
+        moved_any = False
+        for item in overlaps:
+            ox, oy, _ = item["overlap_xyz"]
+            center_a = item["center_a"]
+            center_b = item["center_b"]
+            root_a = str(item["group_a"])
+            root_b = str(item["group_b"])
+            axis = 0 if ox <= oy else 1
+            delta_mag = (ox if axis == 0 else oy) * 0.5 + separation
+            dir_value = center_a[axis] - center_b[axis]
+            if abs(dir_value) <= 1e-6:
+                dir_sign = 1.0 if root_a < root_b else -1.0
+            else:
+                dir_sign = 1.0 if dir_value > 0.0 else -1.0
+
+            delta_x = float(delta_mag * dir_sign) if axis == 0 else 0.0
+            delta_y = float(delta_mag * dir_sign) if axis == 1 else 0.0
+            moved_a = _translate_group_xy(stage, groups[root_a], delta_x, delta_y)
+            moved_b = _translate_group_xy(stage, groups[root_b], -delta_x, -delta_y)
+            if room_bounds is not None:
+                _clamp_group_inside_room_bounds(stage, groups[root_a], room_bounds, room_closed_walls)
+                _clamp_group_inside_room_bounds(stage, groups[root_b], room_bounds, room_closed_walls)
+            moved_any = moved_any or moved_a or moved_b
+
+        if not moved_any:
+            break
+
+    final_overlaps = _find_group_world_aabb_overlaps(stage, groups)
+    if final_overlaps:
+        raise LayoutCollisionError(final_overlaps)
 
 
 def _resolve_placement_overlaps(
@@ -1353,13 +1728,17 @@ def _build_entries_from_scene_edges(
                         x_max = min(x_max, room_xmin + hx + band)
 
             if base and base in placements:
-                bx, by, bz = placements[base]
+                _, _, bz = placements[base]
                 _, _, bsz = size_lookup[base]
                 z = bz + 0.5 * bsz + 0.5 * sz
-                x_min = max(x_min, bx - 0.5)
-                x_max = min(x_max, bx + 0.5)
-                y_min = max(y_min, by - 0.5)
-                y_max = min(y_max, by + 0.5)
+                support_x_min, support_x_max, support_y_min, support_y_max = _support_xy_bounds_from_aabb(
+                    placements[base],
+                    size_lookup[base],
+                )
+                x_min = max(x_min, support_x_min)
+                x_max = min(x_max, support_x_max)
+                y_min = max(y_min, support_y_min)
+                y_max = min(y_max, support_y_max)
 
             if x_min > x_max:
                 x_min, x_max = x_max, x_min
@@ -1475,7 +1854,15 @@ def _build_entries_from_scene_edges(
             [rot[2][0], rot[2][1], rot[2][2], 0.0],
             [tx, ty, tz, 1.0],
         ]
-        entries.append({"prim": prim, "name": label, "transform": transform, "center": center_vec.tolist()})
+        entries.append(
+            {
+                "prim": prim,
+                "name": label,
+                "transform": transform,
+                "center": center_vec.tolist(),
+                "size": [float(v) for v in size_lookup[prim]],
+            }
+        )
 
     entries.sort(key=lambda e: e["name"])
     return entries, placements

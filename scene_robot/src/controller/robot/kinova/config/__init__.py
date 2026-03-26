@@ -1,0 +1,3 @@
+from .gen3_single_dynamic_1_config import Gen3SingleDynamic1Config
+from .gen3_single_dynamic_2_config import Gen3SingleDynamic2Config
+
