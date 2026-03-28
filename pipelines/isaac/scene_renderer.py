@@ -397,7 +397,7 @@ def build_stage_from_entries(
     save_usd: Optional[Path],
     plane_size: float,
     plane_height: float,
-    default_ground_z_offset: float = 0.0,
+    default_ground_z_offset: float = -0.05,
     asset_match_lookup: Optional[Dict[str, ResolvedAsset]] = None,
     room_usd: Optional[Path] = None,
     use_default_ground: bool = True,
@@ -419,7 +419,8 @@ def build_stage_from_entries(
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     physics_scene = _ensure_physics_scene(stage)
-    if room_usd and room_usd.exists():
+    room_exists = bool(room_usd and room_usd.exists())
+    if room_exists:
         _add_stage_reference(stage, room_usd, "/World/GeneratedRoom")
         print(f"[ROOM] referenced room USD: {room_usd}")
 
@@ -431,7 +432,7 @@ def build_stage_from_entries(
         world_for_ground.scene.add_default_ground_plane(
             z_position=plane_height + float(default_ground_z_offset)
         )
-    elif not (room_usd and room_usd.exists()):
+    elif not room_exists:
         _add_ground_plane(stage, plane_size, plane_height)
     _add_default_lighting(stage)
 
@@ -1968,6 +1969,12 @@ def parse_args() -> argparse.Namespace:
         help="Do not add Isaac default ground plane.",
     )
     parser.add_argument(
+        "--default-ground-z-offset",
+        type=float,
+        default=-0.05,
+        help="Z offset applied to Isaac default ground plane relative to --plane-height.",
+    )
+    parser.add_argument(
         "--spread-scale",
         type=float,
         default=0.5,
@@ -2219,9 +2226,10 @@ def main() -> None:
         args.save_usd,
         args.plane_size,
         args.plane_height,
+        default_ground_z_offset=args.default_ground_z_offset,
         asset_match_lookup=asset_match_lookup,
         room_usd=room_usd_path,
-        use_default_ground=(not args.no_default_ground and room_usd_path is None),
+        use_default_ground=(not args.no_default_ground),
         room_bounds=_room_bounds_from_scene(data, args.spread_scale),
         room_closed_walls=room_closed_walls,
     )

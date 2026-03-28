@@ -142,7 +142,7 @@
         capture_frame: 10,
         resolution: [1280, 720],
         use_default_ground: true,
-        default_ground_z_offset: -0.01,
+        default_ground_z_offset: -0.05,
         generate_room: true,
         room_include_back_wall: true,
         room_include_left_wall: true,

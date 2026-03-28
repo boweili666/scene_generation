@@ -77,7 +77,6 @@ class SceneMouseCollectArgs:
     plan_output_dir: str
     base_z_bias: float
     arm_side: str
-    collision_only: bool
 
 
 @dataclass(frozen=True)
@@ -94,95 +93,6 @@ class ConvexDecompositionSettings:
             "error_percentage": self.error_percentage,
             "shrink_wrap": self.shrink_wrap,
         }
-
-
-class CollisionOverlayController:
-    """Temporarily enable viewport + PhysX collision overlays for the current app session."""
-
-    def __init__(self, enabled: bool):
-        self.enabled = False
-        self._settings = None
-        self._physxui = None
-        self._setting_display_colliders: str | None = None
-        self._setting_display_collider_normals: str | None = None
-        self._setting_visualization_collision_mesh: str | None = None
-        self._saved_display_colliders: int | None = None
-        self._saved_display_collider_normals: bool | None = None
-        self._saved_visualization_collision_mesh: bool | None = None
-        if enabled:
-            self._enable()
-
-    def _enable(self) -> None:
-        try:
-            import carb.settings
-            from omni.physx.bindings._physx import (
-                SETTING_DISPLAY_COLLIDERS,
-                SETTING_DISPLAY_COLLIDER_NORMALS,
-                SETTING_VISUALIZATION_COLLISION_MESH,
-            )
-            from omni.physxui import get_physxui_interface
-        except Exception as exc:
-            print(f"[WARN] Collision overlay unavailable: {exc}")
-            return
-
-        settings = carb.settings.get_settings()
-        self._settings = settings
-        self._physxui = get_physxui_interface()
-        self._setting_display_colliders = SETTING_DISPLAY_COLLIDERS
-        self._setting_display_collider_normals = SETTING_DISPLAY_COLLIDER_NORMALS
-        self._setting_visualization_collision_mesh = SETTING_VISUALIZATION_COLLISION_MESH
-        self._saved_display_colliders = settings.get_as_int(SETTING_DISPLAY_COLLIDERS)
-        self._saved_display_collider_normals = settings.get_as_bool(SETTING_DISPLAY_COLLIDER_NORMALS)
-        self._saved_visualization_collision_mesh = settings.get_as_bool(SETTING_VISUALIZATION_COLLISION_MESH)
-
-        # Viewport colliders draw wireframes for every collider, while the PhysX UI
-        # overlay adds the solid collision-mesh approximation on top of the graphics.
-        settings.set(SETTING_DISPLAY_COLLIDERS, 2)
-        settings.set(SETTING_DISPLAY_COLLIDER_NORMALS, False)
-        settings.set(SETTING_VISUALIZATION_COLLISION_MESH, True)
-
-        self._apply_physxui_state()
-        self.enabled = True
-
-    def _apply_physxui_state(self) -> None:
-        if self._physxui is None:
-            return
-        self._physxui.enable_collision_mesh_visualization(True)
-        self._physxui.set_collision_mesh_type("both")
-        self._physxui.explode_view_distance(0.0)
-
-    def refresh(self) -> None:
-        if not self.enabled:
-            return
-        try:
-            self._apply_physxui_state()
-        except Exception as exc:
-            print(f"[WARN] Failed to refresh collision overlay: {exc}")
-            self.enabled = False
-
-    def close(self) -> None:
-        if self._settings is None:
-            return
-        try:
-            if self._physxui is not None and self._saved_visualization_collision_mesh is not None:
-                self._physxui.enable_collision_mesh_visualization(bool(self._saved_visualization_collision_mesh))
-            if self._setting_display_colliders is not None and self._saved_display_colliders is not None:
-                self._settings.set(self._setting_display_colliders, int(self._saved_display_colliders))
-            if self._setting_display_collider_normals is not None and self._saved_display_collider_normals is not None:
-                self._settings.set(self._setting_display_collider_normals, bool(self._saved_display_collider_normals))
-            if (
-                self._setting_visualization_collision_mesh is not None
-                and self._saved_visualization_collision_mesh is not None
-            ):
-                self._settings.set(
-                    self._setting_visualization_collision_mesh,
-                    bool(self._saved_visualization_collision_mesh),
-                )
-        except Exception as exc:
-            print(f"[WARN] Failed to restore collision overlay settings: {exc}")
-        finally:
-            self.enabled = False
-
 
 def _resolve_collision_approx(option: str | None) -> str | None:
     key = str(option or "default").strip().lower()
@@ -1313,7 +1223,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
     env_name = f"Isaac-{robot_name.capitalize()}-SceneMouseCollect-v0"
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args.device))
     sim.set_camera_view(spec.camera_eye, spec.camera_target)
-    collision_overlay = CollisionOverlayController(args.collision_only)
     writer: SceneTeleopEpisodeWriter | None = None
 
     try:
@@ -1333,7 +1242,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
             robot_name,
             args,
         )
-        collision_overlay.refresh()
         planned_eye, planned_target = _plan_camera_pose(plan)
         sim.set_camera_view(planned_eye, planned_target)
         ui = MouseCommandCollectUI(
@@ -1401,11 +1309,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
             f"grounded_roots={floor_realign_summary['grounded_roots']}"
         )
         print(f"[INFO] Dataset: {os.path.abspath(writer.dataset_file)}")
-        if collision_overlay.enabled:
-            print(
-                "[INFO] Collision overlay enabled: "
-                "viewport_colliders=All solid_collision_mesh=True collision_mesh_type=both"
-            )
 
         sim_time = 0.0
         while simulation_app.is_running():
@@ -1447,7 +1350,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
                     _planned_base_height(robot_name) + effective_base_z_bias,
                     sync_cameras,
                 )
-                collision_overlay.refresh()
 
             if ui.consume_stop_discard_request():
                 writer.stop_and_discard()
@@ -1458,7 +1360,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
                     _planned_base_height(robot_name) + effective_base_z_bias,
                     sync_cameras,
                 )
-                collision_overlay.refresh()
 
             if ui.consume_reset_request():
                 _reset_scene_to_plan(
@@ -1468,7 +1369,6 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
                     _planned_base_height(robot_name) + effective_base_z_bias,
                     sync_cameras,
                 )
-                collision_overlay.refresh()
 
         if writer.recording and writer.frame_count > 0:
             print(
@@ -1478,4 +1378,3 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
     finally:
         if writer is not None:
             writer.close()
-        collision_overlay.close()

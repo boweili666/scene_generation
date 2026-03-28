@@ -87,7 +87,7 @@ class SceneRequest(BaseModel):
     )
     plane_size: float = 10.0
     plane_height: float = 0.0
-    default_ground_z_offset: float = -0.01
+    default_ground_z_offset: float = -0.05
     spread_scale: float = 0.45
     use_default_ground: bool = True
     generate_room: bool = False

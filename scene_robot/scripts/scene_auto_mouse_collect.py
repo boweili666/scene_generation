@@ -118,12 +118,6 @@ parser.add_argument(
     help="Enable shrink-wrap projection for convex decomposition collision.",
 )
 parser.add_argument(
-    "--collision_only",
-    action="store_true",
-    default=False,
-    help="Keep normal rendering and overlay collision debug visualization.",
-)
-parser.add_argument(
     "--base_z_bias",
     type=float,
     default=0.0,
@@ -171,7 +165,6 @@ def main():
             plan_output_dir=args_cli.plan_output_dir,
             base_z_bias=args_cli.base_z_bias,
             arm_side=args_cli.arm_side,
-            collision_only=args_cli.collision_only,
         ),
     )
 
