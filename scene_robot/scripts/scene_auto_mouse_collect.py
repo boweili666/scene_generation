@@ -60,6 +60,70 @@ parser.add_argument("--placements_path", type=str, default=str(DEFAULT_PLACEMENT
 parser.add_argument("--target", type=str, default=None, help="Optional target object prim/class/caption substring.")
 parser.add_argument("--support", type=str, default=None, help="Optional explicit support object prim.")
 parser.add_argument(
+    "--object_collision_approx",
+    type=str,
+    default="default",
+    choices=[
+        "default",
+        "triangle_mesh",
+        "convex_hull",
+        "convex_decomposition",
+        "mesh_simplification",
+        "bounding_cube",
+        "bounding_sphere",
+        "sdf",
+        "sphere_fill",
+    ],
+    help="Optional collision approximation override applied to every generated scene object.",
+)
+parser.add_argument(
+    "--target_collision_approx",
+    type=str,
+    default="default",
+    choices=[
+        "default",
+        "triangle_mesh",
+        "convex_hull",
+        "convex_decomposition",
+        "mesh_simplification",
+        "bounding_cube",
+        "bounding_sphere",
+        "sdf",
+        "sphere_fill",
+    ],
+    help="Optional collision approximation override applied only to the resolved target object.",
+)
+parser.add_argument(
+    "--convex_decomp_voxel_resolution",
+    type=int,
+    default=1000000,
+    help="Voxel resolution used when convex decomposition collision is selected.",
+)
+parser.add_argument(
+    "--convex_decomp_max_convex_hulls",
+    type=int,
+    default=64,
+    help="Maximum convex hull count used when convex decomposition collision is selected.",
+)
+parser.add_argument(
+    "--convex_decomp_error_percentage",
+    type=float,
+    default=2.0,
+    help="Allowed decomposition error percentage when convex decomposition collision is selected.",
+)
+parser.add_argument(
+    "--convex_decomp_shrink_wrap",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Enable shrink-wrap projection for convex decomposition collision.",
+)
+parser.add_argument(
+    "--collision_only",
+    action="store_true",
+    default=False,
+    help="Keep normal rendering and overlay collision debug visualization.",
+)
+parser.add_argument(
     "--base_z_bias",
     type=float,
     default=0.0,
@@ -98,9 +162,16 @@ def main():
             placements_path=args_cli.placements_path,
             target=args_cli.target,
             support=args_cli.support,
+            object_collision_approx=args_cli.object_collision_approx,
+            target_collision_approx=args_cli.target_collision_approx,
+            convex_decomp_voxel_resolution=args_cli.convex_decomp_voxel_resolution,
+            convex_decomp_max_convex_hulls=args_cli.convex_decomp_max_convex_hulls,
+            convex_decomp_error_percentage=args_cli.convex_decomp_error_percentage,
+            convex_decomp_shrink_wrap=args_cli.convex_decomp_shrink_wrap,
             plan_output_dir=args_cli.plan_output_dir,
             base_z_bias=args_cli.base_z_bias,
             arm_side=args_cli.arm_side,
+            collision_only=args_cli.collision_only,
         ),
     )
 

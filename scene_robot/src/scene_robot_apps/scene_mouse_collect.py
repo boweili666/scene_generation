@@ -41,6 +41,17 @@ from .stack_cube import resolve_stack_spec
 
 DEFAULT_SCENE_USD_PATH = Path(__file__).resolve().parents[3] / "runtime" / "scene_service" / "usd" / "scene_latest.usd"
 _DYNAMIC_MESH_COLLISION_APPROX = "convexHull"
+_COLLISION_APPROX_ALIASES = {
+    "default": None,
+    "triangle_mesh": "none",
+    "convex_hull": "convexHull",
+    "convex_decomposition": "convexDecomposition",
+    "mesh_simplification": "meshSimplification",
+    "bounding_cube": "boundingCube",
+    "bounding_sphere": "boundingSphere",
+    "sdf": "sdf",
+    "sphere_fill": "sphereFill",
+}
 
 
 @dataclass(frozen=True)
@@ -57,9 +68,161 @@ class SceneMouseCollectArgs:
     placements_path: str
     target: str | None
     support: str | None
+    object_collision_approx: str
+    target_collision_approx: str
+    convex_decomp_voxel_resolution: int
+    convex_decomp_max_convex_hulls: int
+    convex_decomp_error_percentage: float
+    convex_decomp_shrink_wrap: bool
     plan_output_dir: str
     base_z_bias: float
     arm_side: str
+    collision_only: bool
+
+
+@dataclass(frozen=True)
+class ConvexDecompositionSettings:
+    voxel_resolution: int
+    max_convex_hulls: int
+    error_percentage: float
+    shrink_wrap: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "voxel_resolution": self.voxel_resolution,
+            "max_convex_hulls": self.max_convex_hulls,
+            "error_percentage": self.error_percentage,
+            "shrink_wrap": self.shrink_wrap,
+        }
+
+
+class CollisionOverlayController:
+    """Temporarily enable viewport + PhysX collision overlays for the current app session."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = False
+        self._settings = None
+        self._physxui = None
+        self._setting_display_colliders: str | None = None
+        self._setting_display_collider_normals: str | None = None
+        self._setting_visualization_collision_mesh: str | None = None
+        self._saved_display_colliders: int | None = None
+        self._saved_display_collider_normals: bool | None = None
+        self._saved_visualization_collision_mesh: bool | None = None
+        if enabled:
+            self._enable()
+
+    def _enable(self) -> None:
+        try:
+            import carb.settings
+            from omni.physx.bindings._physx import (
+                SETTING_DISPLAY_COLLIDERS,
+                SETTING_DISPLAY_COLLIDER_NORMALS,
+                SETTING_VISUALIZATION_COLLISION_MESH,
+            )
+            from omni.physxui import get_physxui_interface
+        except Exception as exc:
+            print(f"[WARN] Collision overlay unavailable: {exc}")
+            return
+
+        settings = carb.settings.get_settings()
+        self._settings = settings
+        self._physxui = get_physxui_interface()
+        self._setting_display_colliders = SETTING_DISPLAY_COLLIDERS
+        self._setting_display_collider_normals = SETTING_DISPLAY_COLLIDER_NORMALS
+        self._setting_visualization_collision_mesh = SETTING_VISUALIZATION_COLLISION_MESH
+        self._saved_display_colliders = settings.get_as_int(SETTING_DISPLAY_COLLIDERS)
+        self._saved_display_collider_normals = settings.get_as_bool(SETTING_DISPLAY_COLLIDER_NORMALS)
+        self._saved_visualization_collision_mesh = settings.get_as_bool(SETTING_VISUALIZATION_COLLISION_MESH)
+
+        # Viewport colliders draw wireframes for every collider, while the PhysX UI
+        # overlay adds the solid collision-mesh approximation on top of the graphics.
+        settings.set(SETTING_DISPLAY_COLLIDERS, 2)
+        settings.set(SETTING_DISPLAY_COLLIDER_NORMALS, False)
+        settings.set(SETTING_VISUALIZATION_COLLISION_MESH, True)
+
+        self._apply_physxui_state()
+        self.enabled = True
+
+    def _apply_physxui_state(self) -> None:
+        if self._physxui is None:
+            return
+        self._physxui.enable_collision_mesh_visualization(True)
+        self._physxui.set_collision_mesh_type("both")
+        self._physxui.explode_view_distance(0.0)
+
+    def refresh(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self._apply_physxui_state()
+        except Exception as exc:
+            print(f"[WARN] Failed to refresh collision overlay: {exc}")
+            self.enabled = False
+
+    def close(self) -> None:
+        if self._settings is None:
+            return
+        try:
+            if self._physxui is not None and self._saved_visualization_collision_mesh is not None:
+                self._physxui.enable_collision_mesh_visualization(bool(self._saved_visualization_collision_mesh))
+            if self._setting_display_colliders is not None and self._saved_display_colliders is not None:
+                self._settings.set(self._setting_display_colliders, int(self._saved_display_colliders))
+            if self._setting_display_collider_normals is not None and self._saved_display_collider_normals is not None:
+                self._settings.set(self._setting_display_collider_normals, bool(self._saved_display_collider_normals))
+            if (
+                self._setting_visualization_collision_mesh is not None
+                and self._saved_visualization_collision_mesh is not None
+            ):
+                self._settings.set(
+                    self._setting_visualization_collision_mesh,
+                    bool(self._saved_visualization_collision_mesh),
+                )
+        except Exception as exc:
+            print(f"[WARN] Failed to restore collision overlay settings: {exc}")
+        finally:
+            self.enabled = False
+
+
+def _resolve_collision_approx(option: str | None) -> str | None:
+    key = str(option or "default").strip().lower()
+    if key not in _COLLISION_APPROX_ALIASES:
+        raise ValueError(
+            f"Unsupported collision approximation '{option}'. "
+            f"Expected one of: {', '.join(sorted(_COLLISION_APPROX_ALIASES))}."
+        )
+    return _COLLISION_APPROX_ALIASES[key]
+
+
+def _resolve_convex_decomposition_settings(args: SceneMouseCollectArgs) -> ConvexDecompositionSettings:
+    voxel_resolution = int(args.convex_decomp_voxel_resolution)
+    max_convex_hulls = int(args.convex_decomp_max_convex_hulls)
+    error_percentage = float(args.convex_decomp_error_percentage)
+    shrink_wrap = bool(args.convex_decomp_shrink_wrap)
+
+    if not 50000 <= voxel_resolution <= 5000000:
+        raise ValueError("--convex_decomp_voxel_resolution must be in [50000, 5000000].")
+    if not 1 <= max_convex_hulls <= 2048:
+        raise ValueError("--convex_decomp_max_convex_hulls must be in [1, 2048].")
+    if not 0.0 <= error_percentage <= 20.0:
+        raise ValueError("--convex_decomp_error_percentage must be in [0, 20].")
+
+    return ConvexDecompositionSettings(
+        voxel_resolution=voxel_resolution,
+        max_convex_hulls=max_convex_hulls,
+        error_percentage=error_percentage,
+        shrink_wrap=shrink_wrap,
+    )
+
+
+def _apply_convex_decomposition_settings(prim, settings: ConvexDecompositionSettings) -> None:
+    from pxr import PhysxSchema
+
+    api = PhysxSchema.PhysxConvexDecompositionCollisionAPI.Apply(prim)
+    api.CreateVoxelResolutionAttr().Set(int(settings.voxel_resolution))
+    api.CreateMaxConvexHullsAttr().Set(int(settings.max_convex_hulls))
+    api.CreateErrorPercentageAttr().Set(float(settings.error_percentage))
+    api.CreateShrinkWrapAttr().Set(bool(settings.shrink_wrap))
 
 
 class MouseCommandCollectUI:
@@ -729,6 +892,11 @@ def _rebind_generated_scene_physics(
     stage,
     scene_root_path: str,
     scene_graph: dict,
+    *,
+    object_collision_approx: str | None = None,
+    target_prim: str | None = None,
+    target_collision_approx: str | None = None,
+    convex_decomposition_settings: ConvexDecompositionSettings | None = None,
 ) -> dict[str, object]:
     from pxr import UsdGeom, UsdPhysics
 
@@ -741,6 +909,10 @@ def _rebind_generated_scene_physics(
             "object_colliders": 0,
             "visual_object_colliders": 0,
             "proxy_object_colliders": 0,
+            "object_collision_approx": None,
+            "target_collision_approx": None,
+            "convex_decomposition_prim_count": 0,
+            "convex_decomposition_settings": None,
         }
 
     room_colliders = 0
@@ -757,6 +929,9 @@ def _rebind_generated_scene_physics(
     object_colliders = 0
     visual_object_colliders = 0
     proxy_object_colliders = 0
+    applied_object_collision_approx = None
+    applied_target_collision_approx = None
+    convex_decomposition_prim_count = 0
     for prim_path in (scene_graph.get("obj") or {}):
         prim_name = Path(str(prim_path)).name
         live_prim = stage.GetPrimAtPath(f"{scene_root_path}/{prim_name}")
@@ -799,9 +974,30 @@ def _rebind_generated_scene_physics(
             collision_api.CreateCollisionEnabledAttr(True)
             _assign_simulation_owner(collision_api, physics_scene_path)
             if collision_prim.IsA(UsdGeom.Mesh):
-                UsdPhysics.MeshCollisionAPI.Apply(collision_prim).CreateApproximationAttr(
-                    UsdPhysics.Tokens.convexHull if _is_proxy_collision_prim(collision_prim) else _DYNAMIC_MESH_COLLISION_APPROX
+                is_target_prim = str(prim_path) == str(target_prim)
+                approximation = (
+                    object_collision_approx
+                    if object_collision_approx is not None
+                    else (
+                        target_collision_approx
+                        if target_collision_approx is not None and is_target_prim
+                        else (
+                            "convexHull"
+                            if _is_proxy_collision_prim(collision_prim)
+                            else _DYNAMIC_MESH_COLLISION_APPROX
+                        )
+                    )
                 )
+                UsdPhysics.MeshCollisionAPI.Apply(collision_prim).CreateApproximationAttr(
+                    approximation
+                )
+                if approximation == "convexDecomposition" and convex_decomposition_settings is not None:
+                    _apply_convex_decomposition_settings(collision_prim, convex_decomposition_settings)
+                    convex_decomposition_prim_count += 1
+                if object_collision_approx is not None:
+                    applied_object_collision_approx = approximation
+                elif target_collision_approx is not None and is_target_prim:
+                    applied_target_collision_approx = approximation
             object_colliders += 1
         visual_object_colliders += len(visual_collision_prims)
         if not visual_collision_prims:
@@ -815,6 +1011,13 @@ def _rebind_generated_scene_physics(
         "object_colliders": object_colliders,
         "visual_object_colliders": visual_object_colliders,
         "proxy_object_colliders": proxy_object_colliders,
+        "object_collision_approx": applied_object_collision_approx,
+        "target_collision_approx": applied_target_collision_approx,
+        "convex_decomposition_prim_count": convex_decomposition_prim_count,
+        "convex_decomposition_settings": (
+            None if convex_decomposition_prim_count == 0 or convex_decomposition_settings is None
+            else convex_decomposition_settings.as_dict()
+        ),
     }
 
 
@@ -998,7 +1201,18 @@ def _build_scene_mouse_collect(
     if hasattr(controller, "_apply_reset_joint_state"):
         controller._apply_reset_joint_state()
     _settle_dynamic_scene(scene, controller, None, settle_steps=20)
-    physics_rebind_summary = _rebind_generated_scene_physics(scene.stage, scene_root_path, scene_graph)
+    resolved_convex_decomposition_settings = _resolve_convex_decomposition_settings(args)
+    resolved_object_collision_approx = _resolve_collision_approx(args.object_collision_approx)
+    resolved_target_collision_approx = _resolve_collision_approx(args.target_collision_approx)
+    physics_rebind_summary = _rebind_generated_scene_physics(
+        scene.stage,
+        scene_root_path,
+        scene_graph,
+        object_collision_approx=resolved_object_collision_approx,
+        target_prim=plan.target_prim,
+        target_collision_approx=resolved_target_collision_approx,
+        convex_decomposition_settings=resolved_convex_decomposition_settings,
+    )
     floor_realign_summary = _realign_generated_scene_floor_objects(scene.stage, scene_root_path, scene_graph)
     sim.reset()
 
@@ -1099,134 +1313,169 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
     env_name = f"Isaac-{robot_name.capitalize()}-SceneMouseCollect-v0"
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args.device))
     sim.set_camera_view(spec.camera_eye, spec.camera_target)
+    collision_overlay = CollisionOverlayController(args.collision_only)
+    writer: SceneTeleopEpisodeWriter | None = None
 
-    (
-        scene,
-        controller,
-        cameras,
-        sync_cameras,
-        camera_aliases,
-        plan,
-        effective_base_z_bias,
-        aligned_base_z,
-        physics_rebind_summary,
-        floor_realign_summary,
-    ) = _build_scene_mouse_collect(
-        sim,
-        robot_name,
-        args,
-    )
-    planned_eye, planned_target = _plan_camera_pose(plan)
-    sim.set_camera_view(planned_eye, planned_target)
-    ui = MouseCommandCollectUI(
-        f"{spec.window_title} Scene Collect",
-        lin_step=args.lin_step,
-        ang_step=args.ang_step,
-        allow_arm_switch=spec.arm_switch_supported,
-    )
-    writer = SceneTeleopEpisodeWriter(
-        args.dataset_file,
-        args.capture_hz,
-        args.append,
-        env_name,
-        camera_aliases,
-        plan,
-        args.scene_usd_path,
-        args.scene_graph_path,
-        args.placements_path,
-        initial_arm_side=spec.arm_side,
-        arm_switch_supported=spec.arm_switch_supported,
-    )
+    try:
+        (
+            scene,
+            controller,
+            cameras,
+            sync_cameras,
+            camera_aliases,
+            plan,
+            effective_base_z_bias,
+            aligned_base_z,
+            physics_rebind_summary,
+            floor_realign_summary,
+        ) = _build_scene_mouse_collect(
+            sim,
+            robot_name,
+            args,
+        )
+        collision_overlay.refresh()
+        planned_eye, planned_target = _plan_camera_pose(plan)
+        sim.set_camera_view(planned_eye, planned_target)
+        ui = MouseCommandCollectUI(
+            f"{spec.window_title} Scene Collect",
+            lin_step=args.lin_step,
+            ang_step=args.ang_step,
+            allow_arm_switch=spec.arm_switch_supported,
+        )
+        writer = SceneTeleopEpisodeWriter(
+            args.dataset_file,
+            args.capture_hz,
+            args.append,
+            env_name,
+            camera_aliases,
+            plan,
+            args.scene_usd_path,
+            args.scene_graph_path,
+            args.placements_path,
+            initial_arm_side=spec.arm_side,
+            arm_switch_supported=spec.arm_switch_supported,
+        )
 
-    print(f"[INFO] {robot_name} scene teleop collection ready.")
-    print(f"[INFO] Scene USD: {os.path.abspath(args.scene_usd_path)}")
-    print(f"[INFO] Target object: {plan.target_prim}")
-    print(f"[INFO] Support object: {plan.support_prim}")
-    print(f"[INFO] Planned base pose: {plan.base_pose}")
-    print(f"[INFO] Robot asset: {resolve_robot_asset_path(robot_name)}")
-    print(f"[INFO] Static floor offset z: {_planned_base_height(robot_name):.4f}")
-    print(f"[INFO] Effective base z bias: {effective_base_z_bias:.4f}")
-    print(f"[INFO] Runtime aligned base z: {aligned_base_z:.4f}")
-    print(f"[INFO] Active arm: {controller.active_arm_side}")
-    print(
-        "[INFO] Scene physics rebind: "
-        f"scene={physics_rebind_summary['physics_scene_path']} "
-        f"dynamic_roots={physics_rebind_summary['dynamic_roots']} "
-        f"room_colliders={physics_rebind_summary['room_colliders']} "
-        f"object_colliders={physics_rebind_summary['object_colliders']} "
-        f"visual_object_colliders={physics_rebind_summary['visual_object_colliders']} "
-        f"proxy_object_colliders={physics_rebind_summary['proxy_object_colliders']}"
-    )
-    print(
-        "[INFO] Scene floor realign: "
-        f"visual_roots={floor_realign_summary['visual_roots']} "
-        f"grounded_roots={floor_realign_summary['grounded_roots']}"
-    )
-    print(f"[INFO] Dataset: {os.path.abspath(writer.dataset_file)}")
+        print(f"[INFO] {robot_name} scene teleop collection ready.")
+        print(f"[INFO] Scene USD: {os.path.abspath(args.scene_usd_path)}")
+        print(f"[INFO] Target object: {plan.target_prim}")
+        print(f"[INFO] Support object: {plan.support_prim}")
+        print(f"[INFO] Planned base pose: {plan.base_pose}")
+        print(f"[INFO] Robot asset: {resolve_robot_asset_path(robot_name)}")
+        print(f"[INFO] Static floor offset z: {_planned_base_height(robot_name):.4f}")
+        print(f"[INFO] Effective base z bias: {effective_base_z_bias:.4f}")
+        print(f"[INFO] Runtime aligned base z: {aligned_base_z:.4f}")
+        print(f"[INFO] Active arm: {controller.active_arm_side}")
+        print(
+            "[INFO] Scene physics rebind: "
+            f"scene={physics_rebind_summary['physics_scene_path']} "
+            f"dynamic_roots={physics_rebind_summary['dynamic_roots']} "
+            f"room_colliders={physics_rebind_summary['room_colliders']} "
+            f"object_colliders={physics_rebind_summary['object_colliders']} "
+            f"visual_object_colliders={physics_rebind_summary['visual_object_colliders']} "
+            f"proxy_object_colliders={physics_rebind_summary['proxy_object_colliders']}"
+        )
+        if physics_rebind_summary["object_collision_approx"] is not None:
+            print(
+                "[INFO] Global object collision approximation override: "
+                f"all_object_colliders -> {physics_rebind_summary['object_collision_approx']}"
+            )
+        if physics_rebind_summary["target_collision_approx"] is not None:
+            print(
+                "[INFO] Target collision approximation override: "
+                f"{plan.target_prim} -> {physics_rebind_summary['target_collision_approx']}"
+            )
+        if physics_rebind_summary["convex_decomposition_settings"] is not None:
+            convex_decomp_settings = physics_rebind_summary["convex_decomposition_settings"]
+            print(
+                "[INFO] Convex decomposition tuning: "
+                f"prims={physics_rebind_summary['convex_decomposition_prim_count']} "
+                f"voxel_resolution={convex_decomp_settings['voxel_resolution']} "
+                f"max_convex_hulls={convex_decomp_settings['max_convex_hulls']} "
+                f"error_percentage={convex_decomp_settings['error_percentage']} "
+                f"shrink_wrap={convex_decomp_settings['shrink_wrap']}"
+            )
+        print(
+            "[INFO] Scene floor realign: "
+            f"visual_roots={floor_realign_summary['visual_roots']} "
+            f"grounded_roots={floor_realign_summary['grounded_roots']}"
+        )
+        print(f"[INFO] Dataset: {os.path.abspath(writer.dataset_file)}")
+        if collision_overlay.enabled:
+            print(
+                "[INFO] Collision overlay enabled: "
+                "viewport_colliders=All solid_collision_mesh=True collision_mesh_type=both"
+            )
 
-    sim_time = 0.0
-    while simulation_app.is_running():
-        if ui.consume_start_request():
-            writer.start_recording(sim_time)
+        sim_time = 0.0
+        while simulation_app.is_running():
+            if ui.consume_start_request():
+                writer.start_recording(sim_time)
 
-        if ui.consume_switch_arm_request():
-            next_side = controller.switch_arm_side()
-            ui.set_title(f"{controller.current_window_title()} Scene Collect")
-            print(f"[INFO] Switched active arm to: {next_side}")
+            if ui.consume_switch_arm_request():
+                next_side = controller.switch_arm_side()
+                ui.set_title(f"{controller.current_window_title()} Scene Collect")
+                print(f"[INFO] Switched active arm to: {next_side}")
+                if sync_cameras is not None:
+                    sync_cameras()
+
+            delta_cmd = ui.consume_delta(sim.device)
+            controller.step_click_delta(delta_cmd, ui.gripper_closed)
+            scene.write_data_to_sim()
+            sim.step()
+            sim_time += sim.get_physics_dt()
+            scene.update(sim.get_physics_dt())
+
             if sync_cameras is not None:
                 sync_cameras()
 
-        delta_cmd = ui.consume_delta(sim.device)
-        controller.step_click_delta(delta_cmd, ui.gripper_closed)
-        scene.write_data_to_sim()
-        sim.step()
-        sim_time += sim.get_physics_dt()
-        scene.update(sim.get_physics_dt())
-
-        if sync_cameras is not None:
-            sync_cameras()
-
-        action = torch.cat(
-            [
-                delta_cmd.detach().cpu().to(dtype=torch.float32),
-                torch.tensor([1.0 if ui.gripper_closed else 0.0], dtype=torch.float32),
-            ],
-            dim=0,
-        )
-        writer.maybe_record_frame(sim_time, action, controller, cameras)
-
-        if ui.consume_stop_save_request():
-            writer.stop_and_save()
-            _reset_scene_to_plan(
-                scene,
-                controller,
-                plan,
-                _planned_base_height(robot_name) + effective_base_z_bias,
-                sync_cameras,
+            action = torch.cat(
+                [
+                    delta_cmd.detach().cpu().to(dtype=torch.float32),
+                    torch.tensor([1.0 if ui.gripper_closed else 0.0], dtype=torch.float32),
+                ],
+                dim=0,
             )
+            writer.maybe_record_frame(sim_time, action, controller, cameras)
 
-        if ui.consume_stop_discard_request():
-            writer.stop_and_discard()
-            _reset_scene_to_plan(
-                scene,
-                controller,
-                plan,
-                _planned_base_height(robot_name) + effective_base_z_bias,
-                sync_cameras,
+            if ui.consume_stop_save_request():
+                writer.stop_and_save()
+                _reset_scene_to_plan(
+                    scene,
+                    controller,
+                    plan,
+                    _planned_base_height(robot_name) + effective_base_z_bias,
+                    sync_cameras,
+                )
+                collision_overlay.refresh()
+
+            if ui.consume_stop_discard_request():
+                writer.stop_and_discard()
+                _reset_scene_to_plan(
+                    scene,
+                    controller,
+                    plan,
+                    _planned_base_height(robot_name) + effective_base_z_bias,
+                    sync_cameras,
+                )
+                collision_overlay.refresh()
+
+            if ui.consume_reset_request():
+                _reset_scene_to_plan(
+                    scene,
+                    controller,
+                    plan,
+                    _planned_base_height(robot_name) + effective_base_z_bias,
+                    sync_cameras,
+                )
+                collision_overlay.refresh()
+
+        if writer.recording and writer.frame_count > 0:
+            print(
+                f"[INFO] Exiting with an active unsaved recording containing {writer.frame_count} frames. "
+                "Use Stop + Save before closing if you want to keep it."
             )
-
-        if ui.consume_reset_request():
-            _reset_scene_to_plan(
-                scene,
-                controller,
-                plan,
-                _planned_base_height(robot_name) + effective_base_z_bias,
-                sync_cameras,
-            )
-
-    if writer.recording and writer.frame_count > 0:
-        print(
-            f"[INFO] Exiting with an active unsaved recording containing {writer.frame_count} frames. "
-            "Use Stop + Save before closing if you want to keep it."
-        )
-    writer.close()
+    finally:
+        if writer is not None:
+            writer.close()
+        collision_overlay.close()
