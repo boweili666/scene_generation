@@ -4,13 +4,46 @@ from pathlib import Path
 from unittest import mock
 
 from pipelines.real2sim.streaming_generation_client import (
+    DEFAULT_IMAGE_PATH,
+    DEFAULT_MASK_DIR,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PREDICT_STREAM_SERVER,
+    DEFAULT_SCENE_GRAPH,
     assemble_scene_usd_from_manifest,
+    build_parser,
     collect_usd_conversion_pairs,
     convert_outputs_to_usd,
+    resolve_scene_graph_path,
 )
 
 
 class Real2SimStreamingGenerationClientTest(unittest.TestCase):
+    def test_build_parser_uses_runtime_defaults(self) -> None:
+        args = build_parser().parse_args([])
+
+        self.assertEqual(args.server, DEFAULT_PREDICT_STREAM_SERVER)
+        self.assertEqual(args.image, DEFAULT_IMAGE_PATH)
+        self.assertEqual(args.mask_dir, DEFAULT_MASK_DIR)
+        self.assertEqual(args.scene_graph, DEFAULT_SCENE_GRAPH)
+        self.assertEqual(args.output_dir, DEFAULT_OUTPUT_DIR)
+
+    def test_resolve_scene_graph_path_skips_missing_default_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            default_path = Path(tmp) / "current_scene_graph.json"
+            custom_path = Path(tmp) / "custom_scene_graph.json"
+
+            self.assertIsNone(resolve_scene_graph_path(default_path, default_scene_graph=default_path))
+            self.assertEqual(
+                resolve_scene_graph_path(custom_path, default_scene_graph=default_path),
+                custom_path,
+            )
+
+            default_path.write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                resolve_scene_graph_path(default_path, default_scene_graph=default_path),
+                default_path,
+            )
+
     def test_collect_usd_conversion_pairs_defaults_to_objects_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

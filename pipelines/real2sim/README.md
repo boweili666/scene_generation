@@ -71,10 +71,7 @@ Success criteria:
 
 ```bash
 python pipelines/real2sim/streaming_generation_client.py \
-  --server http://128.2.204.110:8000 \
-  --image runtime/real2sim/masks/image.png \
-  --mask-dir runtime/real2sim/masks \
-  --output-dir runtime/real2sim/scene_results
+  --server http://iclspiderman.ri.cmu.edu:8000
 ```
 
 Success criteria:

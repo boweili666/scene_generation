@@ -23,6 +23,13 @@ else:
     from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
 
 
+DEFAULT_PREDICT_STREAM_SERVER = os.environ.get("PREDICT_STREAM_SERVER", "http://iclspiderman.ri.cmu.edu:8000")
+DEFAULT_IMAGE_PATH = Path("runtime/real2sim/masks/image.png")
+DEFAULT_MASK_DIR = Path("runtime/real2sim/masks")
+DEFAULT_SCENE_GRAPH = Path("runtime/scene_graph/current_scene_graph.json")
+DEFAULT_OUTPUT_DIR = Path("runtime/real2sim/scene_results")
+
+
 def parse_bool(value: str) -> bool:
     lowered = value.strip().lower()
     if lowered in {"1", "true", "t", "yes", "y"}:
@@ -68,15 +75,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--server",
-        default="http://128.2.204.110:8000",
-        help="Server base URL (default: http://128.2.204.110:8000)",
+        default=DEFAULT_PREDICT_STREAM_SERVER,
+        help=f"Server base URL (default: {DEFAULT_PREDICT_STREAM_SERVER})",
     )
     parser.add_argument(
         "--endpoint",
         default="/predict_stream",
         help="Predict endpoint path (default: /predict_stream)",
     )
-    parser.add_argument("--image", type=Path, required=True, help="Path to image.png")
+    parser.add_argument(
+        "--image",
+        type=Path,
+        default=DEFAULT_IMAGE_PATH,
+        help=f"Path to image.png (default: {DEFAULT_IMAGE_PATH})",
+    )
     parser.add_argument(
         "--masks",
         type=Path,
@@ -87,15 +99,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mask-dir",
         type=Path,
-        default=None,
-        help="Optional directory to auto-load *.png masks (excluding image.png)",
+        default=DEFAULT_MASK_DIR,
+        help=f"Directory to auto-load *.png masks, excluding image.png (default: {DEFAULT_MASK_DIR})",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--scene-graph",
         type=Path,
-        default=None,
-        help="Optional scene graph JSON used for support-aware postprocessing.",
+        default=DEFAULT_SCENE_GRAPH,
+        help=(
+            "Scene graph JSON used for support-aware postprocessing when the file exists "
+            f"(default: {DEFAULT_SCENE_GRAPH})"
+        ),
     )
     parser.add_argument("--texture-baking", type=parse_bool, default=True)
     parser.add_argument("--pose-optim-backend", default="gs", choices=["gs", "mesh"])
@@ -131,8 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("outputs/stream_results"),
-        help="Output directory for streamed files.",
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"Output directory for streamed files (default: {DEFAULT_OUTPUT_DIR})",
     )
     parser.add_argument(
         "--converter-python",
@@ -146,6 +161,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the Isaac mesh-to-USD converter script.",
     )
     return parser
+
+
+def resolve_scene_graph_path(
+    scene_graph_path: Path | None,
+    *,
+    default_scene_graph: Path = DEFAULT_SCENE_GRAPH,
+) -> Path | None:
+    if scene_graph_path is None:
+        return None
+    if scene_graph_path == default_scene_graph and not scene_graph_path.exists():
+        return None
+    return scene_graph_path
 
 
 def read_exact(stream, size: int) -> bytes:
@@ -394,6 +421,7 @@ def run_once(args: argparse.Namespace, mask_paths: list[Path], output_dir: Path,
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    args.scene_graph = resolve_scene_graph_path(args.scene_graph)
 
     if not args.image.exists():
         raise FileNotFoundError(f"Image not found: {args.image}")
