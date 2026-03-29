@@ -6,6 +6,7 @@ from app.backend.config.settings import (
     DEFAULT_RENDER_PATH,
     FRONTEND_DIR,
     LOGS_DIR,
+    REAL2SIM_PREDICT_STREAM_SERVER_SCRIPT,
     RUNTIME_DIR,
     REAL2SIM_PREDICT_STREAM_CLIENT,
     REAL2SIM_SEGMENT_SCRIPT,
@@ -32,6 +33,10 @@ class RuntimeLayoutTest(unittest.TestCase):
         self.assertEqual(
             Path(REAL2SIM_PREDICT_STREAM_CLIENT),
             Path("pipelines/real2sim/streaming_generation_client.py"),
+        )
+        self.assertEqual(
+            Path(REAL2SIM_PREDICT_STREAM_SERVER_SCRIPT),
+            Path("pipelines/real2sim/predict_stream_server.py"),
         )
 
 

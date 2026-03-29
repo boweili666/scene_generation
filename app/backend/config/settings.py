@@ -45,12 +45,19 @@ SCENE_SERVICE_LOG_PATH = str((LOGS_DIR / "scene_service.log").resolve())
 REAL2SIM_ROOT_DIR = PROJECT_ROOT.resolve()
 REAL2SIM_SEGMENT_SCRIPT = os.path.join("pipelines", "real2sim", "object_segmentation_pipeline.py")
 REAL2SIM_PREDICT_STREAM_CLIENT = os.path.join("pipelines", "real2sim", "streaming_generation_client.py")
+REAL2SIM_PREDICT_STREAM_SERVER_SCRIPT = os.path.join("pipelines", "real2sim", "predict_stream_server.py")
 REAL2SIM_MASK_OUTPUT_DIR = (REAL2SIM_RUNTIME_DIR / "masks").resolve()
 REAL2SIM_MESH_OUTPUT_DIR = (REAL2SIM_RUNTIME_DIR / "meshes").resolve()
 REAL2SIM_REUSE_MESH_DIR = (REAL2SIM_RUNTIME_DIR / "meshes").resolve()
 REAL2SIM_SCENE_RESULTS_DIR = (REAL2SIM_RUNTIME_DIR / "scene_results").resolve()
 REAL2SIM_MANIFEST_PATH = (REAL2SIM_SCENE_RESULTS_DIR / "real2sim_asset_manifest.json").resolve()
 PREDICT_STREAM_SERVER = os.environ.get("PREDICT_STREAM_SERVER", "http://iclspiderman.ri.cmu.edu:8000")
+SAM3D_OBJECTS_ROOT = Path(
+    os.environ.get("SAM3D_OBJECTS_ROOT", PROJECT_ROOT / "third_party" / "sam-3d-objects")
+).resolve()
+SAM3D_PIPELINE_CONFIG = Path(
+    os.environ.get("SAM3D_PIPELINE_CONFIG", SAM3D_OBJECTS_ROOT / "checkpoints" / "hf" / "pipeline.yaml")
+).resolve()
 
 DIRECTORIES_TO_CREATE = [
     FRONTEND_ASSETS_DIR,

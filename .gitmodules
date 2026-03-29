@@ -3,4 +3,4 @@
 	url = /home/lbw/3dgen-project/test/StableMaterials
 [submodule "third_party/sam-3d-objects"]
 	path = third_party/sam-3d-objects
-	url = https://github.com/facebookresearch/sam-3d-objects.git
+	url = https://github.com/boweili666/sam-3d-objects.git
