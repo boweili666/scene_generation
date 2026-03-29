@@ -71,7 +71,7 @@ def collect_masks(mask_paths: Iterable[Path], mask_dir: Path | None) -> list[Pat
 def build_parser() -> argparse.ArgumentParser:
     project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
-        description="Send one image + multiple masks to /predict_stream and save binary streamed outputs."
+        description="Minimal client for /predict_stream that saves streamed scene outputs."
     )
     parser.add_argument(
         "--server",
@@ -113,12 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--texture-baking", type=parse_bool, default=True)
-    parser.add_argument("--pose-optim-backend", default="gs", choices=["gs", "mesh"])
     parser.add_argument("--with-layout-postprocess", type=parse_bool, default=True)
-    parser.add_argument("--gs-enable-manual-alignment", type=parse_bool, default=True)
-    parser.add_argument("--gs-enable-shape-icp", type=parse_bool, default=False)
-    parser.add_argument("--gs-enable-occlusion-check", type=parse_bool, default=False)
-    parser.add_argument("--allow-mask-resize", type=parse_bool, default=False)
     parser.add_argument(
         "--connect-timeout",
         type=float,
@@ -369,12 +364,7 @@ def build_form_fields(args: argparse.Namespace) -> list[tuple[str, str]]:
     return [
         ("seed", str(args.seed)),
         ("texture_baking", "true" if args.texture_baking else "false"),
-        ("pose_optim_backend", args.pose_optim_backend),
         ("with_layout_postprocess", "true" if args.with_layout_postprocess else "false"),
-        ("gs_enable_manual_alignment", "true" if args.gs_enable_manual_alignment else "false"),
-        ("gs_enable_shape_icp", "true" if args.gs_enable_shape_icp else "false"),
-        ("gs_enable_occlusion_check", "true" if args.gs_enable_occlusion_check else "false"),
-        ("allow_mask_resize", "true" if args.allow_mask_resize else "false"),
     ]
 
 
