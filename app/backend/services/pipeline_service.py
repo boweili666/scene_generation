@@ -316,7 +316,6 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
     mesh_output_dir = str(payload.get("mesh_output_dir") or REAL2SIM_MESH_OUTPUT_DIR)
     reuse_mesh_dir = str(payload.get("reuse_mesh_dir") or REAL2SIM_REUSE_MESH_DIR)
-    sam3d_url = str(payload.get("sam3d_url") or "http://128.2.204.116:8000/generate_mesh")
     sam3_python = str(payload.get("sam3_python") or SAM3_PYTHON)
     predict_stream_server = str(payload.get("predict_stream_server") or PREDICT_STREAM_SERVER)
     scene_results_dir = str(payload.get("scene_results_dir") or REAL2SIM_SCENE_RESULTS_DIR)
@@ -339,11 +338,8 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         mesh_output_dir,
         "--reuse-mesh-dir",
         reuse_mesh_dir,
-        "--sam3d-url",
-        sam3d_url,
         "--prompts",
         *prompts,
-        "--skip-sam3d",
     ]
     _run_step(
         step1_cmd,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import re
 import shutil
@@ -17,7 +16,6 @@ DEFAULT_SCENE_GRAPH = Path("runtime/scene_graph/current_scene_graph.json")
 DEFAULT_OUTPUT_ROOT = Path("runtime/real2sim/masks")
 DEFAULT_MESH_OUTPUT = Path("runtime/real2sim/meshes")
 DEFAULT_REUSE_MESH_DIR = Path("runtime/real2sim/meshes")
-DEFAULT_SAM3D_URL = "http://128.2.204.116:8000/generate_mesh"
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
 
 
@@ -40,12 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompts", nargs="+", default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--mesh-output-dir", type=Path, default=DEFAULT_MESH_OUTPUT)
-    parser.add_argument("--sam3d-url", default=DEFAULT_SAM3D_URL)
-    parser.add_argument("--skip-sam3d", action="store_true")
     parser.add_argument("--reuse-mesh-dir", type=Path, default=DEFAULT_REUSE_MESH_DIR)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--mask-threshold", type=float, default=0.5)
-    parser.add_argument("--sam3d-timeout", type=float, default=120.0)
     parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
 
@@ -99,25 +94,6 @@ def choose_prompts(args: argparse.Namespace) -> list[str]:
 
     return DEFAULT_PROMPTS
 
-
-def post_to_sam3d(rgba_pil: Image.Image, sam3d_url: str, timeout: float) -> bytes | None:
-    import requests
-
-    buf = io.BytesIO()
-    rgba_pil.save(buf, format="PNG")
-    buf.seek(0)
-    files = {"image": ("mask.png", buf, "image/png")}
-    params = {
-        "texture_resolution": 1024,
-        "remesh_option": "none",
-        "target_vertex_count": -1,
-    }
-    response = requests.post(sam3d_url, files=files, params=params, timeout=timeout)
-    if response.status_code != 200:
-        return None
-    return response.content
-
-
 def copy_reused_meshes(prompts: list[str], reuse_mesh_dir: Path, mesh_output_dir: Path) -> int:
     if not reuse_mesh_dir.exists():
         print(f"[WARN] Reuse mesh directory does not exist: {reuse_mesh_dir}")
@@ -168,7 +144,6 @@ def main() -> None:
     print(f"[INFO] Image: {args.image}")
     print(f"[INFO] Prompts: {prompts}")
     print(f"[INFO] Scene graph: {args.scene_graph}")
-    print(f"[INFO] skip_sam3d: {args.skip_sam3d}")
 
     model = Sam3Model.from_pretrained("facebook/sam3", local_files_only=args.local_files_only).to(device)
     processor = Sam3Processor.from_pretrained("facebook/sam3", local_files_only=args.local_files_only)
@@ -236,31 +211,12 @@ def main() -> None:
                 f"[SAVE] {mask_path} | prompt={prompt_key} | bbox=({x_min},{y_min})-({x_max},{y_max})"
             )
 
-            if args.skip_sam3d:
-                continue
-
-            mesh_bytes = post_to_sam3d(
-                Image.fromarray(rgba_crop, mode="RGBA"),
-                sam3d_url=args.sam3d_url,
-                timeout=args.sam3d_timeout,
-            )
-            if not mesh_bytes:
-                print(f"[WARN] SAM3D failed for {prompt_key}_{idx}")
-                continue
-
-            mesh_path = args.mesh_output_dir / f"{prompt_key}_{idx}_mesh.glb"
-            mesh_path.write_bytes(mesh_bytes)
-            total_meshes += 1
-            print(f"[SAVE] Mesh: {mesh_path}")
-
-    reused = 0
-    if args.skip_sam3d:
-        existing = list(args.mesh_output_dir.glob("*_mesh.glb"))
-        if existing:
-            print(f"[INFO] Using existing meshes in {args.mesh_output_dir} (count={len(existing)})")
-        else:
-            reused = copy_reused_meshes(prompts, args.reuse_mesh_dir, args.mesh_output_dir)
-            print(f"[INFO] Reused meshes copied: {reused}")
+    existing = list(args.mesh_output_dir.glob("*_mesh.glb"))
+    if existing:
+        print(f"[INFO] Using existing meshes in {args.mesh_output_dir} (count={len(existing)})")
+    else:
+        reused = copy_reused_meshes(prompts, args.reuse_mesh_dir, args.mesh_output_dir)
+        print(f"[INFO] Reused meshes copied: {reused}")
 
     print(f"\n[DONE] Total saved masks: {total_masks}")
     print(f"[DONE] Mask output root: {args.output_root}")

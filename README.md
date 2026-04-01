@@ -122,10 +122,18 @@ python -m app.backend.services.scene_service
 If the services run on the remote server `boweili@iclspiderman.ri.cmu.edu`, use SSH port forwarding from your local machine:
 
 ```bash
-ssh -L 8000:127.0.0.1:8000 boweili@iclspiderman.ri.cmu.edu
+ssh -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 -L 8002:127.0.0.1:8002 boweili@iclspiderman.ri.cmu.edu
 ```
 
-Then start the service on the remote machine, for example:
+Then start the Real2Sim predict-stream server on the remote machine:
+
+```bash
+cd /home/boweili/scene_generation
+conda activate sam3d-objects
+python -u pipelines/real2sim/predict_stream_server.py --host 127.0.0.1 --port 8002
+```
+
+In another shell on the remote machine, start the web app or scene service, for example:
 
 ```bash
 python -m app.backend.app
