@@ -18,6 +18,7 @@ SCENE_HOST="${SCENE_HOST:-127.0.0.1}"
 SCENE_PORT="${SCENE_PORT:-8001}"
 WEB_PORT="${WEB_PORT:-8000}"
 SCENE_MODE="${SCENE_MODE:-headless}" # headless | windowed
+SCENE_HEALTH_TIMEOUT_SECONDS="${SCENE_HEALTH_TIMEOUT_SECONDS:-180}"
 
 if ! command -v "$SCENE_PYTHON" >/dev/null 2>&1; then
   echo "[ERROR] Python executable not found: $SCENE_PYTHON" >&2
@@ -47,7 +48,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "[INFO] Waiting for scene service health check..."
-for _ in {1..60}; do
+for ((i = 0; i < SCENE_HEALTH_TIMEOUT_SECONDS; i++)); do
   if ! kill -0 "$SCENE_PID" 2>/dev/null; then
     echo "[ERROR] Scene service exited before becoming healthy. Last log lines:" >&2
     tail -n 80 "$SCENE_LOG" >&2 || true

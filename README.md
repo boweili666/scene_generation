@@ -20,6 +20,15 @@ This repo contains the scene graph web UI, the Real2Sim pipeline, and the Isaac 
 
 ## Environment Setup
 
+This project uses two separate environments:
+
+- `scene_gen`: environment for `scene_generation`, Isaac Sim, IsaacLab, and the web/backend services in this repo
+- `sam3d-objects`: environment for `third_party/sam-3d-objects`
+
+Set up the `sam3d-objects` environment by following the official SAM 3D Objects setup guide:
+
+- https://github.com/facebookresearch/sam-3d-objects/blob/main/doc/setup.md
+
 The recorded setup flow for the `scene_gen` environment is:
 
 ```bash
@@ -28,6 +37,7 @@ conda activate scene_gen
 pip install isaacsim[all,extscache]==5.1.0 --extra-index-url https://pypi.nvidia.com
 cd third_party/IsaacLab/
 conda install -n scene_gen -c conda-forge cmake=3.27.9
+conda install -n scene_gen -c conda-forge libglu
 conda run -n scene_gen pip install egl-probe==1.0.2
 ./isaaclab.sh --install
 conda install -n scene_gen -c conda-forge casadi=3.7.0

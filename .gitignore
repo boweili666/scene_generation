@@ -3,7 +3,7 @@ outputs/
 runtime/
 logs/
 *.glb
-*.usd
+
 *.log
 
 # Python cache
