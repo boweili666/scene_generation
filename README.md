@@ -55,6 +55,25 @@ pip install flask
 
 After `cd third_party/IsaacLab/`, the remaining commands above are intended to be run from that directory unless noted otherwise.
 
+## API Configuration
+
+The top-level `scene_generation` services may call OpenAI APIs. Configure the API key in your
+shell environment before starting the backend services:
+
+```bash
+export OPENAI_API_KEY=your_api_key_here
+```
+
+`OPENAI_BASE_URL` is optional. Set it only if you want the OpenAI client to use a non-default
+endpoint such as a proxy, gateway, or OpenAI-compatible service:
+
+```bash
+export OPENAI_BASE_URL=https://your-custom-endpoint.example/v1
+```
+
+For the standard OpenAI API, leave `OPENAI_BASE_URL` unset and only configure
+`OPENAI_API_KEY`.
+
 ## Runtime Layout
 
 - `runtime/uploads`: uploaded reference images
