@@ -1,18 +1,18 @@
 # Real2Sim Pipeline
 
 This directory now reflects the current Real2Sim logic actually used by the app.
-All commands below assume you run them from `/home/lbw/3dgen-project/scene_graph_ui_test`.
+All commands below assume you run them from `/home/boweili/scene_generation`.
 
 ## Environment Setup
 
 ```bash
-conda activate sam3
+conda activate sam3d-objects
 ```
 
 Recommended dependencies:
 
 ```bash
-pip install torch transformers pillow numpy requests
+pip install torch transformers pillow numpy requests fastapi uvicorn trimesh starlette
 ```
 
 ## Current Flow
@@ -51,11 +51,86 @@ Default active output directories:
 
 ---
 
+## Standalone Local Run
+
+The easiest fully local workflow is:
+
+1. start the in-repo `/predict_stream` server
+2. generate masks with `object_segmentation_pipeline.py`
+3. send the masks to the local server with `streaming_generation_client.py`
+
+### Terminal 1: Start Local Server
+
+```bash
+cd /home/boweili/scene_generation
+conda activate sam3d-objects
+
+python3 pipelines/real2sim/predict_stream_server.py \
+  --config /home/boweili/sam-3d-objects/checkpoints/hf/pipeline.yaml
+```
+
+Notes:
+
+- the current server imports SAM 3D code from `third_party/sam-3d-objects`
+- if `third_party/sam-3d-objects/checkpoints/hf/pipeline.yaml` is missing, pass `--config` explicitly as above
+- if you want to use a different checkout, set `SAM3D_OBJECTS_ROOT=/path/to/sam-3d-objects`
+
+Success criteria:
+
+- terminal shows `[START] preloading model`
+- terminal shows `[START] model preloaded; accepting requests`
+- `http://127.0.0.1:8000/healthz` responds successfully
+
+### Terminal 2: Step1 Generate Masks
+
+```bash
+cd /home/boweili/scene_generation
+conda activate sam3d-objects
+
+python3 pipelines/real2sim/object_segmentation_pipeline.py \
+  --image runtime/uploads/latest_input.jpg \
+  --scene-graph runtime/scene_graph/current_scene_graph.json \
+  --output-root runtime/real2sim/masks \
+  --mesh-output-dir runtime/real2sim/meshes \
+  --reuse-mesh-dir runtime/real2sim/meshes \
+  --skip-sam3d
+```
+
+Success criteria:
+
+- terminal shows `[SEGMENT] ...` and `[DONE] Total saved masks`
+- `runtime/real2sim/masks/image.png` exists
+- `runtime/real2sim/masks/*.png` object masks exist
+
+### Terminal 2: Step2 Run Local Client
+
+```bash
+cd /home/boweili/scene_generation
+conda activate sam3d-objects
+
+python3 pipelines/real2sim/streaming_generation_client.py \
+  --server http://127.0.0.1:8000 \
+  --image runtime/real2sim/masks/image.png \
+  --mask-dir runtime/real2sim/masks \
+  --scene-graph runtime/scene_graph/current_scene_graph.json \
+  --output-dir runtime/real2sim/scene_results
+```
+
+Success criteria:
+
+- terminal shows streamed saves for `object`, `scene`, and `poses`
+- `runtime/real2sim/scene_results/objects/*.glb` exists
+- `runtime/real2sim/scene_results/scene_merged.glb` exists
+- `runtime/real2sim/scene_results/poses.json` exists
+- postprocess and USD conversion complete without errors
+
+---
+
 ## Step1 Standalone Test
 
 ```bash
-cd /home/lbw/3dgen-project/scene_graph_ui_test
-python pipelines/real2sim/object_segmentation_pipeline.py \
+cd /home/boweili/scene_generation
+python3 pipelines/real2sim/object_segmentation_pipeline.py \
   --image runtime/uploads/latest_input.jpg \
   --scene-graph runtime/scene_graph/current_scene_graph.json \
   --output-root runtime/real2sim/masks \
@@ -75,7 +150,7 @@ Success criteria:
 ## Step2 Standalone Test
 
 ```bash
-python pipelines/real2sim/streaming_generation_client.py \
+python3 pipelines/real2sim/streaming_generation_client.py \
   --server http://iclspiderman.ri.cmu.edu:8000
 ```
 
@@ -135,7 +210,8 @@ If the submodule is initialized and includes the expected SAM 3D files, you can
 launch the local predict server from the main repo with:
 
 ```bash
-python pipelines/real2sim/predict_stream_server.py
+python3 pipelines/real2sim/predict_stream_server.py \
+  --config /home/boweili/sam-3d-objects/checkpoints/hf/pipeline.yaml
 ```
 
 By default it imports from `third_party/sam-3d-objects`. You can point to a
@@ -143,5 +219,6 @@ different checkout with:
 
 ```bash
 SAM3D_OBJECTS_ROOT=/home/boweili/sam-3d-objects \
-python pipelines/real2sim/predict_stream_server.py
+python3 pipelines/real2sim/predict_stream_server.py \
+  --config /home/boweili/sam-3d-objects/checkpoints/hf/pipeline.yaml
 ```

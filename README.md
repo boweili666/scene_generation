@@ -18,6 +18,33 @@ This repo contains the scene graph web UI, the Real2Sim pipeline, and the Isaac 
 - Web app: `python -m app.backend.app`
 - Scene service: `python -m app.backend.services.scene_service`
 
+## Environment Setup
+
+The recorded setup flow for the `scene_gen` environment is:
+
+```bash
+conda create -n scene_gen python=3.11 -y
+conda activate scene_gen
+pip install isaacsim[all,extscache]==5.1.0 --extra-index-url https://pypi.nvidia.com
+cd third_party/IsaacLab/
+conda install -n scene_gen -c conda-forge cmake=3.27.9
+conda run -n scene_gen pip install egl-probe==1.0.2
+./isaaclab.sh --install
+conda install -n scene_gen -c conda-forge casadi=3.7.0
+conda run -n scene_gen pip install \
+  openai==2.21.0 \
+  pin==2.7.0
+conda run -n scene_gen pip install \
+  transformers==5.2.0 \
+  huggingface-hub==1.4.1 \
+  hf-xet==1.2.0 \
+  tokenizers==0.22.2 \
+  safetensors==0.7.0
+pip install flask
+```
+
+After `cd third_party/IsaacLab/`, the remaining commands above are intended to be run from that directory unless noted otherwise.
+
 ## Runtime Layout
 
 - `runtime/uploads`: uploaded reference images
@@ -78,6 +105,32 @@ Start the scene service in a second shell:
 
 ```bash
 python -m app.backend.services.scene_service
+```
+
+## Remote Web Access
+
+If the services run on the remote server `boweili@iclspiderman.ri.cmu.edu`, use SSH port forwarding from your local machine:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 boweili@iclspiderman.ri.cmu.edu
+```
+
+Then start the service on the remote machine, for example:
+
+```bash
+python -m app.backend.app
+```
+
+or:
+
+```bash
+uvicorn app.backend.services.scene_service:app --host 127.0.0.1 --port 8000
+```
+
+Once the SSH tunnel is active, open this URL in your local browser:
+
+```text
+http://127.0.0.1:8000
 ```
 
 Run the automated smoke test:

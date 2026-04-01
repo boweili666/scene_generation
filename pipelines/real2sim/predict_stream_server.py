@@ -28,8 +28,14 @@ if __package__:
 else:
     import sys
 
-    sys.path.append(str(Path(__file__).resolve().parents[2]))
-    from pipelines.real2sim.sam3d_bootstrap import (  # type: ignore
+    current_dir = Path(__file__).resolve().parent
+    project_root = Path(__file__).resolve().parents[2]
+    for path in (current_dir, project_root):
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+
+    from sam3d_bootstrap import (  # type: ignore
         DEFAULT_SAM3D_ROOT,
         ensure_sam3d_imports,
         validate_sam3d_layout,
