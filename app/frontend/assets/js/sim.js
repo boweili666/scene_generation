@@ -67,7 +67,11 @@
 
           if (job.status === "succeeded") {
             if (artifacts.scene_glb_url && !loadedMerged) {
-              const mergedQueued = enqueueGlbLoad(artifacts.scene_glb_url, { isMerged: true });
+              const mergedManifest = await loadArtifactJson(artifacts.manifest_json_url);
+              const mergedQueued = enqueueGlbLoad(artifacts.scene_glb_url, {
+                isMerged: true,
+                manifest: mergedManifest,
+              });
               if (mergedQueued) loadedMerged = true;
             }
             done = true;
@@ -126,6 +130,20 @@
 
     async function runResample() {
       return callSceneService("scene_new", { resampleMode: getSelectedResampleMode() });
+    }
+
+    async function loadArtifactJson(url) {
+      if (!url) return null;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch artifact JSON: ${res.status}`);
+        }
+        return await res.json();
+      } catch (err) {
+        console.warn("Artifact JSON fetch failed:", url, err);
+        return null;
+      }
     }
 
     async function callSceneService(endpoint, options = {}) {

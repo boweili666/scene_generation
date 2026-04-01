@@ -9,3 +9,4 @@ logs/
 # Python cache
 __pycache__/
 *.pyc
+datasets/scene_mouse_collect.hdf5

@@ -61,6 +61,102 @@
       document.getElementById("renderImage").style.display = "none";
     }
 
+    function previewRelationTokens(relation) {
+      return String(relation || "")
+        .split(",")
+        .map((token) => token.trim().toLowerCase())
+        .filter(Boolean);
+    }
+
+    function extractManifestTranslation(meta) {
+      const transform = meta && Array.isArray(meta.scene_transform) ? meta.scene_transform : null;
+      if (!transform || transform.length < 3) return null;
+      const x = Number(transform?.[0]?.[3]);
+      const y = Number(transform?.[1]?.[3]);
+      const z = Number(transform?.[2]?.[3]);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+      return new THREE.Vector3(x, y, z);
+    }
+
+    function buildPreviewSupportCounts(sceneGraph) {
+      const counts = new Map();
+      const edges = sceneGraph?.edges?.["obj-obj"];
+      if (!Array.isArray(edges)) return counts;
+      for (const edge of edges) {
+        if (!edge || typeof edge !== "object") continue;
+        const relationTokens = previewRelationTokens(edge.relation);
+        const source = typeof edge.source === "string" ? edge.source : null;
+        const target = typeof edge.target === "string" ? edge.target : null;
+        if (source && relationTokens.includes("supports")) {
+          counts.set(source, (counts.get(source) || 0) + 1);
+        }
+        if (target && relationTokens.includes("supported by")) {
+          counts.set(target, (counts.get(target) || 0) + 1);
+        }
+      }
+      return counts;
+    }
+
+    function isReal2SimSceneObject(sceneGraph, prim) {
+      const meta = sceneGraph?.obj?.[prim];
+      return String(meta?.source || "").trim().toLowerCase() === "real2sim";
+    }
+
+    function selectMergedScenePreviewFocus(manifest) {
+      const objectMap = manifest?.objects;
+      if (!objectMap || typeof objectMap !== "object") return null;
+
+      const entries = [];
+      for (const [prim, meta] of Object.entries(objectMap)) {
+        const translation = extractManifestTranslation(meta);
+        if (!translation) continue;
+        entries.push({
+          prim,
+          cls: String(meta?.class || "").trim().toLowerCase(),
+          translation,
+        });
+      }
+      if (!entries.length) return null;
+
+      const centroid = new THREE.Vector3();
+      for (const entry of entries) {
+        centroid.add(entry.translation);
+      }
+      centroid.divideScalar(entries.length);
+
+      const supportCounts = buildPreviewSupportCounts(interactionState.currentSceneGraph);
+      const supportCandidates = entries.filter((entry) =>
+        isReal2SimSceneObject(interactionState.currentSceneGraph, entry.prim) && (supportCounts.get(entry.prim) || 0) > 0
+      );
+      const fallbackSupportCandidates = entries.filter((entry) => (supportCounts.get(entry.prim) || 0) > 0);
+      const candidates = supportCandidates.length
+        ? supportCandidates
+        : (fallbackSupportCandidates.length ? fallbackSupportCandidates : entries);
+
+      const candidateCentroid = new THREE.Vector3();
+      for (const entry of candidates) {
+        candidateCentroid.add(entry.translation);
+      }
+      candidateCentroid.divideScalar(candidates.length);
+
+      candidates.sort((a, b) => {
+        const distanceA = Math.hypot(a.translation.x - candidateCentroid.x, a.translation.z - candidateCentroid.z);
+        const distanceB = Math.hypot(b.translation.x - candidateCentroid.x, b.translation.z - candidateCentroid.z);
+        if (Math.abs(distanceA - distanceB) > 1e-6) return distanceA - distanceB;
+
+        const overallDistanceA = Math.hypot(a.translation.x - centroid.x, a.translation.z - centroid.z);
+        const overallDistanceB = Math.hypot(b.translation.x - centroid.x, b.translation.z - centroid.z);
+        if (Math.abs(overallDistanceA - overallDistanceB) > 1e-6) return overallDistanceA - overallDistanceB;
+
+        return a.prim.localeCompare(b.prim);
+      });
+
+      return {
+        prim: candidates[0].prim,
+        point: candidates[0].translation.clone(),
+      };
+    }
+
     function ensureExternalScript(src, isReady, timeoutMs = 10000) {
       try {
         if (isReady()) return Promise.resolve();
@@ -193,6 +289,8 @@
       const controls = new THREE.OrbitControls(camera, renderer.domElement);
       controls.enableDamping = true;
       controls.dampingFactor = 0.08;
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 1.1;
       controls.target.set(0, 0, 0);
       controls.update();
 
@@ -305,9 +403,6 @@
       function animate() {
         requestAnimationFrame(animate);
         controls.update();
-        for (const root of viewerState.spinRoots) {
-          root.rotation.y += 0.01;
-        }
         renderer.render(scene, camera);
       }
       animate();
@@ -324,6 +419,43 @@
           if (viewerState.resize) viewerState.resize();
         });
       }
+    }
+
+    function layoutMergedSceneRoot(root, manifest = null) {
+      const originalBox = new THREE.Box3().setFromObject(root);
+      if (originalBox.isEmpty()) {
+        fitRootToUnit(root);
+        root.userData.previewFocus = new THREE.Vector3(0, PREVIEW_FLOOR_Y + 0.8, 0);
+        root.userData.previewFocusPrim = null;
+        return;
+      }
+
+      const originalSize = new THREE.Vector3();
+      originalBox.getSize(originalSize);
+      const maxDim = Math.max(originalSize.x, originalSize.y, originalSize.z, 1e-3);
+      const scale = 3.8 / maxDim;
+      root.scale.multiplyScalar(scale);
+
+      const focusInfo = selectMergedScenePreviewFocus(manifest);
+      const fallbackCenter = originalBox.getCenter(new THREE.Vector3());
+      const focusOriginal = focusInfo?.point || fallbackCenter;
+      const focusScaled = focusOriginal.clone().multiplyScalar(scale);
+
+      const scaledBox = new THREE.Box3().setFromObject(root);
+      const floorY = PREVIEW_FLOOR_Y + PREVIEW_FLOOR_CLEARANCE;
+      root.position.set(
+        -focusScaled.x,
+        floorY - scaledBox.min.y,
+        -focusScaled.z
+      );
+
+      const framedBox = new THREE.Box3().setFromObject(root);
+      const framedSize = new THREE.Vector3();
+      framedBox.getSize(framedSize);
+      const finalFocus = focusScaled.clone().add(root.position);
+      finalFocus.y = Math.max(finalFocus.y, framedBox.min.y + Math.max(0.42, framedSize.y * 0.2));
+      root.userData.previewFocus = finalFocus;
+      root.userData.previewFocusPrim = focusInfo?.prim || null;
     }
 
     function showImagePreview() {
@@ -377,27 +509,42 @@
     function framePreviewCamera() {
       if (!viewerState.camera || viewerState.spinRoots.length === 0) return;
 
+      const focusRoots = viewerState.spinRoots.some((root) => root.userData?.isMerged)
+        ? viewerState.spinRoots.filter((root) => root.userData?.isMerged)
+        : viewerState.spinRoots;
       const box = new THREE.Box3();
       let hasBounds = false;
-      for (const root of viewerState.spinRoots) {
+      for (const root of focusRoots) {
         box.expandByObject(root);
         hasBounds = true;
       }
       if (!hasBounds || box.isEmpty()) return;
 
-      const center = new THREE.Vector3();
       const size = new THREE.Vector3();
-      box.getCenter(center);
       box.getSize(size);
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
 
-      const maxDim = Math.max(size.x, size.y, size.z, 1);
+      let center = null;
+      const anchoredRoots = focusRoots.filter((root) => root.userData?.previewFocus instanceof THREE.Vector3);
+      if (anchoredRoots.length) {
+        center = new THREE.Vector3();
+        for (const root of anchoredRoots) {
+          center.add(root.userData.previewFocus);
+        }
+        center.divideScalar(anchoredRoots.length);
+      } else {
+        center = box.getCenter(new THREE.Vector3());
+      }
+
+      const maxDim = Math.max(size.x, size.y, size.z, sphere.radius * 2, 1);
       const fov = (viewerState.camera.fov * Math.PI) / 180;
-      const distance = Math.max(4.5, ((maxDim * 0.5) / Math.tan(fov / 2)) * 1.35);
+      const distance = Math.max(4.5, ((maxDim * 0.5) / Math.tan(fov / 2)) * 1.28);
+      const azimuth = Math.PI / 5;
 
       viewerState.camera.position.set(
-        center.x,
-        center.y + Math.max(1.2, size.y * 0.35),
-        center.z + distance
+        center.x + Math.sin(azimuth) * distance,
+        center.y + Math.max(1.2, size.y * 0.34, sphere.radius * 0.42),
+        center.z + Math.cos(azimuth) * distance
       );
       viewerState.camera.lookAt(center);
       viewerState.camera.far = Math.max(200, distance + maxDim * 8);
@@ -666,16 +813,13 @@
             node.material = Array.isArray(node.material) ? upgraded : upgraded[0];
           }
         });
-        fitRootToUnit(root);
         if (opts.isMerged) {
           root.userData.isMerged = true;
-          root.scale.multiplyScalar(2.3);
-          const mergedBox = new THREE.Box3().setFromObject(root);
-          root.userData.groundLift = -mergedBox.min.y;
-          root.position.set(0, PREVIEW_FLOOR_Y + PREVIEW_FLOOR_CLEARANCE + root.userData.groundLift, 5.2);
+          layoutMergedSceneRoot(root, opts.manifest || null);
           viewerState.mergedUrl = url;
         } else {
           root.userData.isMerged = false;
+          fitRootToUnit(root);
           viewerState.loadedUrls.add(url);
         }
         viewerState.spinRoots.push(root);
@@ -708,7 +852,7 @@
           return false;
         }
       }
-      viewerState.loadQueue.push({ url, opts: { isMerged } });
+      viewerState.loadQueue.push({ url, opts: { isMerged, manifest: opts.manifest || null } });
       if (!isMerged) {
         viewerState.queuedUrls.add(url);
       }
