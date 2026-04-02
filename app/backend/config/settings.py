@@ -10,6 +10,7 @@ FRONTEND_ASSETS_DIR = FRONTEND_DIR / "assets"
 
 RUNTIME_DIR = Path(os.environ.get("SCENE_UI_RUNTIME_DIR", PROJECT_ROOT / "runtime")).resolve()
 LOGS_DIR = Path(os.environ.get("SCENE_UI_LOGS_DIR", PROJECT_ROOT / "logs")).resolve()
+SESSIONS_DIR = RUNTIME_DIR / "sessions"
 
 REAL2SIM_RUNTIME_DIR = RUNTIME_DIR / "real2sim"
 SCENE_SERVICE_RUNTIME_DIR = RUNTIME_DIR / "scene_service"
@@ -52,6 +53,7 @@ REAL2SIM_REUSE_MESH_DIR = (REAL2SIM_RUNTIME_DIR / "meshes").resolve()
 REAL2SIM_SCENE_RESULTS_DIR = (REAL2SIM_RUNTIME_DIR / "scene_results").resolve()
 REAL2SIM_MANIFEST_PATH = (REAL2SIM_SCENE_RESULTS_DIR / "real2sim_asset_manifest.json").resolve()
 PREDICT_STREAM_SERVER = os.environ.get("PREDICT_STREAM_SERVER", "http://127.0.0.1:8002")
+SCENE_SERVICE_URL = os.environ.get("SCENE_SERVICE_URL", "http://127.0.0.1:8001")
 SAM3D_OBJECTS_ROOT = Path(
     os.environ.get("SAM3D_OBJECTS_ROOT", PROJECT_ROOT / "third_party" / "sam-3d-objects")
 ).resolve()
@@ -63,6 +65,7 @@ DIRECTORIES_TO_CREATE = [
     FRONTEND_ASSETS_DIR,
     LOGS_DIR,
     RUNTIME_DIR,
+    SESSIONS_DIR,
     RETRIEVAL_ASSET_ROOT,
     REAL2SIM_RUNTIME_DIR,
     SCENE_SERVICE_RUNTIME_DIR,

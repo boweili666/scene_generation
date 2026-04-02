@@ -76,6 +76,34 @@
             <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Apply Instruction</button>
           </div>
 
+          <div class="agent-panel" id="agentPanel">
+            <div class="agent-panel-head">
+              <span class="agent-state-badge" id="agentStateBadge">Idle</span>
+              <span class="hint" id="agentIntentText">Waiting for a request</span>
+            </div>
+            <div class="agent-panel-copy" id="agentMessageText">
+              The agent will decide whether to create or edit the scene graph, run Real2Sim, or generate the scene.
+            </div>
+            <div class="agent-panel-copy agent-panel-reason" id="agentReasonText">No reasoning yet.</div>
+            <div class="agent-question-wrap" id="agentQuestionWrap" hidden>
+              <div class="label">
+                Pending Question
+                <span class="hint">Reply in chat or choose an option</span>
+              </div>
+              <div class="agent-question-text" id="agentQuestionText">-</div>
+              <div class="agent-option-list" id="agentOptionList"></div>
+            </div>
+            <div class="agent-transcript-wrap">
+              <div class="label">
+                Chat
+                <span class="hint">Latest user / agent turns</span>
+              </div>
+              <div class="agent-transcript" id="agentTranscript">
+                <div class="agent-transcript-empty">No conversation yet.</div>
+              </div>
+            </div>
+          </div>
+
           <div class="row">
             <span class="kpi">Objects: <b id="metaObjects">-</b></span>
             <span class="kpi">Edges: <b id="metaEdges">-</b></span>
@@ -222,6 +250,20 @@
         <div class="drawer-section">
           <div class="label">Scene Generation Debug <span class="hint" id="sceneDebugMeta">No scene run yet</span></div>
           <div class="codebox" id="sceneDebugBox">Waiting for scene generation debug...</div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-grid">
+            <div>
+              <div class="label">Artifact Links <span class="hint" id="artifactMeta">No outputs yet</span></div>
+              <div class="artifact-list" id="artifactList">
+                <div class="artifact-empty">Run Real2Sim or Scene Service to collect artifact links.</div>
+              </div>
+            </div>
+            <div>
+              <div class="label">Error Reason <span class="hint" id="agentErrorMeta">No active errors</span></div>
+              <div class="codebox" id="agentErrorBox">No errors.</div>
+            </div>
+          </div>
         </div>
         <div class="drawer-section">
           <div class="drawer-grid">

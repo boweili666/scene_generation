@@ -105,6 +105,261 @@
       box.textContent = (lines && lines.length) ? lines.map(s => "• " + s).join("\n") : "-";
     }
 
+    function clearAgentTranscript() {
+      const root = document.getElementById("agentTranscript");
+      if (!root) return;
+      root.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "agent-transcript-empty";
+      empty.textContent = "No conversation yet.";
+      root.appendChild(empty);
+    }
+
+    function appendAgentTranscript(role, body, meta = "") {
+      const root = document.getElementById("agentTranscript");
+      if (!root) return;
+      const content = String(body || "").trim();
+      const metaText = String(meta || "").trim();
+      if (!content && !metaText) return;
+
+      const empty = root.querySelector(".agent-transcript-empty");
+      if (empty) empty.remove();
+
+      const item = document.createElement("div");
+      item.className = `agent-chat-msg ${role === "user" ? "user" : "assistant"}`;
+
+      const roleEl = document.createElement("div");
+      roleEl.className = "agent-chat-role";
+      roleEl.textContent = role === "user" ? "User" : "Agent";
+
+      const bodyEl = document.createElement("div");
+      bodyEl.className = "agent-chat-body";
+      bodyEl.textContent = content || "-";
+
+      item.appendChild(roleEl);
+      item.appendChild(bodyEl);
+
+      if (metaText) {
+        const metaEl = document.createElement("div");
+        metaEl.className = "agent-chat-meta";
+        metaEl.textContent = metaText;
+        item.appendChild(metaEl);
+      }
+
+      root.appendChild(item);
+      root.scrollTop = root.scrollHeight;
+    }
+
+    function renderAgentTranscript(history) {
+      const root = document.getElementById("agentTranscript");
+      if (!root) return;
+      root.innerHTML = "";
+      const turns = Array.isArray(history) ? history.filter((entry) => entry && (entry.content || entry.role)) : [];
+      if (!turns.length) {
+        clearAgentTranscript();
+        return;
+      }
+      for (const turn of turns) {
+        appendAgentTranscript(turn.role === "user" ? "user" : "assistant", turn.content || "");
+      }
+    }
+
+    function resetArtifactPanel() {
+      const meta = document.getElementById("artifactMeta");
+      const root = document.getElementById("artifactList");
+      if (meta) meta.textContent = "No outputs yet";
+      if (!root) return;
+      root.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "artifact-empty";
+      empty.textContent = "Run Real2Sim or Scene Service to collect artifact links.";
+      root.appendChild(empty);
+    }
+
+    function setAgentErrorInfo(errorInfo, fallbackMessage = "") {
+      const meta = document.getElementById("agentErrorMeta");
+      const box = document.getElementById("agentErrorBox");
+      if (!meta || !box) return;
+
+      if (!errorInfo && !fallbackMessage) {
+        meta.textContent = "No active errors";
+        box.textContent = "No errors.";
+        return;
+      }
+
+      const info = errorInfo && typeof errorInfo === "object" ? errorInfo : {};
+      const lines = [];
+      if (info.user_message) lines.push(`Message: ${info.user_message}`);
+      if (info.code) lines.push(`Code: ${info.code}`);
+      if (info.step) lines.push(`Step: ${info.step}`);
+      if (typeof info.retryable === "boolean") lines.push(`Retryable: ${info.retryable ? "yes" : "no"}`);
+      if (info.technical_detail) lines.push(`Detail: ${info.technical_detail}`);
+      if (!lines.length && fallbackMessage) lines.push(String(fallbackMessage));
+
+      meta.textContent = info.code || (fallbackMessage ? "Request failed" : "No active errors");
+      box.textContent = lines.join("\n");
+    }
+
+    function buildArtifactGroups(payload = {}) {
+      const groups = [];
+      const sessionState = payload?.session_state || payload?.job?.session_state || null;
+      const currentRun = sessionState?.current_run || {};
+      const real2sim = currentRun?.real2sim?.artifacts || payload?.job?.artifacts || payload?.real2sim_artifacts || null;
+      const scene = currentRun?.scene_generation?.outputs || payload?.scene_result || null;
+
+      if (scene && (scene.saved_usd_url || scene.render_image_url || scene.placements_url)) {
+        const links = [];
+        if (scene.saved_usd_url) links.push({ label: "Scene USD", url: scene.saved_usd_url });
+        if (scene.render_image_url) links.push({ label: "Render", url: scene.render_image_url });
+        if (scene.placements_url) links.push({ label: "Placements JSON", url: scene.placements_url });
+        groups.push({ title: "Scene Generation", links });
+      }
+
+      if (real2sim) {
+        const links = [];
+        if (real2sim.assignment_json_url) links.push({ label: "Assignment JSON", url: real2sim.assignment_json_url });
+        if (real2sim.poses_json_url) links.push({ label: "Poses JSON", url: real2sim.poses_json_url });
+        if (real2sim.manifest_json_url) links.push({ label: "Manifest JSON", url: real2sim.manifest_json_url });
+        if (real2sim.scene_glb_url) links.push({ label: "Merged Scene GLB", url: real2sim.scene_glb_url });
+        if (real2sim.scene_usd_url) links.push({ label: "Merged Scene USD", url: real2sim.scene_usd_url });
+        const objectGlbUrls = Array.isArray(real2sim.object_glb_urls) ? real2sim.object_glb_urls : [];
+        const objectUsdUrls = Array.isArray(real2sim.object_usd_urls) ? real2sim.object_usd_urls : [];
+        objectGlbUrls.slice(0, 4).forEach((url, index) => links.push({ label: `Object GLB ${index + 1}`, url }));
+        objectUsdUrls.slice(0, 4).forEach((url, index) => links.push({ label: `Object USD ${index + 1}`, url }));
+        if (links.length) groups.push({ title: "Real2Sim", links });
+      }
+
+      return groups;
+    }
+
+    function updateArtifactPanel(payload = {}) {
+      const meta = document.getElementById("artifactMeta");
+      const root = document.getElementById("artifactList");
+      if (!meta || !root) return;
+
+      const groups = buildArtifactGroups(payload);
+      root.innerHTML = "";
+      if (!groups.length) {
+        resetArtifactPanel();
+        return;
+      }
+
+      meta.textContent = `${groups.length} output group${groups.length === 1 ? "" : "s"}`;
+      for (const group of groups) {
+        const wrap = document.createElement("div");
+        wrap.className = "artifact-group";
+
+        const title = document.createElement("div");
+        title.className = "artifact-group-title";
+        title.textContent = group.title;
+        wrap.appendChild(title);
+
+        const links = document.createElement("div");
+        links.className = "artifact-links";
+        for (const item of group.links) {
+          if (!item?.url) continue;
+          const anchor = document.createElement("a");
+          anchor.className = "artifact-link";
+          anchor.href = item.url;
+          anchor.target = "_blank";
+          anchor.rel = "noreferrer";
+          anchor.textContent = item.label || item.url;
+          links.appendChild(anchor);
+        }
+        wrap.appendChild(links);
+        root.appendChild(wrap);
+      }
+    }
+
+    function formatAgentStateLabel(state, completedState = "") {
+      const value = String(state || completedState || "idle").trim();
+      const labels = {
+        understand_request: "Understand Request",
+        needs_clarification: "Needs Clarification",
+        create_scene_graph: "Create Scene Graph",
+        edit_scene_graph: "Edit Scene Graph",
+        run_real2sim: "Run Real2Sim",
+        await_layout_strategy: "Await Layout Strategy",
+        generate_scene: "Generate Scene",
+        completed: completedState ? `Completed: ${completedState.replaceAll("_", " ")}` : "Completed",
+        failed: "Failed",
+        idle: "Idle",
+      };
+      return labels[value] || value.replaceAll("_", " ");
+    }
+
+    function updateAgentPanel(agent = {}) {
+      const badge = document.getElementById("agentStateBadge");
+      const intent = document.getElementById("agentIntentText");
+      const message = document.getElementById("agentMessageText");
+      const reason = document.getElementById("agentReasonText");
+      const questionWrap = document.getElementById("agentQuestionWrap");
+      const questionText = document.getElementById("agentQuestionText");
+      const optionList = document.getElementById("agentOptionList");
+      if (!badge || !intent || !message || !reason || !questionWrap || !questionText || !optionList) return;
+
+      const state = String(agent.state || "idle");
+      const completedState = String(agent.completed_state || "");
+      const intentText = String(agent.intent || "idle");
+      badge.textContent = formatAgentStateLabel(state, completedState);
+      badge.classList.remove("is-ok", "is-warn", "is-err");
+      if (state === "completed") {
+        badge.classList.add("is-ok");
+      } else if (state === "failed") {
+        badge.classList.add("is-err");
+      } else if (state !== "idle") {
+        badge.classList.add("is-warn");
+      }
+
+      intent.textContent = intentText ? intentText.replaceAll("_", " ") : "Waiting for a request";
+      message.textContent = agent.message || "The agent is idle.";
+      reason.textContent = agent.reason || "No reasoning yet.";
+
+      const question = agent.question || "";
+      questionText.textContent = question || "-";
+      optionList.innerHTML = "";
+      const options = Array.isArray(agent.options) ? agent.options : [];
+      questionWrap.hidden = !question;
+      for (const option of options) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "agent-option";
+        const title = document.createElement("b");
+        title.textContent = option.label || option.id || "Choose";
+        const desc = document.createElement("span");
+        desc.textContent = option.description || "";
+        btn.appendChild(title);
+        if (desc.textContent) btn.appendChild(desc);
+        btn.addEventListener("click", async () => {
+          try {
+            await applyInstruction({
+              instruction: option.reply || option.label || "",
+              action: option.action || "",
+              resampleMode: option.resample_mode || "",
+              sceneEndpoint: option.scene_endpoint || "",
+            });
+          } catch (err) {
+            console.error("Agent option failed:", err);
+          }
+        });
+        optionList.appendChild(btn);
+      }
+    }
+
+    function resetAgentPanel() {
+      updateAgentPanel({
+        state: "idle",
+        intent: "",
+        message: "The agent will decide whether to create or edit the scene graph, run Real2Sim, or generate the scene.",
+        reason: "No reasoning yet.",
+        question: "",
+        options: [],
+      });
+      clearAgentTranscript();
+      resetArtifactPanel();
+      setAgentErrorInfo(null);
+    }
+
     function setMetrics({objects="-", edges="-", score="-"}){
       document.getElementById("metaObjects").textContent = objects;
       document.getElementById("metaEdges").textContent = edges;
@@ -159,11 +414,15 @@
     }
 
     async function refreshReal2SimLog() {
+      await ensureRuntimeContext();
       const qs = new URLSearchParams({
         offset: String(real2simLogState.offset || 0),
         limit: "65536"
       });
-      const res = await fetch(`/real2sim/log?${qs.toString()}`);
+      const res = await fetch(withRuntimeQuery("/real2sim/log", {
+        offset: qs.get("offset"),
+        limit: qs.get("limit"),
+      }));
       const data = await res.json();
       if (!res.ok) {
         throw new Error((data && (data.msg || data.error)) || "Failed to fetch Real2Sim log");
@@ -286,7 +545,8 @@
 
     async function getSceneGraphAnalysisFallback() {
       try {
-        const res = await fetch("/scene_graph");
+        await ensureRuntimeContext();
+        const res = await fetch(withRuntimeQuery("/scene_graph"));
         const graph = await res.json();
         if (!res.ok) throw new Error(graph?.error || "Failed to load scene graph");
         return analyzeSceneJson(graph);

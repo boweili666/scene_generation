@@ -425,15 +425,16 @@
     }
 
     async function saveSceneGraphDraft(graph, options = {}) {
+      await ensureRuntimeContext();
       graphEditorState.saveInFlight = true;
       setPill("graph", "warn", "Saving...");
       document.getElementById("jsonStatus").textContent = "Saving graph...";
       try {
         const payload = serializeSceneGraphForSave(graph);
-        const res = await fetch("/scene_graph", {
+        const res = await fetch(withRuntimeQuery("/scene_graph"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scene_graph: payload }),
+          body: JSON.stringify(appendRuntimeToPayload({ scene_graph: payload })),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -445,7 +446,7 @@
         if (Array.isArray(data.warnings) && data.warnings.length) {
           feedbackLines.push(...data.warnings);
         } else {
-          feedbackLines.push("Graph saved to runtime/scene_graph/current_scene_graph.json");
+          feedbackLines.push("Graph saved to the current session/run runtime.");
         }
 
         renderSceneGraph(data.scene_graph, { preservePositions: true });
@@ -888,9 +889,28 @@
     /* ===== init load ===== */
     async function loadSceneGraph(){
       try{
+        await ensureRuntimeContext();
         await ensureCytoscape();
         setPill("graph", "", "Loading...");
-        const res = await fetch("/scene_graph");
+        const res = await fetch(withRuntimeQuery("/scene_graph"));
+        if (res.status === 404) {
+          const emptyGraph = toEditableSceneGraph({
+            scene: defaultSceneMetadata(),
+            obj: {},
+            edges: { "obj-obj": [], "obj-wall": [] },
+          });
+          renderSceneGraph(emptyGraph);
+          updateSceneGraphUi(emptyGraph, {
+            statusText: "New run ready",
+            previewPayload: { scene_graph: emptyGraph },
+            feedbackLines: [
+              "New run created.",
+              "Describe the scene or upload a reference image to let the agent build a scene graph.",
+            ],
+          });
+          setPill("graph", "", "Idle");
+          return;
+        }
         const graph = await res.json();
         if (!res.ok) throw new Error(graph?.error || "Failed to load /scene_graph");
         renderSceneGraph(graph);
@@ -913,6 +933,7 @@
 
     /* ===== Generate graph from prompt/image ===== */
     async function generateSceneGraph(opts = {}) {
+      await ensureRuntimeContext();
       const text = (opts.text ?? document.getElementById("sceneInput").value).trim();
       const fileInput = document.getElementById("imageInput");
       const classDirPicker = document.getElementById("classDirPicker");
@@ -932,10 +953,11 @@
           .filter(Boolean);
         formData.append("class_names", JSON.stringify(names));
       }
+      appendRuntimeToFormData(formData);
 
       try {
         await ensureCytoscape();
-        const res = await fetch("/scene_from_input", { method:"POST", body: formData });
+        const res = await fetch(withRuntimeQuery("/scene_from_input"), { method:"POST", body: formData });
         const graph = await res.json();
         if (!res.ok) {
           const msg = graph.error || "Generation failed";

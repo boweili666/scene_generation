@@ -46,12 +46,127 @@
       offset: 0,
       path: "real2sim.log"
     };
+    const runtimeSessionState = {
+      sessionId: null,
+      runId: null,
+      context: null,
+      initializing: null,
+    };
+    const RUNTIME_SESSION_STORAGE_KEY = "scene_ui_session_id";
+    const RUNTIME_RUN_STORAGE_KEY = "scene_ui_run_id";
     let imagePreviewObjectUrl = null;
     const PREVIEW_FLOOR_Y = -1.2;
     const PREVIEW_FLOOR_CLEARANCE = 0.015;
     const PREVIEW_STAGE_RADIUS = 14;
     const PREVIEW_STAGE_GRID_RADIUS = 13.2;
     const PREVIEW_STAGE_THICKNESS = 0.62;
+
+    function runtimeRunStorageKey(sessionId = null) {
+      const suffix = sessionId || runtimeSessionState.sessionId || "default";
+      return `${RUNTIME_RUN_STORAGE_KEY}:${suffix}`;
+    }
+
+    function hydrateRuntimeStateFromStorage() {
+      if (!runtimeSessionState.sessionId) {
+        runtimeSessionState.sessionId = window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY) || null;
+      }
+      if (!runtimeSessionState.runId) {
+        runtimeSessionState.runId =
+          window.localStorage.getItem(runtimeRunStorageKey(runtimeSessionState.sessionId)) ||
+          window.localStorage.getItem(RUNTIME_RUN_STORAGE_KEY) ||
+          window.sessionStorage.getItem(RUNTIME_RUN_STORAGE_KEY) ||
+          null;
+      }
+    }
+
+    function persistRuntimeState() {
+      if (runtimeSessionState.sessionId) {
+        window.localStorage.setItem(RUNTIME_SESSION_STORAGE_KEY, runtimeSessionState.sessionId);
+      }
+      if (runtimeSessionState.runId) {
+        window.localStorage.setItem(runtimeRunStorageKey(runtimeSessionState.sessionId), runtimeSessionState.runId);
+        window.localStorage.setItem(RUNTIME_RUN_STORAGE_KEY, runtimeSessionState.runId);
+        window.sessionStorage.setItem(RUNTIME_RUN_STORAGE_KEY, runtimeSessionState.runId);
+      }
+    }
+
+    function applyRuntimeContext(context) {
+      if (!context || typeof context !== "object") return runtimeSessionState;
+      runtimeSessionState.sessionId = context.session_id || context.sessionId || runtimeSessionState.sessionId;
+      runtimeSessionState.runId = context.run_id || context.runId || runtimeSessionState.runId;
+      runtimeSessionState.context = context;
+      persistRuntimeState();
+      return runtimeSessionState;
+    }
+
+    async function ensureRuntimeContext(options = {}) {
+      hydrateRuntimeStateFromStorage();
+      const forceNewRun = !!options.forceNewRun;
+      if (!forceNewRun && runtimeSessionState.sessionId && runtimeSessionState.runId) {
+        return runtimeSessionState;
+      }
+      if (!forceNewRun && runtimeSessionState.initializing) {
+        return runtimeSessionState.initializing;
+      }
+
+      const existingSessionId = runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY);
+      runtimeSessionState.initializing = (async () => {
+        let response;
+        if (existingSessionId) {
+          response = await fetch(`/sessions/${encodeURIComponent(existingSessionId)}/runs`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+        } else {
+          response = await fetch("/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+        }
+        const data = await response.json();
+        if (!response.ok || !data?.context) {
+          throw new Error(data?.error || "Failed to initialize runtime session.");
+        }
+        applyRuntimeContext(data.context);
+        return runtimeSessionState;
+      })();
+
+      try {
+        return await runtimeSessionState.initializing;
+      } finally {
+        runtimeSessionState.initializing = null;
+      }
+    }
+
+    function appendRuntimeToPayload(payload = {}) {
+      const nextPayload = { ...(payload || {}) };
+      if (runtimeSessionState.sessionId) nextPayload.session_id = runtimeSessionState.sessionId;
+      if (runtimeSessionState.runId) nextPayload.run_id = runtimeSessionState.runId;
+      return nextPayload;
+    }
+
+    function appendRuntimeToFormData(formData) {
+      if (runtimeSessionState.sessionId) formData.set("session_id", runtimeSessionState.sessionId);
+      if (runtimeSessionState.runId) formData.set("run_id", runtimeSessionState.runId);
+      return formData;
+    }
+
+    function withRuntimeQuery(url, extraParams = {}) {
+      const resolved = new URL(url, window.location.origin);
+      if (runtimeSessionState.sessionId) {
+        resolved.searchParams.set("session_id", runtimeSessionState.sessionId);
+      }
+      if (runtimeSessionState.runId) {
+        resolved.searchParams.set("run_id", runtimeSessionState.runId);
+      }
+      Object.entries(extraParams || {}).forEach(([key, value]) => {
+        if (value === undefined || value === null || value === "") return;
+        resolved.searchParams.set(key, String(value));
+      });
+      return resolved.toString();
+    }
 
     function setPreviewMessage(message) {
       const placeholder = document.getElementById("imagePlaceholder");

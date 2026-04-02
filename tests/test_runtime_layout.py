@@ -11,12 +11,14 @@ from app.backend.config.settings import (
     REAL2SIM_PREDICT_STREAM_CLIENT,
     REAL2SIM_SEGMENT_SCRIPT,
     SCENE_GRAPH_PATH,
+    SESSIONS_DIR,
 )
 
 
 class RuntimeLayoutTest(unittest.TestCase):
     def test_runtime_directories_exist(self) -> None:
         self.assertTrue(RUNTIME_DIR.exists())
+        self.assertTrue(SESSIONS_DIR.exists())
         self.assertTrue(LOGS_DIR.exists())
         self.assertTrue(FRONTEND_DIR.exists())
 

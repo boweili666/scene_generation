@@ -75,6 +75,24 @@ class InstructionServiceTest(unittest.TestCase):
         write_graph_mock.assert_called_once()
         write_placements_mock.assert_called_once_with(instruction_service.DEFAULT_PLACEMENTS_PATH, {})
 
+    def test_bootstrap_generation_honors_custom_runtime_paths(self) -> None:
+        custom_scene_graph_path = instruction_service.Path("/tmp/custom_scene_graph.json")
+        custom_placements_path = instruction_service.Path("/tmp/custom_placements.json")
+        with (
+            mock.patch.object(instruction_service, "_load_scene_graph", return_value=None),
+            mock.patch.object(instruction_service, "_generate_scene_graph", return_value=SCENE_GRAPH),
+            mock.patch.object(instruction_service, "write_json_file") as write_graph_mock,
+            mock.patch.object(instruction_service, "_write_placements") as write_placements_mock,
+        ):
+            instruction_service.apply_instruction(
+                "Add a cup on the table.",
+                scene_graph_path=custom_scene_graph_path,
+                placements_path=custom_placements_path,
+            )
+
+        write_graph_mock.assert_called_once_with(custom_scene_graph_path, SCENE_GRAPH)
+        write_placements_mock.assert_called_once_with(custom_placements_path, {})
+
     def test_placement_edit_requires_existing_placements(self) -> None:
         with (
             mock.patch.object(instruction_service, "_load_scene_graph", return_value=SCENE_GRAPH),

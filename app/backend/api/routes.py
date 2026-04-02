@@ -1,10 +1,4 @@
 import json
-import os
-import subprocess
-import threading
-import traceback
-import uuid
-from datetime import datetime
 from pathlib import Path
 
 from flask import jsonify, request, send_file, send_from_directory
@@ -15,10 +9,12 @@ from ..config import (
     DEFAULT_RENDER_PATH,
     LATEST_INPUT_IMAGE,
     LOG_PATH,
+    REAL2SIM_MESH_OUTPUT_DIR,
     REAL2SIM_MASK_OUTPUT_DIR,
     REAL2SIM_ROOT_DIR,
-    REAL2SIM_RUNTIME_DIR,
+    REAL2SIM_REUSE_MESH_DIR,
     REAL2SIM_SCENE_RESULTS_DIR,
+    RUNTIME_DIR,
     SCENE_GRAPH_PATH,
     WEB_DIR,
 )
@@ -30,28 +26,79 @@ from ..services.openai_service import (
     read_json_file,
     write_json_file,
 )
+from ..services.agent_service import get_agent_state_response, handle_agent_message, sync_real2sim_job_to_session
 from ..services.instruction_service import apply_instruction as apply_scene_instruction
 from ..services.instruction_service import save_scene_graph_state
 from ..services.pipeline_service import (
-    collect_scene_result_artifacts,
-    get_real2sim_log_size,
-    log_pipeline_failure,
-    log_real2sim_event,
+    get_real2sim_job_status as get_real2sim_job_status_raw,
     read_real2sim_log,
-    run_real2sim,
+    start_real2sim_job,
+)
+from ..services.runtime_context import (
+    create_run,
+    create_session,
+    resolve_runtime_context,
 )
 
+def _request_value(name: str) -> str | None:
+    query_value = request.args.get(name)
+    if isinstance(query_value, str) and query_value.strip():
+        return query_value.strip()
 
-_REAL2SIM_JOBS: dict[str, dict] = {}
-_REAL2SIM_JOBS_LOCK = threading.Lock()
+    form_value = request.form.get(name)
+    if isinstance(form_value, str) and form_value.strip():
+        return form_value.strip()
+
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        json_value = payload.get(name)
+        if isinstance(json_value, str) and json_value.strip():
+            return json_value.strip()
+    return None
 
 
-def _utcnow_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+def _resolve_request_runtime_context(*, create: bool = False):
+    session_id = _request_value("session_id")
+    run_id = _request_value("run_id")
+    return resolve_runtime_context(session_id=session_id, run_id=run_id, create=create)
+
+
+def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
+    context = _resolve_request_runtime_context(create=create)
+    if context is None:
+        return {
+            "context": None,
+            "runtime_root": RUNTIME_DIR.resolve(),
+            "latest_input_image": Path(LATEST_INPUT_IMAGE),
+            "scene_graph_path": Path(SCENE_GRAPH_PATH),
+            "render_path": Path(DEFAULT_RENDER_PATH),
+            "placements_path": Path(DEFAULT_PLACEMENTS_PATH),
+            "real2sim_root_dir": Path(REAL2SIM_ROOT_DIR),
+            "real2sim_mask_output_dir": Path(REAL2SIM_MASK_OUTPUT_DIR),
+            "real2sim_mesh_output_dir": Path(REAL2SIM_MESH_OUTPUT_DIR),
+            "real2sim_reuse_mesh_dir": Path(REAL2SIM_REUSE_MESH_DIR),
+            "real2sim_scene_results_dir": Path(REAL2SIM_SCENE_RESULTS_DIR),
+            "real2sim_log_path": Path(LOG_PATH),
+        }
+
+    return {
+        "context": context,
+        "runtime_root": context.runtime_root.resolve(),
+        "latest_input_image": context.latest_input_image,
+        "scene_graph_path": context.scene_graph_path,
+        "render_path": context.render_path,
+        "placements_path": context.default_placements_path,
+        "real2sim_root_dir": context.run_root,
+        "real2sim_mask_output_dir": context.real2sim_masks_dir,
+        "real2sim_mesh_output_dir": context.real2sim_meshes_dir,
+        "real2sim_reuse_mesh_dir": context.real2sim_meshes_dir,
+        "real2sim_scene_results_dir": context.real2sim_scene_results_dir,
+        "real2sim_log_path": context.real2sim_log_path,
+    }
 
 
 def _to_runtime_file_url(abs_path: Path) -> str | None:
-    runtime_root = REAL2SIM_RUNTIME_DIR.resolve()
+    runtime_root = RUNTIME_DIR.resolve()
     target = abs_path.resolve()
     if target != runtime_root and runtime_root not in target.parents:
         return None
@@ -70,6 +117,14 @@ def _to_artifact_urls(artifacts: dict) -> dict:
             object_urls.append(url)
     result["object_glb_urls"] = object_urls
 
+    object_usd_urls: list[str] = []
+    for rel in artifacts.get("object_usds", []):
+        p = Path(artifacts["real2sim_root_dir"]) / rel
+        url = _to_runtime_file_url(p)
+        if url:
+            object_usd_urls.append(url)
+    result["object_usd_urls"] = object_usd_urls
+
     scene_glb = artifacts.get("scene_glb")
     if scene_glb:
         scene_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / scene_glb)
@@ -83,6 +138,13 @@ def _to_artifact_urls(artifacts: dict) -> dict:
         result["poses_json_url"] = poses_url
     else:
         result["poses_json_url"] = None
+
+    assignment_json = artifacts.get("assignment_json")
+    if assignment_json:
+        assignment_url = _to_runtime_file_url(Path(artifacts["real2sim_root_dir"]) / assignment_json)
+        result["assignment_json_url"] = assignment_url
+    else:
+        result["assignment_json_url"] = None
 
     scene_usd = artifacts.get("scene_usd")
     if scene_usd:
@@ -100,135 +162,27 @@ def _to_artifact_urls(artifacts: dict) -> dict:
     return result
 
 
-def _start_real2sim_job(payload: dict) -> str:
-    job_id = uuid.uuid4().hex
-    with _REAL2SIM_JOBS_LOCK:
-        _REAL2SIM_JOBS[job_id] = {
-            "job_id": job_id,
-            "status": "queued",
-            "created_at": _utcnow_iso(),
-            "updated_at": _utcnow_iso(),
-            "error": None,
-            "traceback": None,
-            "artifacts": {},
-            "log_path": LOG_PATH,
-            "log_start_offset": get_real2sim_log_size(),
-            "payload": payload,
-        }
-
-    def _runner():
-        with _REAL2SIM_JOBS_LOCK:
-            job = _REAL2SIM_JOBS.get(job_id)
-            if not job:
-                return
-            job["status"] = "running"
-            job["updated_at"] = _utcnow_iso()
-
-        log_real2sim_event("Job queued -> running", job_id=job_id)
-        try:
-            artifacts = run_real2sim(payload, job_id=job_id)
-            with _REAL2SIM_JOBS_LOCK:
-                job = _REAL2SIM_JOBS.get(job_id)
-                if not job:
-                    return
-                job["status"] = "succeeded"
-                job["updated_at"] = _utcnow_iso()
-                job["artifacts"] = artifacts
-            log_real2sim_event("Job completed successfully", job_id=job_id)
-        except Exception as e:
-            tb = traceback.format_exc()
-            log_real2sim_event(f"Job failed: {e}", job_id=job_id, level="ERROR")
-            log_real2sim_event(tb.rstrip(), job_id=job_id, level="TRACE")
-            with _REAL2SIM_JOBS_LOCK:
-                job = _REAL2SIM_JOBS.get(job_id)
-                if not job:
-                    return
-                job["status"] = "failed"
-                job["updated_at"] = _utcnow_iso()
-                job["error"] = str(e)
-                job["traceback"] = tb
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    return job_id
+def _start_real2sim_job(payload: dict) -> dict[str, object]:
+    return start_real2sim_job(payload)
 
 
 def _get_real2sim_job_status(job_id: str) -> dict | None:
-    with _REAL2SIM_JOBS_LOCK:
-        base = _REAL2SIM_JOBS.get(job_id)
-        if not base:
-            return None
-        job = dict(base)
-
-    payload = job.get("payload") or {}
-    real2sim_root = str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)
-    scene_results_dir = str(payload.get("scene_results_dir") or REAL2SIM_SCENE_RESULTS_DIR)
-    live_artifacts = collect_scene_result_artifacts(real2sim_root, scene_results_dir)
-
-    merged_artifacts = dict(job.get("artifacts") or {})
-    merged_artifacts.setdefault("real2sim_root_dir", real2sim_root)
-    merged_artifacts.setdefault("scene_results_dir", scene_results_dir)
-    merged_artifacts["object_glbs"] = live_artifacts.get("object_glbs", [])
-    merged_artifacts["scene_glb"] = live_artifacts.get("scene_glb")
-    merged_artifacts["poses_json"] = live_artifacts.get("poses_json")
-
-    mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
-    masks_dir = (Path(real2sim_root).resolve() / Path(mask_output)).resolve()
-    expected_objects = None
-    if masks_dir.exists() and masks_dir.is_dir():
-        expected_objects = len(
-            [
-                p
-                for p in masks_dir.glob("*.png")
-                if p.is_file() and p.name.lower() != "image.png"
-            ]
-        )
-
-    generated_objects = len(merged_artifacts["object_glbs"])
-    has_merged_scene = bool(merged_artifacts.get("scene_glb"))
-    phase = "queued"
-    percent = 0
-    if job.get("status") == "queued":
-        phase = "queued"
-        percent = 0
-    elif job.get("status") == "running":
-        if expected_objects is None or expected_objects == 0:
-            phase = "segmenting"
-            percent = 15
-        elif generated_objects < expected_objects:
-            phase = "generating_glbs"
-            ratio = generated_objects / max(expected_objects, 1)
-            percent = min(94, 20 + int(ratio * 70))
-        elif not has_merged_scene:
-            phase = "merging_scene"
-            percent = 95
-        else:
-            phase = "finalizing"
-            percent = 98
-    elif job.get("status") == "succeeded":
-        phase = "completed"
-        percent = 100
-    elif job.get("status") == "failed":
-        phase = "failed"
-        percent = 100 if has_merged_scene else 0
-
-    job["progress"] = {
-        "phase": phase,
-        "percent": percent,
-        "expected_objects": expected_objects,
-        "generated_objects": generated_objects,
-        "has_merged_scene": has_merged_scene,
-    }
-    job["artifacts"] = _to_artifact_urls(merged_artifacts)
-    job.pop("payload", None)
+    raw_job = get_real2sim_job_status_raw(job_id)
+    if raw_job is None:
+        return None
+    session_state = sync_real2sim_job_to_session(raw_job)
+    job = dict(raw_job)
+    job["artifacts"] = _to_artifact_urls(job.get("artifacts") or {})
+    if session_state is not None:
+        job["session_state"] = session_state
     return job
 
 
-def _write_scene_graph(scene_graph_json):
-    write_json_file(Path(SCENE_GRAPH_PATH), scene_graph_json)
+def _write_scene_graph(scene_graph_json, *, scene_graph_path: str | Path = SCENE_GRAPH_PATH):
+    write_json_file(Path(scene_graph_path), scene_graph_json)
 
 
-def _handle_edit_json(payload):
+def _handle_edit_json(payload, *, default_input_path: str | Path, default_image_path: str | Path):
     instruction = (payload.get("instruction") or "").strip()
     if not instruction:
         return None, jsonify({"error": "instruction is required"}), 400
@@ -238,11 +192,11 @@ def _handle_edit_json(payload):
     raw_image = payload.get("image")
     model = payload.get("model") or DEFAULT_MODEL
 
-    src = Path(raw_input).expanduser() if raw_input else DEFAULT_PLACEMENTS_PATH
+    src = Path(raw_input).expanduser() if raw_input else Path(default_input_path)
     if not src.exists():
         return None, jsonify({"error": f"Input JSON not found: {src}"}), 404
 
-    image_path = Path(raw_image).expanduser() if raw_image else DEFAULT_RENDER_PATH
+    image_path = Path(raw_image).expanduser() if raw_image else Path(default_image_path)
     if not image_path.exists():
         return None, jsonify({"error": f"Image not found: {image_path}"}), 404
 
@@ -282,27 +236,50 @@ def _handle_edit_json(payload):
 
 
 def register_routes(app):
+    @app.route("/sessions", methods=["POST"])
+    def session_create():
+        payload = request.get_json(silent=True) or {}
+        try:
+            context = create_session(
+                session_id=payload.get("session_id"),
+                run_id=payload.get("run_id"),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"status": "ok", "context": context.to_dict()})
+
+    @app.route("/sessions/<session_id>/runs", methods=["POST"])
+    def session_run_create(session_id):
+        payload = request.get_json(silent=True) or {}
+        try:
+            context = create_run(session_id, run_id=payload.get("run_id"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({"status": "ok", "context": context.to_dict()})
+
     @app.route("/")
     def index():
         return send_from_directory(WEB_DIR, "index.html")
 
     @app.route("/render_image")
     def render_image():
-        path = Path(DEFAULT_RENDER_PATH)
+        paths = _request_runtime_paths()
+        path = Path(paths["render_path"])
         if not path.exists():
             return jsonify({"error": "Render image not found"}), 404
         return send_file(path)
 
     @app.route("/latest_input_image")
     def latest_input_image():
-        path = Path(LATEST_INPUT_IMAGE)
+        paths = _request_runtime_paths()
+        path = Path(paths["latest_input_image"])
         if not path.exists():
             return jsonify({"error": "Latest input image not found"}), 404
         return send_file(path)
 
     @app.route("/runtime_file/<path:relpath>")
     def runtime_file(relpath):
-        runtime_root = REAL2SIM_RUNTIME_DIR.resolve()
+        runtime_root = RUNTIME_DIR.resolve()
         target = (runtime_root / relpath).resolve()
         if target != runtime_root and runtime_root not in target.parents:
             return jsonify({"error": "Invalid runtime file path"}), 400
@@ -312,31 +289,47 @@ def register_routes(app):
 
     @app.route("/scene_graph", methods=["GET", "POST"])
     def scene_graph():
+        paths = _request_runtime_paths(create=request.method == "POST")
         if request.method == "POST":
             payload = request.json or {}
             scene_graph_json = payload.get("scene_graph") if "scene_graph" in payload else payload
             try:
-                result = save_scene_graph_state(scene_graph_json)
+                result = save_scene_graph_state(
+                    scene_graph_json,
+                    scene_graph_path=paths["scene_graph_path"],
+                    placements_path=paths["placements_path"],
+                )
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
+            context = paths.get("context")
+            if context is not None:
+                result["session_id"] = context.session_id
+                result["run_id"] = context.run_id
             return jsonify(result)
-        if not os.path.exists(SCENE_GRAPH_PATH):
+        scene_graph_path = Path(paths["scene_graph_path"])
+        if not scene_graph_path.exists():
             return jsonify({"error": "Scene graph file not found"}), 404
-        return send_file(SCENE_GRAPH_PATH, mimetype="application/json")
+        return send_file(scene_graph_path, mimetype="application/json")
 
     @app.route("/nl_to_scene", methods=["POST"])
     def nl_to_scene():
+        paths = _request_runtime_paths(create=True)
         payload = request.json or {}
         text = payload.get("text", "").strip()
         if not text:
             return jsonify({"error": "Empty input"}), 400
 
         scene_graph_json = parse_scene_graph_from_text(text)
-        _write_scene_graph(scene_graph_json)
-        return jsonify(scene_graph_json)
+        _write_scene_graph(scene_graph_json, scene_graph_path=paths["scene_graph_path"])
+        response = dict(scene_graph_json)
+        context = paths.get("context")
+        if context is not None:
+            response["_session"] = {"session_id": context.session_id, "run_id": context.run_id}
+        return jsonify(response)
 
     @app.route("/scene_from_input", methods=["POST"])
     def scene_from_input():
+        paths = _request_runtime_paths(create=True)
         file = request.files.get("image")
         text = request.form.get("text", "").strip()
         class_names_raw = request.form.get("class_names", "")
@@ -344,8 +337,9 @@ def register_routes(app):
         try:
             if file:
                 image_bytes = file.read()
-                LATEST_INPUT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
-                LATEST_INPUT_IMAGE.write_bytes(image_bytes)
+                latest_input_path = Path(paths["latest_input_image"])
+                latest_input_path.parent.mkdir(parents=True, exist_ok=True)
+                latest_input_path.write_bytes(image_bytes)
                 scene_graph_json = parse_scene_graph_from_image(
                     image_bytes,
                     class_names_raw,
@@ -358,11 +352,16 @@ def register_routes(app):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
-        _write_scene_graph(scene_graph_json)
-        return jsonify(scene_graph_json)
+        _write_scene_graph(scene_graph_json, scene_graph_path=paths["scene_graph_path"])
+        response = dict(scene_graph_json)
+        context = paths.get("context")
+        if context is not None:
+            response["_session"] = {"session_id": context.session_id, "run_id": context.run_id}
+        return jsonify(response)
 
     @app.route("/apply_instruction", methods=["POST"])
     def apply_instruction():
+        paths = _request_runtime_paths(create=True)
         image_bytes = None
         class_names_raw = ""
         text = ""
@@ -383,35 +382,124 @@ def register_routes(app):
                 text,
                 class_names_raw=class_names_raw,
                 image_bytes=image_bytes,
+                scene_graph_path=paths["scene_graph_path"],
+                placements_path=paths["placements_path"],
+                latest_input_image_path=paths["latest_input_image"],
+                render_path=paths["render_path"],
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 500
 
+        context = paths.get("context")
+        if context is not None:
+            result["session_id"] = context.session_id
+            result["run_id"] = context.run_id
+        return jsonify(result)
+
+    @app.route("/agent/message", methods=["POST"])
+    def agent_message():
+        payload = request.get_json(silent=True) if not (request.content_type or "").startswith("multipart/form-data") else None
+        text = ""
+        class_names_raw = ""
+        image_bytes = None
+        action = None
+        resample_mode = None
+        scene_endpoint = None
+
+        if payload is not None:
+            text = (payload.get("text") or payload.get("instruction") or "").strip()
+            class_names_raw = payload.get("class_names", "") or ""
+            action = payload.get("action")
+            resample_mode = payload.get("resample_mode")
+            scene_endpoint = payload.get("scene_endpoint")
+        else:
+            text = (request.form.get("text") or request.form.get("instruction") or "").strip()
+            class_names_raw = request.form.get("class_names", "") or ""
+            action = request.form.get("action")
+            resample_mode = request.form.get("resample_mode")
+            scene_endpoint = request.form.get("scene_endpoint")
+            file = request.files.get("image")
+            if file:
+                image_bytes = file.read()
+
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = handle_agent_message(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+                text=text,
+                image_bytes=image_bytes,
+                class_names_raw=class_names_raw,
+                action=action,
+                resample_mode=resample_mode,
+                scene_endpoint=scene_endpoint,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+
+        return jsonify(result)
+
+    @app.route("/agent/state", methods=["GET"])
+    def agent_state():
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = get_agent_state_response(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+
         return jsonify(result)
 
     @app.route("/edit_json", methods=["POST"])
     def edit_json():
+        paths = _request_runtime_paths()
         payload = request.json or {}
-        resp, err_json, status = _handle_edit_json(payload)
+        resp, err_json, status = _handle_edit_json(
+            payload,
+            default_input_path=paths["placements_path"],
+            default_image_path=paths["render_path"],
+        )
         if err_json:
             return err_json, status
         return jsonify(resp)
 
     @app.route("/real2sim/start", methods=["POST"])
     def real2sim_start():
-        payload = request.json or {}
-        job_id = _start_real2sim_job(payload)
+        paths = _request_runtime_paths(create=True)
+        payload = dict(request.json or {})
+        payload.setdefault("image_path", str(paths["latest_input_image"]))
+        payload.setdefault("scene_graph_path", str(paths["scene_graph_path"]))
+        payload.setdefault("real2sim_root_dir", str(paths["real2sim_root_dir"]))
+        payload.setdefault("mask_output", str(paths["real2sim_mask_output_dir"]))
+        payload.setdefault("mesh_output_dir", str(paths["real2sim_mesh_output_dir"]))
+        payload.setdefault("reuse_mesh_dir", str(paths["real2sim_reuse_mesh_dir"]))
+        payload.setdefault("scene_results_dir", str(paths["real2sim_scene_results_dir"]))
+        payload.setdefault("log_path", str(paths["real2sim_log_path"]))
+        context = paths.get("context")
+        if context is not None:
+            payload.setdefault("session_id", context.session_id)
+            payload.setdefault("run_id", context.run_id)
+        job_info = _start_real2sim_job(payload)
+        job_id = str(job_info["job_id"])
         job = _get_real2sim_job_status(job_id)
-        return jsonify(
-            {
-                "status": "ok",
-                "job_id": job_id,
-                "log_start_offset": job.get("log_start_offset", 0) if job else 0,
-                "log_path": LOG_PATH,
-            }
-        )
+        response = {
+            "status": "ok",
+            "job_id": job_id,
+            "log_start_offset": int(job_info.get("log_start_offset", 0) or 0),
+            "log_path": str(job_info.get("log_path") or paths["real2sim_log_path"]),
+        }
+        if context is not None:
+            response["session_id"] = context.session_id
+            response["run_id"] = context.run_id
+        return jsonify(response)
 
     @app.route("/real2sim/status/<job_id>")
     def real2sim_status(job_id):
@@ -422,6 +510,7 @@ def register_routes(app):
 
     @app.route("/real2sim/log")
     def real2sim_log():
+        paths = _request_runtime_paths()
         try:
             offset = int(request.args.get("offset", 0))
         except (TypeError, ValueError):
@@ -432,5 +521,6 @@ def register_routes(app):
         except (TypeError, ValueError):
             return jsonify({"status": "error", "msg": "limit must be an integer"}), 400
 
-        data = read_real2sim_log(offset=offset, limit=limit)
-        return jsonify({"status": "ok", **data, "path": LOG_PATH})
+        log_path = str(paths["real2sim_log_path"])
+        data = read_real2sim_log(offset=offset, limit=limit, log_path=log_path)
+        return jsonify({"status": "ok", **data, "path": log_path})

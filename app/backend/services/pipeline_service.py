@@ -2,9 +2,11 @@ import os
 import subprocess
 import json
 import selectors
+import threading
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Any
 
 from ..config import (
     ASSET_CONVERTER_SCRIPT,
@@ -23,17 +25,212 @@ from ..config import (
     SAM3_PYTHON,
 )
 
+_REAL2SIM_JOBS: dict[str, dict] = {}
+_REAL2SIM_JOBS_LOCK = threading.Lock()
+
 
 def run_generate() -> None:
     run_real2sim()
 
 
-def _append_log_entry(entry: str) -> None:
-    with open(LOG_PATH, "a", encoding="utf-8") as logf:
+def _utcnow_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _stringify_cmd(cmd: Any) -> str:
+    if isinstance(cmd, (list, tuple)):
+        return " ".join(str(part) for part in cmd)
+    return str(cmd or "")
+
+
+def _combined_error_text(error: Exception) -> str:
+    parts: list[str] = [str(error)]
+    output = getattr(error, "output", None)
+    stderr = getattr(error, "stderr", None)
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="ignore")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="ignore")
+    if output:
+        parts.append(str(output))
+    if stderr:
+        parts.append(str(stderr))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _infer_real2sim_step(error: Exception) -> str | None:
+    cmd = getattr(error, "cmd", None)
+    cmd_text = _stringify_cmd(cmd).lower()
+    if REAL2SIM_SEGMENT_SCRIPT.lower() in cmd_text or "object_segmentation_pipeline.py" in cmd_text:
+        return "segment_masks"
+    if REAL2SIM_PREDICT_STREAM_CLIENT.lower() in cmd_text or "streaming_generation_client.py" in cmd_text:
+        return "remote_predict"
+    return None
+
+
+def classify_real2sim_failure(error: Exception) -> dict[str, Any]:
+    detail = _combined_error_text(error)
+    lowered = detail.lower()
+    step = _infer_real2sim_step(error)
+
+    def _payload(
+        code: str,
+        user_message: str,
+        *,
+        retryable: bool,
+        category: str,
+    ) -> dict[str, Any]:
+        return {
+            "code": code,
+            "category": category,
+            "step": step,
+            "retryable": retryable,
+            "user_message": user_message,
+            "technical_detail": detail,
+        }
+
+    if "no object prompts found" in lowered or "no prompts available" in lowered:
+        return _payload(
+            "no_real2sim_objects",
+            "The current scene graph does not contain any real2sim objects to reconstruct.",
+            retryable=False,
+            category="input",
+        )
+
+    if "input image not found" in lowered:
+        return _payload(
+            "missing_input_image",
+            "The current run does not have an input image for Real2Sim.",
+            retryable=False,
+            category="input",
+        )
+
+    if "scene graph not found" in lowered:
+        return _payload(
+            "missing_scene_graph",
+            "The current run does not have a scene graph for Real2Sim.",
+            retryable=False,
+            category="input",
+        )
+
+    if (
+        "vlm mask assignment" in lowered
+        or "mask assignment" in lowered
+        or "unmatched_scene_paths" in lowered
+        or "unmatched_mask_labels" in lowered
+    ):
+        return _payload(
+            "mask_assignment_failed",
+            "Mask-to-object pairing failed before the remote SAM3D request completed.",
+            retryable=True,
+            category="assignment",
+        )
+
+    if (
+        "mask directory not found" in lowered
+        or "no masks provided" in lowered
+        or "expected segmented image not found" in lowered
+    ):
+        return _payload(
+            "mask_generation_failed",
+            "Real2Sim did not produce usable masks from the current image.",
+            retryable=True,
+            category="segmentation",
+        )
+
+    if isinstance(error, subprocess.TimeoutExpired):
+        if step == "remote_predict":
+            return _payload(
+                "remote_request_timeout",
+                "The remote SAM3D service timed out while generating the Real2Sim assets.",
+                retryable=True,
+                category="remote",
+            )
+        return _payload(
+            "subprocess_timeout",
+            "A Real2Sim subprocess timed out before completing.",
+            retryable=True,
+            category="runtime",
+        )
+
+    if (
+        "readtimeout" in lowered
+        or "read timed out" in lowered
+        or "timed out" in lowered and step == "remote_predict"
+    ):
+        return _payload(
+            "remote_request_timeout",
+            "The remote SAM3D service timed out while generating the Real2Sim assets.",
+            retryable=True,
+            category="remote",
+        )
+
+    if (
+        "connectionerror" in lowered
+        or "failed to establish a new connection" in lowered
+        or "connection refused" in lowered
+        or "max retries exceeded" in lowered
+        or "name or service not known" in lowered
+        or "nodename nor servname provided" in lowered
+    ):
+        return _payload(
+            "remote_server_unavailable",
+            "The remote SAM3D service is unreachable. Check whether the remote server is running and the URL is correct.",
+            retryable=True,
+            category="remote",
+        )
+
+    if (
+        "server stream error" in lowered
+        or "http 500" in lowered
+        or "http 502" in lowered
+        or "http 503" in lowered
+        or "internal server error" in lowered
+    ):
+        return _payload(
+            "remote_server_error",
+            "The remote SAM3D service returned an internal error while processing the request.",
+            retryable=True,
+            category="remote",
+        )
+
+    if (
+        "stream ended without scene_glb/poses_json final frames" in lowered
+        or "poses_json payload is not valid" in lowered
+    ):
+        return _payload(
+            "incomplete_outputs",
+            "Real2Sim finished with incomplete outputs and did not produce all expected files.",
+            retryable=True,
+            category="outputs",
+        )
+
+    return _payload(
+        "unexpected_failure",
+        "Real2Sim failed with an unexpected error. Check the technical detail and logs.",
+        retryable=True,
+        category="runtime",
+    )
+
+
+def _resolve_log_path(log_path: str | os.PathLike[str] | None = None) -> Path:
+    return Path(str(log_path or LOG_PATH)).resolve()
+
+
+def _append_log_entry(entry: str, *, log_path: str | os.PathLike[str] | None = None) -> None:
+    target = _resolve_log_path(log_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as logf:
         logf.write(entry)
 
 
-def log_real2sim_event(message: str, job_id: str | None = None, level: str = "INFO") -> None:
+def log_real2sim_event(
+    message: str,
+    job_id: str | None = None,
+    level: str = "INFO",
+    *,
+    log_path: str | os.PathLike[str] | None = None,
+) -> None:
     prefix = f"[{datetime.now().isoformat()}] [{level}]"
     if job_id:
         prefix += f" [job={job_id}]"
@@ -44,11 +241,16 @@ def log_real2sim_event(message: str, job_id: str | None = None, level: str = "IN
         entry = f"{prefix} {line}\n"
         print(entry, end="")
         entries.append(entry)
-    _append_log_entry("".join(entries))
+    _append_log_entry("".join(entries), log_path=log_path)
 
 
-def read_real2sim_log(offset: int = 0, limit: int = 65536) -> dict:
-    path = Path(LOG_PATH)
+def read_real2sim_log(
+    offset: int = 0,
+    limit: int = 65536,
+    *,
+    log_path: str | os.PathLike[str] | None = None,
+) -> dict:
+    path = _resolve_log_path(log_path)
     if not path.exists():
         return {"content": "", "next_offset": 0, "size": 0, "truncated": False}
 
@@ -69,12 +271,12 @@ def read_real2sim_log(offset: int = 0, limit: int = 65536) -> dict:
     }
 
 
-def get_real2sim_log_size() -> int:
-    path = Path(LOG_PATH)
+def get_real2sim_log_size(*, log_path: str | os.PathLike[str] | None = None) -> int:
+    path = _resolve_log_path(log_path)
     return path.stat().st_size if path.exists() else 0
 
 
-def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None):
+def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None, log_path: str | None = None):
     ts = datetime.now().isoformat()
     header = (
         f"[{ts}]"
@@ -85,7 +287,7 @@ def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None
         f"--- stream start ---\n"
     )
     print(header, end="")
-    _append_log_entry(header)
+    _append_log_entry(header, log_path=log_path)
 
     process = subprocess.Popen(
         cmd,
@@ -116,7 +318,7 @@ def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None
             entry += f" [job={job_id}]"
         entry += f" {line}"
         print(entry, end="")
-        _append_log_entry(entry)
+        _append_log_entry(entry, log_path=log_path)
 
     while True:
         now = time.monotonic()
@@ -136,7 +338,7 @@ def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None
                     f"({int(now - start_time)}s)\n"
                 )
                 print(heartbeat, end="")
-                _append_log_entry(heartbeat)
+                _append_log_entry(heartbeat, log_path=log_path)
                 last_activity = now
             continue
 
@@ -168,7 +370,7 @@ def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None
         + f" --- stream end --- exit={return_code} label={label}\n"
     )
     print(footer, end="")
-    _append_log_entry(footer)
+    _append_log_entry(footer, log_path=log_path)
 
     if return_code != 0:
         raise subprocess.CalledProcessError(
@@ -230,6 +432,7 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
     root = Path(real2sim_root).resolve()
     results_root = (root / Path(scene_results_dir)).resolve()
     objects_dir = results_root / "objects"
+    usd_objects_dir = results_root / "usd_objects"
 
     def _rel(path: Path) -> str:
         resolved = path.resolve()
@@ -243,6 +446,14 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
         object_glbs = sorted(
             _rel(p)
             for p in objects_dir.glob("*.glb")
+            if p.is_file()
+        )
+
+    object_usds: list[str] = []
+    if usd_objects_dir.exists():
+        object_usds = sorted(
+            _rel(p)
+            for p in usd_objects_dir.glob("*.usd")
             if p.is_file()
         )
 
@@ -261,6 +472,11 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
     if poses_path.exists() and poses_path.is_file():
         poses_json = _rel(poses_path)
 
+    assignment_json = None
+    assignment_path = results_root / "assignment.json"
+    if assignment_path.exists() and assignment_path.is_file():
+        assignment_json = _rel(assignment_path)
+
     scene_usd = None
     for scene_usd_name in ("scene_merged_post.usd", "scene_merged.usd"):
         scene_usd_path = results_root / scene_usd_name
@@ -276,7 +492,9 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
     return {
         "scene_results_dir": str(results_root),
         "object_glbs": object_glbs,
+        "object_usds": object_usds,
         "scene_glb": scene_glb,
+        "assignment_json": assignment_json,
         "poses_json": poses_json,
         "scene_usd": scene_usd,
         "manifest_json": manifest_json,
@@ -287,6 +505,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     payload = payload or {}
     real2sim_root = Path(str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)).resolve()
     real2sim_root.mkdir(parents=True, exist_ok=True)
+    log_path = str(payload.get("log_path") or LOG_PATH)
 
     image_path = str(payload.get("image_path") or LATEST_INPUT_IMAGE)
     scene_graph_path = str(payload.get("scene_graph_path") or SCENE_GRAPH_PATH)
@@ -295,6 +514,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     log_real2sim_event(
         f"Starting Real2Sim with image={image_path} scene_graph={scene_graph_path}",
         job_id=job_id,
+        log_path=log_path,
     )
     if not prompts:
         raise ValueError("No object prompts found in scene graph. Generate scene graph first.")
@@ -306,6 +526,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     log_real2sim_event(
         f"Resolved {len(prompts)} prompt(s): {', '.join(prompts)}",
         job_id=job_id,
+        log_path=log_path,
     )
 
     if not Path(image_path).exists():
@@ -347,6 +568,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         label="sam3_segment_objects_only",
         cwd=str(real2sim_root),
         job_id=job_id,
+        log_path=log_path,
     )
 
     masks_dir_abs = (real2sim_root / Path(mask_output)).resolve()
@@ -380,6 +602,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         label="predict_stream_generate_glbs",
         cwd=str(real2sim_root),
         job_id=job_id,
+        log_path=log_path,
     )
 
     scene_artifacts = collect_scene_result_artifacts(str(real2sim_root), scene_results_dir)
@@ -388,6 +611,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         f"{len(scene_artifacts.get('object_glbs', []))} object GLB(s), "
         f"scene_glb={scene_artifacts.get('scene_glb')}, poses_json={scene_artifacts.get('poses_json')}",
         job_id=job_id,
+        log_path=log_path,
     )
 
     return {
@@ -399,8 +623,160 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         "mask_output": mask_output,
         "scene_results_dir": scene_results_dir,
         "predict_stream_server": predict_stream_server,
+        "log_path": log_path,
         **scene_artifacts,
     }
+
+
+def start_real2sim_job(payload: dict) -> dict[str, object]:
+    import traceback
+    import uuid
+
+    job_id = uuid.uuid4().hex
+    log_path = str(payload.get("log_path") or LOG_PATH)
+    log_start_offset = get_real2sim_log_size(log_path=log_path)
+    with _REAL2SIM_JOBS_LOCK:
+        _REAL2SIM_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "created_at": _utcnow_iso(),
+            "updated_at": _utcnow_iso(),
+            "error": None,
+            "error_info": None,
+            "traceback": None,
+            "artifacts": {},
+            "log_path": log_path,
+            "log_start_offset": log_start_offset,
+            "payload": dict(payload or {}),
+        }
+
+    def _runner() -> None:
+        with _REAL2SIM_JOBS_LOCK:
+            job = _REAL2SIM_JOBS.get(job_id)
+            if not job:
+                return
+            job["status"] = "running"
+            job["updated_at"] = _utcnow_iso()
+
+        log_real2sim_event("Job queued -> running", job_id=job_id, log_path=log_path)
+        try:
+            artifacts = run_real2sim(payload, job_id=job_id)
+            with _REAL2SIM_JOBS_LOCK:
+                job = _REAL2SIM_JOBS.get(job_id)
+                if not job:
+                    return
+                job["status"] = "succeeded"
+                job["updated_at"] = _utcnow_iso()
+                job["error"] = None
+                job["error_info"] = None
+                job["artifacts"] = artifacts
+            log_real2sim_event("Job completed successfully", job_id=job_id, log_path=log_path)
+        except Exception as e:
+            tb = traceback.format_exc()
+            error_info = classify_real2sim_failure(e)
+            log_real2sim_event(f"Job failed: {e}", job_id=job_id, level="ERROR", log_path=log_path)
+            log_real2sim_event(
+                f"Classified failure: code={error_info['code']} retryable={error_info['retryable']} step={error_info.get('step')}",
+                job_id=job_id,
+                level="ERROR",
+                log_path=log_path,
+            )
+            log_real2sim_event(tb.rstrip(), job_id=job_id, level="TRACE", log_path=log_path)
+            with _REAL2SIM_JOBS_LOCK:
+                job = _REAL2SIM_JOBS.get(job_id)
+                if not job:
+                    return
+                job["status"] = "failed"
+                job["updated_at"] = _utcnow_iso()
+                job["error"] = str(e)
+                job["error_info"] = error_info
+                job["traceback"] = tb
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return {
+        "job_id": job_id,
+        "log_start_offset": log_start_offset,
+        "log_path": log_path,
+    }
+
+
+def get_real2sim_job_status(job_id: str) -> dict | None:
+    with _REAL2SIM_JOBS_LOCK:
+        base = _REAL2SIM_JOBS.get(job_id)
+        if not base:
+            return None
+        job = dict(base)
+
+    payload = job.get("payload") or {}
+    real2sim_root = str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)
+    scene_results_dir = str(payload.get("scene_results_dir") or REAL2SIM_SCENE_RESULTS_DIR)
+    live_artifacts = collect_scene_result_artifacts(real2sim_root, scene_results_dir)
+
+    merged_artifacts = dict(job.get("artifacts") or {})
+    merged_artifacts.setdefault("real2sim_root_dir", real2sim_root)
+    merged_artifacts.setdefault("scene_results_dir", scene_results_dir)
+    merged_artifacts["object_glbs"] = live_artifacts.get("object_glbs", [])
+    merged_artifacts["object_usds"] = live_artifacts.get("object_usds", [])
+    merged_artifacts["scene_glb"] = live_artifacts.get("scene_glb")
+    merged_artifacts["assignment_json"] = live_artifacts.get("assignment_json")
+    merged_artifacts["poses_json"] = live_artifacts.get("poses_json")
+    merged_artifacts["scene_usd"] = live_artifacts.get("scene_usd")
+    merged_artifacts["manifest_json"] = live_artifacts.get("manifest_json")
+
+    mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
+    masks_dir = (Path(real2sim_root).resolve() / Path(mask_output)).resolve()
+    expected_objects = None
+    if masks_dir.exists() and masks_dir.is_dir():
+        expected_objects = len(
+            [
+                p
+                for p in masks_dir.glob("*.png")
+                if p.is_file() and p.name.lower() != "image.png"
+            ]
+        )
+
+    generated_objects = len(merged_artifacts["object_glbs"])
+    has_merged_scene = bool(merged_artifacts.get("scene_glb"))
+    phase = "queued"
+    percent = 0
+    if job.get("status") == "queued":
+        phase = "queued"
+        percent = 0
+    elif job.get("status") == "running":
+        if expected_objects is None or expected_objects == 0:
+            phase = "segmenting"
+            percent = 15
+        elif generated_objects < expected_objects:
+            phase = "generating_glbs"
+            ratio = generated_objects / max(expected_objects, 1)
+            percent = min(94, 20 + int(ratio * 70))
+        elif not has_merged_scene:
+            phase = "merging_scene"
+            percent = 95
+        else:
+            phase = "finalizing"
+            percent = 98
+    elif job.get("status") == "succeeded":
+        phase = "completed"
+        percent = 100
+    elif job.get("status") == "failed":
+        phase = "failed"
+        percent = 100 if has_merged_scene else 0
+
+    job["progress"] = {
+        "phase": phase,
+        "percent": percent,
+        "expected_objects": expected_objects,
+        "generated_objects": generated_objects,
+        "has_merged_scene": has_merged_scene,
+    }
+    if isinstance(payload.get("session_id"), str) and payload.get("session_id"):
+        job["session_id"] = payload["session_id"]
+    if isinstance(payload.get("run_id"), str) and payload.get("run_id"):
+        job["run_id"] = payload["run_id"]
+    job["artifacts"] = merged_artifacts
+    job.pop("payload", None)
+    return job
 
 
 def log_pipeline_failure(error: subprocess.CalledProcessError) -> None:

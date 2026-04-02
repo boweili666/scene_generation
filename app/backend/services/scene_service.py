@@ -37,6 +37,7 @@ from ..config import (
     SCENE_GRAPH_PATH as CFG_SCENE_GRAPH_PATH,
     SCENE_SERVICE_USD_DIR as CFG_SCENE_SERVICE_USD_DIR,
 )
+from .runtime_context import resolve_runtime_context
 
 # Import pipelines/isaac/scene_renderer.py
 THIS_DIR = Path(__file__).resolve().parent
@@ -62,6 +63,14 @@ DEFAULT_ROOM_USD_PATH: str = str((CFG_SCENE_SERVICE_USD_DIR / "generated_room.sc
 
 
 class SceneRequest(BaseModel):
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Optional session identifier for runtime/sessions/<session_id>/... path isolation.",
+    )
+    run_id: Optional[str] = Field(
+        default=None,
+        description="Optional run identifier under the selected session for runtime isolation.",
+    )
     scene_graph_path: Optional[str] = Field(
         default=DEFAULT_SCENE_GRAPH_PATH,
         description="Local JSON file path; provide either this or scene_graph. Uses built-in default if omitted.",
@@ -181,24 +190,58 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         dims["unit"] = "m"
         return data
 
-    def _load_scene_graph(req: SceneRequest) -> Dict:
+    def _runtime_context_for_request(req: SceneRequest, *, create: bool = False):
+        if req.session_id is None and req.run_id is None:
+            return None
+        return resolve_runtime_context(
+            session_id=req.session_id,
+            run_id=req.run_id,
+            create=create,
+        )
+
+    def _effective_path(value: Optional[str], default_value: Optional[str], runtime_value: Path | None) -> Optional[str]:
+        if runtime_value is None:
+            return value if value is not None else default_value
+        if value is None:
+            return str(runtime_value)
+        if default_value is not None and value == default_value:
+            return str(runtime_value)
+        return value
+
+    def _load_scene_graph(req: SceneRequest, runtime_ctx=None) -> Dict:
         if not req.scene_graph_path and not req.scene_graph:
             raise HTTPException(status_code=400, detail="Provide at least one of scene_graph_path or scene_graph.")
         if req.scene_graph_path:
-            data = sf.load_and_validate_scene_graph(Path(req.scene_graph_path))
+            scene_graph_path = _effective_path(
+                req.scene_graph_path,
+                DEFAULT_SCENE_GRAPH_PATH,
+                runtime_ctx.scene_graph_path if runtime_ctx is not None else None,
+            )
+            data = sf.load_and_validate_scene_graph(Path(scene_graph_path))
         else:
             data = sf.validate_and_prepare_scene_graph(req.scene_graph)
         if req.unit.lower() == "cm":
             data = _scale_scene_dimensions_to_m(data)
         return data
 
-    def _resolve_scene_save_path(req: SceneRequest) -> Path:
-        save_path = Path(req.save_usd) if req.save_usd else Path(DEFAULT_SCENE_USD_PATH)
+    def _resolve_scene_save_path(req: SceneRequest, runtime_ctx=None) -> Path:
+        save_usd = _effective_path(
+            req.save_usd,
+            DEFAULT_SCENE_USD_PATH,
+            runtime_ctx.scene_service_usd_path if runtime_ctx is not None else None,
+        )
+        save_path = Path(save_usd) if save_usd else Path(DEFAULT_SCENE_USD_PATH)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         return save_path
 
-    def _resolve_room_usd_path() -> Path:
-        room_root = Path(DEFAULT_ROOM_USD_PATH)
+    def _resolve_room_usd_path(runtime_ctx=None) -> Path:
+        room_root = Path(
+            _effective_path(
+                None,
+                DEFAULT_ROOM_USD_PATH,
+                runtime_ctx.scene_service_room_usd_path if runtime_ctx is not None else None,
+            )
+        )
         room_root.parent.mkdir(parents=True, exist_ok=True)
         for legacy_path in room_root.parent.glob("generated_room.scene_service*.usd"):
             if legacy_path.is_file():
@@ -566,7 +609,8 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
 
     async def _rebuild(req: SceneRequest, use_overrides: bool = True) -> Dict:
         nonlocal world
-        data = _load_scene_graph(req)
+        runtime_ctx = _runtime_context_for_request(req, create=True)
+        data = _load_scene_graph(req, runtime_ctx)
         resample_mode = rm.validate_resample_mode(req.resample_mode)
         room_closed_walls = {
             "behind": req.room_include_back_wall,
@@ -577,8 +621,13 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         fallback_usd_paths = _get_usd_paths(Path(req.asset_root))
         retrieval_usd_paths = _get_usd_paths(Path(req.retrieval_asset_root))
         combined_usd_paths = list(dict.fromkeys([*retrieval_usd_paths, *fallback_usd_paths]))
+        real2sim_manifest_path = _effective_path(
+            req.real2sim_manifest_path,
+            str(CFG_REAL2SIM_MANIFEST_PATH),
+            runtime_ctx.real2sim_manifest_path if runtime_ctx is not None else None,
+        )
         real2sim_manifest = sf.load_real2sim_manifest(
-            Path(req.real2sim_manifest_path) if req.real2sim_manifest_path else None
+            Path(real2sim_manifest_path) if real2sim_manifest_path else None
         )
         real2sim_scale_lookup = sf.build_real2sim_uniform_scale_lookup(real2sim_manifest)
         asset_match_lookup = sf.build_asset_match_lookup(
@@ -594,11 +643,16 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             object_scale_lookup=real2sim_scale_lookup,
         )
         edges = data.get("edges", {}).get("obj-obj", [])
-        placement_overrides = _load_placements_dict(req.placements_path, req.placements) if use_overrides else {}
+        placements_path = _effective_path(
+            req.placements_path,
+            DEFAULT_PLACEMENTS_PATH,
+            runtime_ctx.default_placements_path if runtime_ctx is not None else None,
+        )
+        placement_overrides = _load_placements_dict(placements_path, req.placements) if use_overrides else {}
 
         room_usd_path: Optional[Path] = None
         if req.generate_room:
-            room_usd_path = _resolve_room_usd_path()
+            room_usd_path = _resolve_room_usd_path(runtime_ctx)
             room_texture_dir = PROJECT_ROOT / "third_party" / "stable_material"
             try:
                 sf.generate_room_usd_from_scene(
@@ -619,7 +673,12 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         seed_base = req.seed or random.SystemRandom().randrange(0, 2**32 - 1)
         room_bounds = sf._room_bounds_from_scene(data, req.spread_scale)  # noqa: SLF001
         grid_step = 0.25
-        scene_save_path = _resolve_scene_save_path(req)
+        scene_save_path = _resolve_scene_save_path(req, runtime_ctx)
+        screenshot_path = _effective_path(
+            req.screenshot,
+            DEFAULT_SCREENSHOT_PATH,
+            runtime_ctx.render_path if runtime_ctx is not None else None,
+        )
         seed = seed_base
         object_entries: List[Dict[str, Any]] = []
         placements: Dict[str, Tuple[float, float, float, Optional[float]]] = {}
@@ -721,8 +780,8 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
             world.step(render=True)
 
         screenshot_saved = False
-        if req.screenshot:
-            Path(req.screenshot).parent.mkdir(parents=True, exist_ok=True)
+        if screenshot_path:
+            Path(screenshot_path).parent.mkdir(parents=True, exist_ok=True)
             raw = camera.get_rgba()
             if raw is None or (hasattr(raw, "size") and raw.size == 0):
                 print("[WARN] camera.get_rgba() returned empty; skip saving screenshot")
@@ -740,12 +799,12 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
                         img = img[:, :, :3]
                     from PIL import Image
 
-                    Image.fromarray(img).save(req.screenshot)
+                    Image.fromarray(img).save(screenshot_path)
                     screenshot_saved = True
 
         # Persist final placements to default file for easy reuse.
-        if DEFAULT_PLACEMENTS_PATH:
-            out_path = Path(DEFAULT_PLACEMENTS_PATH)
+        if placements_path:
+            out_path = Path(placements_path)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             serializable = _serialize_placements_payload(placements, placement_aabbs)
             with out_path.open("w", encoding="utf-8") as f:
@@ -773,14 +832,18 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         resolved_assets.sort(key=lambda item: item["prim"])
 
         return {
+            "session_id": runtime_ctx.session_id if runtime_ctx is not None else None,
+            "run_id": runtime_ctx.run_id if runtime_ctx is not None else None,
             "seed": seed,
             "resample_mode": resample_mode,
             "placements": _serialize_placements_payload(placements, placement_aabbs),
+            "placements_path": str(placements_path) if placements_path else None,
             "objects": object_entries,
             "usd_files": len(combined_usd_paths),
             "edges": len(edges),
             "saved_usd": str(scene_save_path),
             "screenshot_saved": screenshot_saved,
+            "screenshot_path": str(screenshot_path) if screenshot_path else None,
             "debug": {
                 "resample_mode": resample_mode,
                 "asset_resolution_counts": resolved_counts,

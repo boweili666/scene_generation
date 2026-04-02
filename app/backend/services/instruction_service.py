@@ -145,16 +145,21 @@ def _write_placements(path: str | Path, placements: Dict[str, List[float]]) -> N
     write_json_file(target_path, serializable)
 
 
-def _save_latest_input_image(image_bytes: bytes) -> None:
-    LATEST_INPUT_IMAGE.parent.mkdir(parents=True, exist_ok=True)
-    LATEST_INPUT_IMAGE.write_bytes(image_bytes)
+def _save_latest_input_image(
+    image_bytes: bytes,
+    *,
+    image_path: str | Path = LATEST_INPUT_IMAGE,
+) -> None:
+    target_path = Path(image_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_bytes(image_bytes)
 
 
-def _current_render_image_b64() -> str | None:
-    render_path = Path(DEFAULT_RENDER_PATH)
-    if not render_path.exists():
+def _current_render_image_b64(render_path: str | Path = DEFAULT_RENDER_PATH) -> str | None:
+    resolved_render_path = Path(render_path)
+    if not resolved_render_path.exists():
         return None
-    raw = render_path.read_bytes()
+    raw = resolved_render_path.read_bytes()
     return _encode_image_bytes(raw, "image/png")
 
 
@@ -370,14 +375,19 @@ def _validate_saved_scene_graph(scene_graph: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def save_scene_graph_state(scene_graph: Dict[str, Any]) -> Dict[str, Any]:
+def save_scene_graph_state(
+    scene_graph: Dict[str, Any],
+    *,
+    scene_graph_path: str | Path = SCENE_GRAPH_PATH,
+    placements_path: str | Path = DEFAULT_PLACEMENTS_PATH,
+) -> Dict[str, Any]:
     normalized = _validate_saved_scene_graph(scene_graph)
-    current_placements = _load_placements()
+    current_placements = _load_placements(placements_path)
     next_placements = prune_placements_to_scene_graph(normalized, current_placements)
     invalidated_paths = sorted(set(current_placements.keys()) - set(next_placements.keys()))
 
-    write_json_file(Path(SCENE_GRAPH_PATH), normalized)
-    _write_placements(DEFAULT_PLACEMENTS_PATH, next_placements)
+    write_json_file(Path(scene_graph_path), normalized)
+    _write_placements(placements_path, next_placements)
 
     warnings: List[str] = []
     if invalidated_paths:
@@ -392,49 +402,85 @@ def save_scene_graph_state(scene_graph: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def create_scene_graph_from_input(
+    instruction: str,
+    *,
+    class_names_raw: str = "",
+    image_bytes: bytes | None = None,
+    scene_graph_path: str | Path = SCENE_GRAPH_PATH,
+    placements_path: str | Path = DEFAULT_PLACEMENTS_PATH,
+    latest_input_image_path: str | Path = LATEST_INPUT_IMAGE,
+    reuse_saved_image: bool = False,
+) -> Dict[str, Any]:
+    text = (instruction or "").strip()
+    effective_image_bytes = image_bytes
+    latest_input_path = Path(latest_input_image_path)
+    target_scene_graph_path = Path(scene_graph_path)
+    had_existing_graph = target_scene_graph_path.exists()
+
+    if effective_image_bytes is not None:
+        _save_latest_input_image(effective_image_bytes, image_path=latest_input_path)
+    elif reuse_saved_image and latest_input_path.exists():
+        effective_image_bytes = latest_input_path.read_bytes()
+
+    next_graph = _generate_scene_graph(text, class_names_raw, effective_image_bytes)
+    next_placements: Dict[str, List[float]] = {}
+    write_json_file(target_scene_graph_path, next_graph)
+    _write_placements(placements_path, next_placements)
+    route = {
+        "mode": "graph",
+        "confidence": 1.0,
+        "signals": ["replace" if had_existing_graph else "bootstrap"],
+        "objects": [],
+        "reason": "Created a fresh scene graph from the current text/image input.",
+        "needs_resample": False,
+        "requires_existing_placements": False,
+        "apply_placement_editor": False,
+    }
+    return {
+        "status": "ok",
+        "route": route,
+        "llm_route": None,
+        "assistant_message": "Created a new scene graph from the current input.",
+        "scene_graph": next_graph,
+        "placements": next_placements,
+        "invalidated_placements": [],
+        "updated_paths": [],
+        "warnings": [],
+    }
+
+
 def apply_instruction(
     instruction: str,
     *,
     class_names_raw: str = "",
     image_bytes: bytes | None = None,
+    scene_graph_path: str | Path = SCENE_GRAPH_PATH,
+    placements_path: str | Path = DEFAULT_PLACEMENTS_PATH,
+    latest_input_image_path: str | Path = LATEST_INPUT_IMAGE,
+    render_path: str | Path = DEFAULT_RENDER_PATH,
 ) -> Dict[str, Any]:
     text = (instruction or "").strip()
     if image_bytes is not None:
-        _save_latest_input_image(image_bytes)
+        _save_latest_input_image(image_bytes, image_path=latest_input_image_path)
 
-    current_graph = _load_scene_graph()
-    current_placements = _load_placements()
-    current_placements_raw = _load_placements_payload_raw()
+    current_graph = _load_scene_graph(scene_graph_path)
+    current_placements = _load_placements(placements_path)
+    current_placements_raw = _load_placements_payload_raw(placements_path)
     graph_image_b64 = _encode_image_bytes(image_bytes) if image_bytes is not None else None
     # Placement edits are text-only on purpose; images bias the model toward screen-space directions.
     placement_image_b64 = None
+    _ = render_path
 
     if current_graph is None:
-        next_graph = _generate_scene_graph(text, class_names_raw, image_bytes)
-        next_placements: Dict[str, List[float]] = {}
-        write_json_file(Path(SCENE_GRAPH_PATH), next_graph)
-        _write_placements(DEFAULT_PLACEMENTS_PATH, next_placements)
-        route = {
-            "mode": "graph",
-            "confidence": 1.0,
-            "signals": ["bootstrap"],
-            "objects": [],
-            "reason": "No current scene graph existed; generated a new scene graph.",
-            "needs_resample": False,
-            "requires_existing_placements": False,
-            "apply_placement_editor": False,
-        }
-        return {
-            "status": "ok",
-            "route": route,
-            "llm_route": None,
-            "assistant_message": "Created a new scene graph from the current input.",
-            "scene_graph": next_graph,
-            "placements": next_placements,
-            "invalidated_placements": [],
-            "updated_paths": [],
-            "warnings": [],
-        }
+        return create_scene_graph_from_input(
+            text,
+            class_names_raw=class_names_raw,
+            image_bytes=image_bytes,
+            scene_graph_path=scene_graph_path,
+            placements_path=placements_path,
+            latest_input_image_path=latest_input_image_path,
+        )
 
     if not text and image_bytes is not None:
         raise ValueError("A text instruction is required when editing an existing scene.")
@@ -513,8 +559,8 @@ def apply_instruction(
             warnings.append("Semantic relation changes may require Edit Scene or Resample to refresh geometry.")
 
     next_placements = prune_placements_to_scene_graph(next_graph, next_placements)
-    write_json_file(Path(SCENE_GRAPH_PATH), next_graph)
-    _write_placements(DEFAULT_PLACEMENTS_PATH, next_placements)
+    write_json_file(Path(scene_graph_path), next_graph)
+    _write_placements(placements_path, next_placements)
     assistant_message = assistant_message or _fallback_assistant_message(
         route,
         updated_paths,
