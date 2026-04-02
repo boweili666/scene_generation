@@ -512,6 +512,162 @@ class Real2SimPostprocessTest(unittest.TestCase):
             top_vertices = trimesh.transform_points(post_scene.geometry[top_geom_name].vertices, top_transform)
             self.assertAlmostEqual(float(top_vertices[:, 1].min()), float(base_vertices[:, 1].max()) + 1e-4, places=6)
 
+    def test_postprocess_filters_unmatched_outputs_using_mask_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "scene_results"
+            objects_dir = output_dir / "objects"
+            objects_dir.mkdir(parents=True)
+
+            mesh = trimesh.creation.box(extents=[0.4, 0.4, 0.4])
+            poses = {}
+            raw_scene = trimesh.Scene()
+            for index in range(4):
+                name = str(index)
+                (objects_dir / f"{name}.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+                poses[name] = {
+                    "rotation": [[1.0, 0.0, 0.0, 0.0]],
+                    "translation": [[float(index), 0.2, 0.0]],
+                    "scale": [[1.0, 1.0, 1.0]],
+                    "iou": {0: 0.2, 1: 0.95, 2: 0.7, 3: 0.6}[index],
+                }
+                raw_scene.add_geometry(
+                    mesh,
+                    node_name=name,
+                    geom_name=name,
+                    transform=np.array(
+                        [
+                            [1.0, 0.0, 0.0, float(index)],
+                            [0.0, 1.0, 0.0, 0.2],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ]
+                    ),
+                )
+
+            (output_dir / "poses.json").write_text(json.dumps(poses), encoding="utf-8")
+            (output_dir / "scene_merged.glb").write_bytes(raw_scene.export(file_type="glb"))
+            masks_dir = root / "masks"
+            masks_dir.mkdir(parents=True)
+            (masks_dir / "mask_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"prompt": "table", "bbox_xyxy": [0, 0, 10, 10]},
+                        "1": {"prompt": "table", "bbox_xyxy": [0, 0, 20, 20]},
+                        "2": {"prompt": "cone", "bbox_xyxy": [0, 0, 8, 8]},
+                        "3": {"prompt": "plate", "bbox_xyxy": [0, 0, 12, 12]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            scene_graph = {
+                "obj": {
+                    "/World/Table_0": {"class": "table", "source": "real2sim"},
+                    "/World/Cone_1": {"class": "cone", "source": "real2sim"},
+                    "/World/Plate_2": {"class": "plate", "source": "real2sim"},
+                },
+                "edges": {"obj-obj": [], "obj-wall": []},
+            }
+            scene_graph_path = root / "scene_graph.json"
+            scene_graph_path.write_text(json.dumps(scene_graph), encoding="utf-8")
+
+            summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=scene_graph_path)
+
+            self.assertEqual(summary["objects"], 3)
+            self.assertEqual(summary["excluded_unmatched_outputs"], 1)
+
+            updated_poses = json.loads((output_dir / "poses.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(updated_poses.keys()), {"1", "2", "3"})
+
+            post_scene = trimesh.load(output_dir / "scene_merged.glb", force="scene")
+            self.assertIn("1", post_scene.graph.nodes_geometry)
+            self.assertIn("2", post_scene.graph.nodes_geometry)
+            self.assertIn("3", post_scene.graph.nodes_geometry)
+            self.assertNotIn("0", post_scene.graph.nodes_geometry)
+
+    def test_postprocess_prefers_explicit_assignment_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "scene_results"
+            objects_dir = output_dir / "objects"
+            objects_dir.mkdir(parents=True)
+
+            mesh = trimesh.creation.box(extents=[0.4, 0.4, 0.4])
+            poses = {}
+            raw_scene = trimesh.Scene()
+            for index in range(3):
+                name = str(index)
+                (objects_dir / f"{name}.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+                poses[name] = {
+                    "rotation": [[1.0, 0.0, 0.0, 0.0]],
+                    "translation": [[float(index), 0.2, 0.0]],
+                    "scale": [[1.0, 1.0, 1.0]],
+                    "iou": {0: 0.95, 1: 0.15, 2: 0.7}[index],
+                }
+                raw_scene.add_geometry(
+                    mesh,
+                    node_name=name,
+                    geom_name=name,
+                    transform=np.array(
+                        [
+                            [1.0, 0.0, 0.0, float(index)],
+                            [0.0, 1.0, 0.0, 0.2],
+                            [0.0, 0.0, 1.0, 0.0],
+                            [0.0, 0.0, 0.0, 1.0],
+                        ]
+                    ),
+                )
+
+            (output_dir / "poses.json").write_text(json.dumps(poses), encoding="utf-8")
+            (output_dir / "scene_merged.glb").write_bytes(raw_scene.export(file_type="glb"))
+            (output_dir / "assignment.json").write_text(
+                json.dumps(
+                    {
+                        "assignments": [
+                            {"scene_path": "/World/Table_0", "output_name": "1", "mask_label": 2, "confidence": 0.95},
+                            {"scene_path": "/World/Cone_1", "output_name": "2", "mask_label": 3, "confidence": 0.84},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            masks_dir = root / "masks"
+            masks_dir.mkdir(parents=True)
+            (masks_dir / "mask_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"prompt": "table", "bbox_xyxy": [0, 0, 20, 20]},
+                        "1": {"prompt": "table", "bbox_xyxy": [0, 0, 10, 10]},
+                        "2": {"prompt": "cone", "bbox_xyxy": [0, 0, 8, 8]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            scene_graph = {
+                "obj": {
+                    "/World/Table_0": {"class": "table", "source": "real2sim"},
+                    "/World/Cone_1": {"class": "cone", "source": "real2sim"},
+                },
+                "edges": {"obj-obj": [], "obj-wall": []},
+            }
+            scene_graph_path = root / "scene_graph.json"
+            scene_graph_path.write_text(json.dumps(scene_graph), encoding="utf-8")
+
+            summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=scene_graph_path)
+
+            self.assertEqual(summary["objects"], 2)
+            self.assertEqual(summary["excluded_unmatched_outputs"], 1)
+
+            updated_poses = json.loads((output_dir / "poses.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(updated_poses.keys()), {"1", "2"})
+
+            post_scene = trimesh.load(output_dir / "scene_merged.glb", force="scene")
+            self.assertIn("1", post_scene.graph.nodes_geometry)
+            self.assertIn("2", post_scene.graph.nodes_geometry)
+            self.assertNotIn("0", post_scene.graph.nodes_geometry)
+
     def test_preserve_relative_support_transforms(self) -> None:
         base_original = PlacementState(
             name="obj_00",

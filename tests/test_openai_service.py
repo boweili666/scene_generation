@@ -6,6 +6,7 @@ from app.backend.services.openai_service import (
     PLACEMENT_EDITOR_PROMPT,
     SYSTEM_PROMPT,
     _normalize_scene_graph_payload,
+    assign_real2sim_masks_with_images,
     parse_scene_graph_from_image,
 )
 
@@ -200,6 +201,64 @@ class OpenAIServiceImagePromptTest(unittest.TestCase):
         self.assertIn("Add a chair in front of the table", prompt_text)
         self.assertIn("Objects explicitly requested in text but not present in the uploaded image should use source=retrieval.", prompt_text)
         self.assertEqual(content[1]["type"], "input_image")
+
+    def test_assign_real2sim_masks_with_images_uses_overlay_and_schema(self) -> None:
+        captured = {}
+
+        class _FakeResponses:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                response = mock.Mock()
+                response.output_text = """
+                {
+                  "assignments": [
+                    {
+                      "scene_path": "/World/table_0",
+                      "mask_label": 3,
+                      "confidence": 0.92,
+                      "reason": "largest tabletop region"
+                    }
+                  ],
+                  "unmatched_scene_paths": [],
+                  "unmatched_mask_labels": [1, 2]
+                }
+                """
+                return response
+
+        class _FakeClient:
+            responses = _FakeResponses()
+
+        with mock.patch.object(openai_service, "_get_openai_client", return_value=_FakeClient()):
+            result = assign_real2sim_masks_with_images(
+                {
+                    "objects": [
+                        {
+                            "path": "/World/table_0",
+                            "class": "table",
+                            "caption": "wood tabletop table",
+                            "source": "real2sim",
+                        }
+                    ],
+                    "edges": {"obj-obj": [], "obj-wall": []},
+                },
+                [
+                    {"mask_label": 1, "output_name": "0", "prompt": "table"},
+                    {"mask_label": 2, "output_name": "1", "prompt": "table"},
+                    {"mask_label": 3, "output_name": "2", "prompt": "table"},
+                ],
+                original_image_b64="data:image/png;base64,orig",
+                overlay_image_b64="data:image/png;base64,overlay",
+            )
+
+        self.assertEqual(result["assignments"][0]["mask_label"], 3)
+        content = captured["input"][0]["content"]
+        self.assertEqual(content[0]["type"], "input_text")
+        self.assertEqual(content[1]["type"], "input_image")
+        self.assertEqual(content[1]["image_url"], "data:image/png;base64,orig")
+        self.assertEqual(content[2]["type"], "input_image")
+        self.assertEqual(content[2]["image_url"], "data:image/png;base64,overlay")
+        self.assertIn("mask_label", content[0]["text"])
+        self.assertEqual(captured["text"]["format"]["name"], "mask_assignments")
 
 
 class OpenAIServicePromptGuardrailTest(unittest.TestCase):

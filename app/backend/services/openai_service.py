@@ -277,6 +277,37 @@ PLACEMENT_UPDATE_SCHEMA = {
     "additionalProperties": False,
 }
 
+MASK_ASSIGNMENT_MODEL = os.getenv("REAL2SIM_MASK_ASSIGNMENT_MODEL", SCENE_GRAPH_MODEL)
+MASK_ASSIGNMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "scene_path": {"type": "string"},
+                    "mask_label": {"type": "integer", "minimum": 1},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "reason": {"type": ["string", "null"]},
+                },
+                "required": ["scene_path", "mask_label", "confidence", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        "unmatched_scene_paths": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "unmatched_mask_labels": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 1},
+        },
+    },
+    "required": ["assignments", "unmatched_scene_paths", "unmatched_mask_labels"],
+    "additionalProperties": False,
+}
+
 SCENE_GRAPH_EDITOR_PROMPT = """
 You edit an existing scene graph in response to an instruction.
 
@@ -306,6 +337,20 @@ Editing rules:
 - Direction convention: +y = right, -y = left, +x = front, -x = back.
 - If yaw is not changed, keep yaw_deg as null.
 - Do not add or remove scene-graph objects or relations.
+""".strip()
+
+MASK_ASSIGNMENT_PROMPT = """
+You match numbered segmentation masks in an image to existing real-scene objects from a scene graph.
+
+Matching rules:
+- Use the numbered mask overlay image and the original image together.
+- Use each mask label at most once.
+- Only assign masks that clearly correspond to a listed scene object.
+- Treat each mask candidate's `prompt` as a strong prior, but use image evidence, caption details, color, material, support, and relative position to break ties.
+- When multiple scene objects share the same class, use caption details and scene-graph relations to create the best one-to-one assignment.
+- If exact identity is uncertain, still choose the most plausible one-to-one assignment and lower confidence.
+- Never invent scene paths or mask labels that are not provided.
+- Return JSON only.
 """.strip()
 
 
@@ -542,6 +587,46 @@ def route_scene_instruction(
         text=_json_schema_format("instruction_route", ROUTER_SCHEMA),
     )
     return _parse_output_json(response, "routing")
+
+
+def assign_real2sim_masks_with_images(
+    scene_context: Dict[str, Any],
+    mask_candidates: list[Dict[str, Any]],
+    *,
+    original_image_b64: str,
+    overlay_image_b64: str,
+    model: str | None = None,
+) -> Dict[str, Any]:
+    prompt = "\n\n".join(
+        [
+            "Match the numbered masks to the scene graph objects.",
+            "Scene graph objects and relations:",
+            json.dumps(scene_context, ensure_ascii=False, indent=2),
+            "Mask candidates:",
+            json.dumps(mask_candidates, ensure_ascii=False, indent=2),
+            (
+                "The numbered overlay uses `mask_label` values. "
+                "The `output_name` field is an internal ID and may help bookkeeping, "
+                "but the visible number on the image is `mask_label`."
+            ),
+        ]
+    )
+    response = _get_openai_client().responses.create(
+        model=model or MASK_ASSIGNMENT_MODEL,
+        instructions=MASK_ASSIGNMENT_PROMPT,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": original_image_b64},
+                    {"type": "input_image", "image_url": overlay_image_b64},
+                ],
+            }
+        ],
+        text=_json_schema_format("mask_assignments", MASK_ASSIGNMENT_SCHEMA),
+    )
+    return _parse_output_json(response, "mask assignment")
 
 
 def edit_scene_graph_with_instruction(

@@ -17,6 +17,7 @@ DEFAULT_OUTPUT_ROOT = Path("runtime/real2sim/masks")
 DEFAULT_MESH_OUTPUT = Path("runtime/real2sim/meshes")
 DEFAULT_REUSE_MESH_DIR = Path("runtime/real2sim/meshes")
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
+MASK_METADATA_FILENAME = "mask_metadata.json"
 
 
 def normalize_label(text: str) -> str:
@@ -158,6 +159,7 @@ def main() -> None:
     total_masks = 0
     total_meshes = 0
     global_mask_idx = 0
+    mask_metadata: dict[str, dict[str, Any]] = {}
 
     for prompt in prompts:
         prompt_key = normalize_label(prompt)
@@ -202,6 +204,12 @@ def main() -> None:
             # runtime/real2sim/masks/0.png, 1.png, 2.png, ...
             mask_path = args.output_root / f"{global_mask_idx}.png"
             Image.fromarray(rgba_full).save(mask_path)
+            mask_metadata[str(global_mask_idx)] = {
+                "mask_path": mask_path.name,
+                "prompt": prompt.strip().lower(),
+                "prompt_key": prompt_key,
+                "bbox_xyxy": [x_min, y_min, x_max, y_max],
+            }
 
             total_masks += 1
             saved_idx += 1
@@ -217,6 +225,12 @@ def main() -> None:
     else:
         reused = copy_reused_meshes(prompts, args.reuse_mesh_dir, args.mesh_output_dir)
         print(f"[INFO] Reused meshes copied: {reused}")
+
+    (args.output_root / MASK_METADATA_FILENAME).write_text(
+        json.dumps(mask_metadata, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(f"[INFO] Saved mask metadata: {args.output_root / MASK_METADATA_FILENAME}")
 
     print(f"\n[DONE] Total saved masks: {total_masks}")
     print(f"[DONE] Mask output root: {args.output_root}")

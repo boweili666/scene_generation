@@ -160,6 +160,154 @@ class Real2SimManifestTest(unittest.TestCase):
             self.assertEqual(entry["usd_path"], "scene_merged_post.usd")
             self.assertEqual(entry["usd_prim_path"], "/World/obj_00")
 
+    def test_build_real2sim_asset_manifest_matches_outputs_by_prompt_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "scene_results"
+            objects_dir = output_dir / "objects"
+            usd_objects_dir = output_dir / "usd_objects"
+            objects_dir.mkdir(parents=True)
+            usd_objects_dir.mkdir(parents=True)
+
+            mesh = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+            for name in ("0", "1", "2", "3"):
+                (objects_dir / f"{name}.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+                (usd_objects_dir / f"{name}.usd").write_text("#usda 1.0\n", encoding="utf-8")
+
+            (output_dir / "scene_merged.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+            (output_dir / "scene_merged_post.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+            (output_dir / "scene_merged_post.usd").write_text("#usda 1.0\n", encoding="utf-8")
+            (output_dir / "poses.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"scene_transform": np.eye(4).tolist(), "iou": 0.25},
+                        "1": {"scene_transform": np.eye(4).tolist(), "iou": 0.9},
+                        "2": {"scene_transform": np.eye(4).tolist(), "iou": 0.7},
+                        "3": {"scene_transform": np.eye(4).tolist(), "iou": 0.6},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "mask_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"prompt": "table", "bbox_xyxy": [0, 0, 10, 10]},
+                        "1": {"prompt": "table", "bbox_xyxy": [0, 0, 20, 20]},
+                        "2": {"prompt": "cone", "bbox_xyxy": [0, 0, 8, 8]},
+                        "3": {"prompt": "plate", "bbox_xyxy": [0, 0, 12, 12]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            scene_graph = {
+                "obj": {
+                    "/World/table_0": {
+                        "id": 0,
+                        "class": "table",
+                        "caption": "wood table",
+                        "source": "real2sim",
+                    },
+                    "/World/cone_1": {
+                        "id": 1,
+                        "class": "cone",
+                        "caption": "yellow traffic cone",
+                        "source": "real2sim",
+                    },
+                    "/World/plate_2": {
+                        "id": 2,
+                        "class": "plate",
+                        "caption": "blue plate",
+                        "source": "real2sim",
+                    },
+                },
+                "edges": {"obj-obj": [], "obj-wall": []},
+            }
+            scene_graph_path = root / "scene_graph.json"
+            scene_graph_path.write_text(json.dumps(scene_graph), encoding="utf-8")
+
+            _, manifest = build_real2sim_asset_manifest(output_dir, scene_graph_path=scene_graph_path)
+
+            self.assertEqual(manifest["objects"]["/World/table_0"]["output_name"], "1")
+            self.assertEqual(manifest["objects"]["/World/cone_1"]["output_name"], "2")
+            self.assertEqual(manifest["objects"]["/World/plate_2"]["output_name"], "3")
+            self.assertEqual(manifest["unmatched_outputs"], ["0"])
+            self.assertEqual(manifest["unmatched_scene_paths"], [])
+
+    def test_build_real2sim_asset_manifest_prefers_explicit_assignment_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "scene_results"
+            objects_dir = output_dir / "objects"
+            usd_objects_dir = output_dir / "usd_objects"
+            objects_dir.mkdir(parents=True)
+            usd_objects_dir.mkdir(parents=True)
+
+            mesh = trimesh.creation.box(extents=[0.2, 0.2, 0.2])
+            for name in ("0", "1", "2"):
+                (objects_dir / f"{name}.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+                (usd_objects_dir / f"{name}.usd").write_text("#usda 1.0\n", encoding="utf-8")
+
+            (output_dir / "scene_merged.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+            (output_dir / "scene_merged_post.glb").write_bytes(trimesh.Scene(mesh).export(file_type="glb"))
+            (output_dir / "scene_merged_post.usd").write_text("#usda 1.0\n", encoding="utf-8")
+            (output_dir / "poses.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"scene_transform": np.eye(4).tolist(), "iou": 0.95},
+                        "1": {"scene_transform": np.eye(4).tolist(), "iou": 0.1},
+                        "2": {"scene_transform": np.eye(4).tolist(), "iou": 0.8},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "mask_metadata.json").write_text(
+                json.dumps(
+                    {
+                        "0": {"prompt": "table", "bbox_xyxy": [0, 0, 20, 20]},
+                        "1": {"prompt": "table", "bbox_xyxy": [0, 0, 10, 10]},
+                        "2": {"prompt": "cone", "bbox_xyxy": [0, 0, 8, 8]},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (output_dir / "assignment.json").write_text(
+                json.dumps(
+                    {
+                        "assignments": [
+                            {"scene_path": "/World/table_0", "output_name": "1", "mask_label": 2, "confidence": 0.9}
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            scene_graph = {
+                "obj": {
+                    "/World/table_0": {
+                        "id": 0,
+                        "class": "table",
+                        "caption": "wood table",
+                        "source": "real2sim",
+                    },
+                    "/World/cone_1": {
+                        "id": 1,
+                        "class": "cone",
+                        "caption": "yellow traffic cone",
+                        "source": "real2sim",
+                    },
+                },
+                "edges": {"obj-obj": [], "obj-wall": []},
+            }
+            scene_graph_path = root / "scene_graph.json"
+            scene_graph_path.write_text(json.dumps(scene_graph), encoding="utf-8")
+
+            _, manifest = build_real2sim_asset_manifest(output_dir, scene_graph_path=scene_graph_path)
+
+            self.assertEqual(manifest["objects"]["/World/table_0"]["output_name"], "1")
+            self.assertEqual(manifest["objects"]["/World/cone_1"]["output_name"], "2")
+            self.assertEqual(manifest["unmatched_outputs"], ["0"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,15 @@ from scipy.spatial.transform import Rotation
 
 from .manifest import (
     GLTF_TO_USD_UNIT_SCALE,
+    REAL2SIM_SOURCE,
     USD_TRANSFORM_CONVENTION,
+    _load_assignment_lookup,
+    _build_output_match_score_lookup,
+    _build_output_prompt_lookup,
+    _discover_mask_metadata,
+    _load_json,
+    _scene_objects_by_source,
+    _take_first_matching_output,
     gltf_scene_transform_to_usd_transform,
 )
 
@@ -438,25 +446,58 @@ def postprocess_real2sim_outputs(
             if isinstance(loaded, dict):
                 scene_graph_data = loaded
 
-    ordered_scene_paths = extract_scene_object_paths(scene_graph_data)
-    scene_path_to_output = {
-        scene_path_key: output_name
-        for scene_path_key, output_name in zip(ordered_scene_paths, object_names)
-    }
+    output_prompt_lookup: dict[str, str] = {}
+    output_score_lookup: dict[str, tuple[float, float]] = {}
+    assignment_lookup = _load_assignment_lookup(output_root)
+    mask_metadata_path = _discover_mask_metadata(output_root)
+    if mask_metadata_path is not None:
+        mask_metadata = _load_json(mask_metadata_path)
+        output_prompt_lookup = _build_output_prompt_lookup(mask_metadata)
+        output_score_lookup = _build_output_match_score_lookup(poses, mask_metadata)
+
+    ordered_scene_objects = _scene_objects_by_source(scene_graph_data, source=REAL2SIM_SOURCE)
+    scene_path_to_output: dict[str, str] = {}
+    if ordered_scene_objects:
+        remaining_output_names = list(object_names)
+        for scene_path_key, meta in ordered_scene_objects:
+            object_name = assignment_lookup.get(scene_path_key)
+            if object_name not in remaining_output_names:
+                object_name = _take_first_matching_output(
+                    remaining_output_names,
+                    target_class=meta.get("class") or meta.get("class_name"),
+                    output_prompt_lookup=output_prompt_lookup,
+                    output_score_lookup=output_score_lookup,
+                )
+            if object_name is None and remaining_output_names:
+                object_name = remaining_output_names[0]
+            if object_name is None:
+                continue
+            remaining_output_names.remove(object_name)
+            scene_path_to_output[scene_path_key] = object_name
+        processed_object_names = list(scene_path_to_output.values()) if scene_path_to_output else list(object_names)
+    else:
+        ordered_scene_paths = extract_scene_object_paths(scene_graph_data)
+        scene_path_to_output = {
+            scene_path_key: output_name
+            for scene_path_key, output_name in zip(ordered_scene_paths, object_names)
+        }
+        processed_object_names = list(object_names)
     support_pairs = [
         (scene_path_to_output[top], scene_path_to_output[base])
         for top, base in extract_support_pairs(scene_graph_data)
         if top in scene_path_to_output and base in scene_path_to_output
     ]
     supported_objects = {top for top, _ in support_pairs}
-    unsupported_root_objects = {object_name for object_name in object_names if object_name not in supported_objects}
+    unsupported_root_objects = {
+        object_name for object_name in processed_object_names if object_name not in supported_objects
+    }
 
     original_placements: dict[str, PlacementState] = {}
     placements: dict[str, PlacementState] = {}
     forced_upright_count = 0
     snapped_upright_count = 0
 
-    for object_name in object_names:
+    for object_name in processed_object_names:
         object_path = objects_dir / f"{object_name}.glb"
         mesh_scene = trimesh.load(object_path, force="scene")
         mesh = mesh_scene.to_geometry()
@@ -464,7 +505,7 @@ def postprocess_real2sim_outputs(
         original_placements[object_name] = original_placement
         placements[object_name] = copy_placement(original_placement)
 
-    for object_name in object_names:
+    for object_name in processed_object_names:
         placement = placements[object_name]
         if object_name not in supported_objects:
             upright_rotation = upright_rotation_from_current(placement.rotation)
@@ -490,7 +531,7 @@ def postprocess_real2sim_outputs(
     floating_adjustments = contact_alignment["floating_adjustments"]
 
     merged_scene = trimesh.Scene()
-    for object_name in object_names:
+    for object_name in processed_object_names:
         placement = placements[object_name]
         merged_scene.add_geometry(
             placement.mesh,
@@ -502,7 +543,7 @@ def postprocess_real2sim_outputs(
     scene_path.write_bytes(merged_scene.export(file_type="glb"))
     updated_poses = {
         object_name: _update_pose_entry(poses[object_name], placements[object_name])
-        for object_name in object_names
+        for object_name in processed_object_names
     }
     poses_path.write_text(
         json.dumps(updated_poses, indent=2, ensure_ascii=False),
@@ -512,7 +553,7 @@ def postprocess_real2sim_outputs(
     _copy_artifact(poses_path, post_poses_path, overwrite=True)
 
     return {
-        "objects": len(object_names),
+        "objects": len(processed_object_names),
         "support_pairs": len(support_pairs),
         "forced_upright": forced_upright_count,
         "snapped_upright": snapped_upright_count,
@@ -520,4 +561,5 @@ def postprocess_real2sim_outputs(
         "support_contact_adjustments": contact_alignment["contact_adjustments"],
         "penetration_adjustments": penetration_adjustments,
         "floating_adjustments": floating_adjustments,
+        "excluded_unmatched_outputs": max(0, len(object_names) - len(processed_object_names)),
     }

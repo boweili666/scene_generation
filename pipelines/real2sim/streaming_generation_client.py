@@ -15,12 +15,18 @@ import requests
 if __package__:
     from .manifest import MANIFEST_FILENAME, build_real2sim_asset_manifest
     from .postprocess import postprocess_real2sim_outputs
+    from .vlm_assignment import ASSIGNMENT_FILENAME, NUMBERED_MASK_OVERLAY_FILENAME, generate_vlm_mask_assignment
 else:
     import sys
 
     sys.path.append(str(Path(__file__).resolve().parents[2]))
     from pipelines.real2sim.manifest import MANIFEST_FILENAME, build_real2sim_asset_manifest
     from pipelines.real2sim.postprocess import postprocess_real2sim_outputs
+    from pipelines.real2sim.vlm_assignment import (
+        ASSIGNMENT_FILENAME,
+        NUMBERED_MASK_OVERLAY_FILENAME,
+        generate_vlm_mask_assignment,
+    )
 
 
 DEFAULT_PREDICT_STREAM_SERVER = os.environ.get("PREDICT_STREAM_SERVER", "http://iclspiderman.ri.cmu.edu:8000")
@@ -28,6 +34,7 @@ DEFAULT_IMAGE_PATH = Path("runtime/real2sim/masks/image.png")
 DEFAULT_MASK_DIR = Path("runtime/real2sim/masks")
 DEFAULT_SCENE_GRAPH = Path("runtime/scene_graph/current_scene_graph.json")
 DEFAULT_OUTPUT_DIR = Path("runtime/real2sim/scene_results")
+MASK_METADATA_FILENAME = "mask_metadata.json"
 
 
 def parse_bool(value: str) -> bool:
@@ -66,6 +73,18 @@ def collect_masks(mask_paths: Iterable[Path], mask_dir: Path | None) -> list[Pat
 
     unique.sort(key=sort_key)
     return unique
+
+
+def copy_mask_metadata(mask_dir: Path | None, output_dir: Path) -> None:
+    if mask_dir is None:
+        return
+    metadata_path = mask_dir / MASK_METADATA_FILENAME
+    if not metadata_path.exists() or not metadata_path.is_file():
+        return
+    (output_dir / MASK_METADATA_FILENAME).write_text(
+        metadata_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -155,6 +174,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=project_root / "pipelines" / "isaac" / "mesh_to_usd_converter.py",
         help="Path to the Isaac mesh-to-USD converter script.",
     )
+    parser.add_argument(
+        "--with-vlm-assignment",
+        type=parse_bool,
+        default=parse_bool(os.environ.get("REAL2SIM_WITH_VLM_ASSIGNMENT", "true")),
+        help="Render numbered masks and ask a VLM to align masks to scene-graph objects.",
+    )
+    parser.add_argument(
+        "--vlm-assignment-model",
+        default=os.environ.get("REAL2SIM_MASK_ASSIGNMENT_MODEL", ""),
+        help="Optional OpenAI model override for the mask-assignment VLM step.",
+    )
+    parser.add_argument(
+        "--vlm-assignment-strict",
+        type=parse_bool,
+        default=False,
+        help="If true, fail the run when the VLM assignment step errors instead of falling back.",
+    )
     return parser
 
 
@@ -214,7 +250,10 @@ def clear_previous_outputs(output_dir: Path) -> None:
                 object_usd.unlink()
 
     for artifact_name in (
+        MASK_METADATA_FILENAME,
+        ASSIGNMENT_FILENAME,
         MANIFEST_FILENAME,
+        NUMBERED_MASK_OVERLAY_FILENAME,
         "scene_merged.glb",
         "scene_merged_pre.glb",
         "scene_merged_post.glb",
@@ -441,6 +480,31 @@ def main() -> None:
                 f"[INFO] attempt={attempt} timeout=(connect={args.connect_timeout}, read={args.read_timeout})"
             )
             clear_previous_outputs(output_dir)
+            copy_mask_metadata(args.mask_dir, output_dir)
+            if args.with_vlm_assignment and args.scene_graph is not None:
+                try:
+                    assignment_path = generate_vlm_mask_assignment(
+                        args.image,
+                        mask_paths,
+                        args.scene_graph,
+                        output_dir,
+                        mask_metadata_path=output_dir / MASK_METADATA_FILENAME,
+                        model=args.vlm_assignment_model or None,
+                    )
+                    if assignment_path is not None:
+                        assignment = json.loads(assignment_path.read_text(encoding="utf-8"))
+                        print(
+                            "[PRE] VLM mask assignment:"
+                            f" assignments={len(assignment.get('assignments', []))}"
+                            f" unmatched_scene_paths={len(assignment.get('unmatched_scene_paths', []))}"
+                            f" unmatched_mask_labels={len(assignment.get('unmatched_mask_labels', []))}"
+                            f" overlay={assignment.get('overlay_image_path')}"
+                        )
+                        print(f"[PRE] assignment saved: {assignment_path}")
+                except Exception as exc:
+                    if args.vlm_assignment_strict:
+                        raise
+                    print(f"[WARN] VLM mask assignment skipped: {exc}")
             run_once(args, mask_paths, output_dir, url)
             summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=args.scene_graph)
             print(
