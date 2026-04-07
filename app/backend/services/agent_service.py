@@ -10,7 +10,7 @@ import requests
 
 from ..config import RUNTIME_DIR, SCENE_SERVICE_URL
 from .instruction_service import apply_instruction, create_scene_graph_from_input
-from .openai_service import read_json_file, route_agent_request
+from .openai_service import plan_agent_request, read_json_file
 from .pipeline_service import collect_scene_result_artifacts, start_real2sim_job
 from .runtime_context import RuntimeContext, create_session, resolve_runtime_context
 
@@ -339,6 +339,8 @@ def _question_payload(
     options: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     scene_endpoint: str | None = None,
+    planned_steps: list[dict[str, Any]] | None = None,
+    executed_steps: list[str] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "type": question_type,
@@ -349,6 +351,10 @@ def _question_payload(
         payload["run_id"] = run_id
     if scene_endpoint is not None:
         payload["scene_endpoint"] = scene_endpoint
+    if planned_steps:
+        payload["planned_steps"] = planned_steps
+    if executed_steps:
+        payload["executed_steps"] = executed_steps
     return payload
 
 
@@ -364,6 +370,7 @@ def _decision_payload(
     scene_endpoint: str | None = None,
     resample_mode: str | None = None,
     router: dict[str, Any] | None = None,
+    planned_steps: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "intent": intent,
@@ -376,6 +383,7 @@ def _decision_payload(
         "scene_endpoint": scene_endpoint,
         "resample_mode": resample_mode,
         "router": router or {},
+        "planned_steps": planned_steps or [],
     }
 
 
@@ -515,6 +523,56 @@ def _map_agent_route_intent(intent: str | None) -> str | None:
     return None
 
 
+def _normalize_planned_steps(planner: dict[str, Any] | None, fallback_instruction: str) -> list[dict[str, Any]]:
+    if not isinstance(planner, dict):
+        return []
+
+    steps = planner.get("steps")
+    if not isinstance(steps, list):
+        return []
+
+    normalized_steps: list[dict[str, Any]] = []
+    for raw_step in steps[:3]:
+        if not isinstance(raw_step, dict):
+            continue
+        intent = _map_agent_route_intent(raw_step.get("intent"))
+        if intent is None:
+            continue
+        instruction = _normalize_text(raw_step.get("instruction")) or None
+        if intent in {STATE_CREATE_SCENE_GRAPH, STATE_EDIT_SCENE_GRAPH} and instruction is None:
+            instruction = fallback_instruction or None
+        normalized_steps.append(
+            {
+                "intent": intent,
+                "instruction": instruction,
+                "scene_endpoint": _normalize_scene_endpoint_value(raw_step.get("scene_endpoint")),
+                "resample_mode": _normalize_resample_mode_value(raw_step.get("resample_mode")),
+            }
+        )
+    return normalized_steps
+
+
+def _summarize_plan_steps(planned_steps: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    for step in planned_steps:
+        if not isinstance(step, dict):
+            continue
+        intent = str(step.get("intent") or "")
+        if intent == STATE_GENERATE_SCENE:
+            endpoint = _normalize_scene_endpoint_value(step.get("scene_endpoint"))
+            mode = _normalize_resample_mode_value(step.get("resample_mode"))
+            suffix = []
+            if endpoint:
+                suffix.append(endpoint)
+            if mode:
+                suffix.append(mode)
+            if suffix:
+                labels.append(f"{intent}({', '.join(suffix)})")
+                continue
+        labels.append(intent)
+    return " -> ".join(label for label in labels if label)
+
+
 def _decide_request(
     text: str,
     *,
@@ -559,7 +617,7 @@ def _decide_request(
         )
 
     try:
-        router = route_agent_request(
+        planner = plan_agent_request(
             normalized,
             scene_graph=scene_graph,
             has_uploaded_image=has_uploaded_image,
@@ -572,20 +630,18 @@ def _decide_request(
             has_saved_image=has_saved_image,
         )
 
-    route_intent = _map_agent_route_intent(router.get("intent"))
-    confidence = float(router.get("confidence") or 0.0)
-    scene_endpoint = _normalize_scene_endpoint_value(router.get("scene_endpoint"))
-    routed_resample_mode = _normalize_resample_mode_value(router.get("resample_mode"))
-    clarification_focus = _normalize_text(router.get("clarification_focus")).lower() or "intent"
-    route_reason = str(router.get("reason") or "The top-level router did not provide a reason.")
+    planned_steps = _normalize_planned_steps(planner, normalized)
+    confidence = float(planner.get("confidence") or 0.0)
+    clarification_focus = _normalize_text(planner.get("clarification_focus")).lower() or "intent"
+    route_reason = str(planner.get("reason") or "The top-level planner did not provide a reason.")
 
-    if route_intent is None or router.get("intent") == "clarification":
+    if not planned_steps:
         return _build_top_level_clarification(
             reason=route_reason,
             scene_graph=scene_graph,
             has_saved_image=has_saved_image,
             suggested_focus=clarification_focus,
-            router=router,
+            router=planner,
         )
 
     if confidence < TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD:
@@ -594,16 +650,18 @@ def _decide_request(
             scene_graph=scene_graph,
             has_saved_image=has_saved_image,
             suggested_focus=clarification_focus,
-            router=router,
+            router=planner,
         )
 
+    first_step = planned_steps[0]
     return _decision_payload(
-        intent=route_intent,
-        state=route_intent,
+        intent=str(first_step.get("intent") or STATE_UNDERSTAND_REQUEST),
+        state=str(first_step.get("intent") or STATE_UNDERSTAND_REQUEST),
         reason=route_reason,
-        scene_endpoint=scene_endpoint,
-        resample_mode=routed_resample_mode,
-        router=router,
+        scene_endpoint=_normalize_scene_endpoint_value(first_step.get("scene_endpoint")),
+        resample_mode=_normalize_resample_mode_value(first_step.get("resample_mode")),
+        router=planner,
+        planned_steps=planned_steps,
     )
 
 
@@ -1019,6 +1077,7 @@ def _graph_response_payload(
     reason: str,
     decision: dict[str, Any],
     session_state: dict[str, Any] | None = None,
+    **extra: Any,
 ) -> dict[str, Any]:
     return _build_agent_response(
         context,
@@ -1032,6 +1091,7 @@ def _graph_response_payload(
         scene_graph=result.get("scene_graph"),
         placements=result.get("placements"),
         warnings=result.get("warnings") or [],
+        **extra,
     )
 
 
@@ -1046,6 +1106,7 @@ def _clarification_response(
     decision: dict[str, Any],
     pending_question: dict[str, Any],
     session_state: dict[str, Any] | None = None,
+    **extra: Any,
 ) -> dict[str, Any]:
     return _build_agent_response(
         context,
@@ -1059,6 +1120,7 @@ def _clarification_response(
         pending_question=pending_question,
         outcome="needs_user_input",
         session_state=session_state,
+        **extra,
     )
 
 
@@ -1225,6 +1287,350 @@ def _run_scene_service_with_repair(
             return result, warnings
 
 
+def _execute_planned_steps(
+    context: RuntimeContext,
+    state: dict[str, Any],
+    *,
+    decision: dict[str, Any],
+    planned_steps: list[dict[str, Any]],
+    normalized_text: str,
+    class_names_raw: str,
+    image_bytes: bytes | None,
+    scene_service_url: str,
+) -> dict[str, Any]:
+    executed_steps: list[str] = []
+    latest_graph_result: dict[str, Any] | None = None
+    latest_scene_graph = _load_scene_graph(context.scene_graph_path)
+    plan_payload = {"steps": planned_steps, "executed_steps": executed_steps}
+    plan_summary = _summarize_plan_steps(planned_steps)
+    plan_reason = decision["reason"] if not plan_summary else f"{decision['reason']} Planned sequence: {plan_summary}."
+
+    for step in planned_steps:
+        intent = str(step.get("intent") or "")
+        instruction = _normalize_text(step.get("instruction")) or normalized_text
+
+        if intent == STATE_CREATE_SCENE_GRAPH:
+            result = create_scene_graph_from_input(
+                instruction,
+                class_names_raw=class_names_raw,
+                image_bytes=image_bytes,
+                scene_graph_path=context.scene_graph_path,
+                placements_path=context.default_placements_path,
+                latest_input_image_path=context.latest_input_image,
+                reuse_saved_image=image_bytes is None,
+            )
+            latest_graph_result = result if isinstance(result, dict) else None
+            latest_scene_graph = result.get("scene_graph") if isinstance(result, dict) else latest_scene_graph
+            if not isinstance(latest_scene_graph, dict):
+                latest_scene_graph = _load_scene_graph(context.scene_graph_path)
+            executed_steps.append(STATE_CREATE_SCENE_GRAPH)
+            plan_payload["executed_steps"] = list(executed_steps)
+
+            if step is not planned_steps[-1]:
+                _append_agent_history(state, "assistant", str(result.get("assistant_message") or "Scene graph created."))
+                continue
+
+            state["pending_question"] = None
+            _append_agent_history(state, "assistant", str(result.get("assistant_message") or "Scene graph created."))
+            _set_current_state(
+                state,
+                STATE_COMPLETED,
+                last_intent=STATE_CREATE_SCENE_GRAPH,
+                last_completed_state=STATE_CREATE_SCENE_GRAPH,
+                last_decision=decision,
+            )
+            _save_agent_state(context, state)
+            return _graph_response_payload(
+                context,
+                result,
+                completed_state=STATE_CREATE_SCENE_GRAPH,
+                reason=plan_reason,
+                decision=decision,
+                session_state=_session_state_snapshot(state, context),
+                plan=plan_payload,
+            )
+
+        if intent == STATE_EDIT_SCENE_GRAPH:
+            result = apply_instruction(
+                instruction,
+                class_names_raw=class_names_raw,
+                image_bytes=image_bytes,
+                scene_graph_path=context.scene_graph_path,
+                placements_path=context.default_placements_path,
+                latest_input_image_path=context.latest_input_image,
+                render_path=context.render_path,
+            )
+            latest_graph_result = result if isinstance(result, dict) else None
+            latest_scene_graph = result.get("scene_graph") if isinstance(result, dict) else latest_scene_graph
+            if not isinstance(latest_scene_graph, dict):
+                latest_scene_graph = _load_scene_graph(context.scene_graph_path)
+            executed_steps.append(STATE_EDIT_SCENE_GRAPH)
+            plan_payload["executed_steps"] = list(executed_steps)
+
+            if step is not planned_steps[-1]:
+                _append_agent_history(state, "assistant", str(result.get("assistant_message") or "Scene graph updated."))
+                continue
+
+            state["pending_question"] = None
+            _append_agent_history(state, "assistant", str(result.get("assistant_message") or "Scene graph updated."))
+            _set_current_state(
+                state,
+                STATE_COMPLETED,
+                last_intent=STATE_EDIT_SCENE_GRAPH,
+                last_completed_state=STATE_EDIT_SCENE_GRAPH,
+                last_decision=decision,
+            )
+            _save_agent_state(context, state)
+            return _graph_response_payload(
+                context,
+                result,
+                completed_state=STATE_EDIT_SCENE_GRAPH,
+                reason=plan_reason,
+                decision=decision,
+                session_state=_session_state_snapshot(state, context),
+                plan=plan_payload,
+            )
+
+        if intent == STATE_RUN_REAL2SIM:
+            current_graph = latest_scene_graph if isinstance(latest_scene_graph, dict) else _load_scene_graph(context.scene_graph_path)
+            if current_graph is None:
+                question = (
+                    "I need a scene graph before Real2Sim. "
+                    "Should I create one from the current image first?"
+                    if context.latest_input_image.exists() or image_bytes is not None
+                    else "I need a scene graph before Real2Sim. Upload a reference image or describe the scene first."
+                )
+                options = _bootstrap_scene_graph_options(
+                    from_saved_image=context.latest_input_image.exists() or image_bytes is not None
+                )
+                pending_question = _question_payload(
+                    "real2sim_bootstrap",
+                    question,
+                    options=options,
+                    run_id=context.run_id,
+                    planned_steps=planned_steps,
+                    executed_steps=executed_steps,
+                )
+                state["pending_question"] = pending_question
+                _append_agent_history(state, "assistant", question)
+                clarification_decision = _decision_payload(
+                    intent=STATE_RUN_REAL2SIM,
+                    state=STATE_NEEDS_CLARIFICATION,
+                    reason="Real2Sim requires an existing scene graph in the current run.",
+                    requires_clarification=True,
+                    question=question,
+                    options=options,
+                    planned_steps=planned_steps,
+                )
+                _set_current_state(
+                    state,
+                    STATE_NEEDS_CLARIFICATION,
+                    last_intent=STATE_RUN_REAL2SIM,
+                    last_decision=clarification_decision,
+                )
+                _save_agent_state(context, state)
+                return _clarification_response(
+                    context,
+                    state=STATE_NEEDS_CLARIFICATION,
+                    intent=STATE_RUN_REAL2SIM,
+                    message="I need a scene graph before Real2Sim.",
+                    question=question,
+                    reason=clarification_decision["reason"],
+                    decision=clarification_decision,
+                    pending_question=pending_question,
+                    session_state=_session_state_snapshot(state, context),
+                    plan=plan_payload,
+                )
+
+            payload = {
+                "session_id": context.session_id,
+                "run_id": context.run_id,
+                "image_path": str(context.latest_input_image),
+                "scene_graph_path": str(context.scene_graph_path),
+                "log_path": str(context.real2sim_log_path),
+                "real2sim_root_dir": str(context.run_root),
+                "mask_output": str(context.real2sim_masks_dir),
+                "mesh_output_dir": str(context.real2sim_meshes_dir),
+                "reuse_mesh_dir": str(context.real2sim_meshes_dir),
+                "scene_results_dir": str(context.real2sim_scene_results_dir),
+            }
+            job = start_real2sim_job(payload)
+            _record_real2sim_state(
+                state,
+                context,
+                status="running",
+                job_id=str(job.get("job_id") or ""),
+                artifacts=_collect_real2sim_artifacts_for_context(context),
+                log_path=str(job.get("log_path") or context.real2sim_log_path),
+                log_start_offset=int(job.get("log_start_offset") or 0),
+            )
+            executed_steps.append(STATE_RUN_REAL2SIM)
+            plan_payload["executed_steps"] = list(executed_steps)
+            state["pending_question"] = None
+            _append_agent_history(state, "assistant", f"Started Real2Sim job {job['job_id']}.")
+            _set_current_state(state, STATE_RUN_REAL2SIM, last_intent=STATE_RUN_REAL2SIM, last_decision=decision)
+            _save_agent_state(context, state)
+            return _build_agent_response(
+                context,
+                state=STATE_RUN_REAL2SIM,
+                intent=STATE_RUN_REAL2SIM,
+                message="Started Real2Sim for the current run.",
+                reason=plan_reason,
+                decision=decision,
+                outcome="started_job",
+                session_state=_session_state_snapshot(state, context),
+                real2sim_job=job,
+                plan=plan_payload,
+            )
+
+        if intent == STATE_GENERATE_SCENE:
+            current_graph = latest_scene_graph if isinstance(latest_scene_graph, dict) else _load_scene_graph(context.scene_graph_path)
+            if current_graph is None and isinstance(latest_graph_result, dict):
+                current_graph = latest_graph_result.get("scene_graph")
+            if current_graph is None:
+                question = (
+                    "I need a scene graph before generating the scene. "
+                    "Should I create one from the current image first?"
+                    if context.latest_input_image.exists() or image_bytes is not None
+                    else "I need a scene graph before generating the scene. Upload a reference image or describe the scene first."
+                )
+                options = _bootstrap_scene_graph_options(
+                    from_saved_image=context.latest_input_image.exists() or image_bytes is not None
+                )
+                pending_question = _question_payload(
+                    "scene_bootstrap",
+                    question,
+                    options=options,
+                    run_id=context.run_id,
+                    planned_steps=planned_steps,
+                    executed_steps=executed_steps,
+                )
+                state["pending_question"] = pending_question
+                _append_agent_history(state, "assistant", question)
+                clarification_decision = _decision_payload(
+                    intent=STATE_GENERATE_SCENE,
+                    state=STATE_NEEDS_CLARIFICATION,
+                    reason="Scene generation requires an existing scene graph in the current run.",
+                    requires_clarification=True,
+                    question=question,
+                    options=options,
+                    planned_steps=planned_steps,
+                )
+                _set_current_state(
+                    state,
+                    STATE_NEEDS_CLARIFICATION,
+                    last_intent=STATE_GENERATE_SCENE,
+                    last_decision=clarification_decision,
+                )
+                _save_agent_state(context, state)
+                return _clarification_response(
+                    context,
+                    state=STATE_NEEDS_CLARIFICATION,
+                    intent=STATE_GENERATE_SCENE,
+                    message="I need a scene graph before generating the scene.",
+                    question=question,
+                    reason=clarification_decision["reason"],
+                    decision=clarification_decision,
+                    pending_question=pending_question,
+                    session_state=_session_state_snapshot(state, context),
+                    plan=plan_payload,
+                )
+
+            resolved_endpoint = _normalize_scene_endpoint_value(step.get("scene_endpoint")) or _resolve_scene_endpoint(None, None)
+            strategy = _normalize_resample_mode_value(step.get("resample_mode"))
+            if _has_real2sim_objects(current_graph) and strategy is None:
+                question = (
+                    "This scene contains real2sim objects. Choose a layout strategy: "
+                    "`joint` to resample everything, or `lock_real2sim` to keep observed support chains rigid."
+                )
+                options = _layout_strategy_options()
+                pending_question = _question_payload(
+                    "layout_strategy",
+                    question,
+                    options=options,
+                    run_id=context.run_id,
+                    scene_endpoint=resolved_endpoint,
+                    planned_steps=planned_steps,
+                    executed_steps=executed_steps,
+                )
+                layout_decision = _decision_payload(
+                    intent=STATE_GENERATE_SCENE,
+                    state=STATE_AWAIT_LAYOUT_STRATEGY,
+                    reason="Scene generation needs an explicit layout strategy because the current graph includes real2sim objects.",
+                    requires_clarification=True,
+                    question=question,
+                    options=options,
+                    planned_steps=planned_steps,
+                )
+                state["pending_question"] = pending_question
+                _append_agent_history(state, "assistant", question)
+                _set_current_state(
+                    state,
+                    STATE_AWAIT_LAYOUT_STRATEGY,
+                    last_intent=STATE_GENERATE_SCENE,
+                    last_decision=layout_decision,
+                )
+                _save_agent_state(context, state)
+                return _clarification_response(
+                    context,
+                    state=STATE_AWAIT_LAYOUT_STRATEGY,
+                    intent=STATE_GENERATE_SCENE,
+                    message="I need a layout strategy before generating the scene.",
+                    question=question,
+                    reason=layout_decision["reason"],
+                    decision=layout_decision,
+                    pending_question=pending_question,
+                    session_state=_session_state_snapshot(state, context),
+                    plan=plan_payload,
+                )
+
+            strategy = strategy or "joint"
+            result, repair_warnings = _run_scene_service_with_repair(
+                context,
+                scene_endpoint=resolved_endpoint,
+                resample_mode=strategy,
+                scene_service_url=scene_service_url,
+                scene_graph=current_graph,
+            )
+            repair_warnings.extend(_load_manifest_warnings(context))
+            normalized_result = _record_scene_generation_state(
+                state,
+                context,
+                scene_result=result,
+                scene_endpoint=resolved_endpoint,
+                resample_mode=strategy,
+            )
+            effective_strategy = str(normalized_result.get("resample_mode") or strategy)
+            executed_steps.append(STATE_GENERATE_SCENE)
+            plan_payload["executed_steps"] = list(executed_steps)
+            state["pending_question"] = None
+            state["last_layout_strategy"] = effective_strategy
+            _append_agent_history(state, "assistant", f"Generated scene with strategy {effective_strategy}.")
+            _set_current_state(
+                state,
+                STATE_COMPLETED,
+                last_intent=STATE_GENERATE_SCENE,
+                last_completed_state=STATE_GENERATE_SCENE,
+                last_decision=decision,
+            )
+            _save_agent_state(context, state)
+            return _build_agent_response(
+                context,
+                state=STATE_COMPLETED,
+                intent=STATE_GENERATE_SCENE,
+                message=f"Scene generated with layout strategy '{effective_strategy}'.",
+                reason=plan_reason,
+                decision=decision,
+                completed_state=STATE_GENERATE_SCENE,
+                session_state=_session_state_snapshot(state, context),
+                scene_result=normalized_result,
+                warnings=repair_warnings,
+                plan=plan_payload,
+            )
+
+    raise ValueError(f"Unsupported planned steps: {planned_steps}")
+
+
 def _continue_pending_question(
     context: RuntimeContext,
     state: dict[str, Any],
@@ -1249,6 +1655,8 @@ def _continue_pending_question(
         return None
 
     strategy = resample_mode or _parse_layout_strategy(text)
+    planned_steps = pending.get("planned_steps") if isinstance(pending.get("planned_steps"), list) else []
+    executed_steps = list(pending.get("executed_steps") or [])
     decision = _decision_payload(
         intent=STATE_GENERATE_SCENE,
         state=STATE_AWAIT_LAYOUT_STRATEGY,
@@ -1256,6 +1664,7 @@ def _continue_pending_question(
         requires_clarification=True,
         question=str(pending.get("question") or ""),
         options=pending.get("options") or _layout_strategy_options(),
+        planned_steps=planned_steps,
     )
     if strategy is None:
         question = str(pending.get("question") or "Choose a layout strategy: joint or lock_real2sim.")
@@ -1273,6 +1682,7 @@ def _continue_pending_question(
             decision=decision,
             pending_question=pending,
             session_state=_session_state_snapshot(state, context),
+            plan={"steps": planned_steps, "executed_steps": executed_steps},
         )
 
     scene_endpoint = str(pending.get("scene_endpoint") or "scene_new")
@@ -1303,6 +1713,8 @@ def _continue_pending_question(
         last_decision=decision,
     )
     _save_agent_state(context, state)
+    if planned_steps:
+        executed_steps.append(STATE_GENERATE_SCENE)
     return _build_agent_response(
         context,
         state=STATE_COMPLETED,
@@ -1314,6 +1726,7 @@ def _continue_pending_question(
         session_state=_session_state_snapshot(state, context),
         scene_result=normalized_result,
         warnings=repair_warnings,
+        plan={"steps": planned_steps, "executed_steps": executed_steps},
     )
 
 
@@ -1372,6 +1785,18 @@ def handle_agent_message(
         last_decision=decision,
     )
     _save_agent_state(context, state)
+
+    if decision["planned_steps"]:
+        return _execute_planned_steps(
+            context,
+            state,
+            decision=decision,
+            planned_steps=decision["planned_steps"],
+            normalized_text=normalized_text,
+            class_names_raw=class_names_raw,
+            image_bytes=image_bytes,
+            scene_service_url=scene_service_url or SCENE_SERVICE_URL,
+        )
 
     if decision["requires_clarification"]:
         question = str(decision["question"] or "I need more information before continuing.")

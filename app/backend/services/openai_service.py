@@ -286,6 +286,48 @@ AGENT_ROUTER_SCHEMA = {
     "additionalProperties": False,
 }
 
+AGENT_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "enum": [
+                            "create_scene_graph",
+                            "edit_scene_graph",
+                            "run_real2sim",
+                            "generate_scene",
+                        ],
+                    },
+                    "instruction": {"type": ["string", "null"]},
+                    "scene_endpoint": {
+                        "type": ["string", "null"],
+                        "enum": ["scene", "scene_new", None],
+                    },
+                    "resample_mode": {
+                        "type": ["string", "null"],
+                        "enum": ["joint", "lock_real2sim", None],
+                    },
+                },
+                "required": ["intent", "instruction", "scene_endpoint", "resample_mode"],
+                "additionalProperties": False,
+            },
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string"},
+        "clarification_focus": {
+            "type": "string",
+            "enum": ["none", "intent", "graph_mode"],
+        },
+    },
+    "required": ["steps", "confidence", "reason", "clarification_focus"],
+    "additionalProperties": False,
+}
+
 PLACEMENT_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -417,6 +459,43 @@ Rules:
 - If the request is too vague or could plausibly mean several top-level pipelines, return clarification with clarification_focus=intent.
 - Do not use clarification only because scene generation omitted the layout strategy. In that case, return generate_scene with resample_mode=null so the app can ask a follow-up question.
 - Do not use clarification only because Real2Sim or scene generation would need a scene graph first. The app can handle that follow-up.
+
+Return JSON only.
+""".strip()
+
+AGENT_PLANNER_PROMPT = """
+You are the top-level planner for a 3D scene application.
+
+Return a short execution plan with at most 3 steps.
+
+Available step intents:
+- create_scene_graph: create or replace the scene graph from a fresh description or reference image
+- edit_scene_graph: modify the existing scene graph or placements
+- run_real2sim: run the observed-object extraction / reconstruction pipeline from the current image and graph
+- generate_scene: call the scene generation service to preview or build the scene layout
+
+Per-step fields:
+- instruction: only use for create_scene_graph or edit_scene_graph when the app should pass a text instruction into that step
+- scene_endpoint:
+  - scene = preserve the current layout as much as possible
+  - scene_new = generate a fresh scene preview / resample
+- resample_mode:
+  - joint = resample freely
+  - lock_real2sim = keep observed Real2Sim support chains rigid while placing the rest
+
+Planning rules:
+- Prefer a single step unless the request clearly asks for a sequence such as "edit then generate".
+- Use multiple steps when the user clearly wants an edit followed immediately by preview/generation.
+- Put generate_scene after any create/edit step it depends on.
+- Route to run_real2sim when the user asks to reconstruct observed objects, segment masks, run Real2Sim, or review mask assignments from the current image.
+- Route to create_scene_graph when the user is describing a new scene or providing a reference image to build a graph.
+- Route to edit_scene_graph when the user is modifying the current graph, relations, or placements.
+- Use generate_scene when the user asks to preview, build, lay out, resample, or render the scene.
+- If a scene graph already exists and the user gives a fresh room description without clearly saying whether to replace or edit it, return no steps and clarification_focus=graph_mode.
+- If the request is too vague or could plausibly mean several top-level pipelines, return no steps and clarification_focus=intent.
+- Do not add a clarification step. Clarification is represented by an empty `steps` array.
+- Do not use empty `steps` only because scene generation omitted the layout strategy. In that case include generate_scene with resample_mode=null.
+- Do not use empty `steps` only because Real2Sim or scene generation would need a scene graph first. The app can ask that follow-up.
 
 Return JSON only.
 """.strip()
@@ -695,6 +774,46 @@ def route_agent_request(
         text=_json_schema_format("agent_route", AGENT_ROUTER_SCHEMA),
     )
     return _parse_output_json(response, "agent routing")
+
+
+def plan_agent_request(
+    instruction: str,
+    *,
+    scene_graph: Dict[str, Any] | None,
+    has_uploaded_image: bool,
+    has_saved_image: bool,
+) -> Dict[str, Any]:
+    objects = []
+    if isinstance(scene_graph, dict):
+        objects = _scene_graph_prompt_payload(scene_graph).get("objects", [])
+    prompt = "\n\n".join(
+        [
+            AGENT_PLANNER_PROMPT,
+            "Current runtime context:",
+            json.dumps(
+                {
+                    "has_scene_graph": isinstance(scene_graph, dict),
+                    "has_real2sim_objects": any(
+                        isinstance(meta, dict) and str(meta.get("source") or "").strip().lower() == "real2sim"
+                        for meta in (scene_graph or {}).get("obj", {}).values()
+                    ),
+                    "has_uploaded_image": bool(has_uploaded_image),
+                    "has_saved_image": bool(has_saved_image),
+                    "current_scene_objects": objects[:40],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            f'User instruction: "{instruction.strip()}"',
+            "Return JSON only.",
+        ]
+    )
+    response = _get_openai_client().responses.create(
+        model=AGENT_ROUTER_MODEL,
+        input=prompt,
+        text=_json_schema_format("agent_plan", AGENT_PLAN_SCHEMA),
+    )
+    return _parse_output_json(response, "agent planning")
 
 
 def assign_real2sim_masks_with_images(
