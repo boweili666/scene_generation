@@ -286,6 +286,50 @@ AGENT_ROUTER_SCHEMA = {
     "additionalProperties": False,
 }
 
+AGENT_REACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "create_scene_graph",
+                "edit_scene_graph",
+                "run_real2sim",
+                "generate_scene",
+                "ask_clarification",
+                "finish",
+            ],
+        },
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reason": {"type": "string"},
+        "instruction": {"type": ["string", "null"]},
+        "scene_endpoint": {
+            "type": ["string", "null"],
+            "enum": ["scene", "scene_new", None],
+        },
+        "resample_mode": {
+            "type": ["string", "null"],
+            "enum": ["joint", "lock_real2sim", None],
+        },
+        "question": {"type": ["string", "null"]},
+        "clarification_kind": {
+            "type": "string",
+            "enum": ["none", "intent", "graph_mode", "layout_strategy"],
+        },
+    },
+    "required": [
+        "action",
+        "confidence",
+        "reason",
+        "instruction",
+        "scene_endpoint",
+        "resample_mode",
+        "question",
+        "clarification_kind",
+    ],
+    "additionalProperties": False,
+}
+
 PLACEMENT_UPDATE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -417,6 +461,32 @@ Rules:
 - If the request is too vague or could plausibly mean several top-level pipelines, return clarification with clarification_focus=intent.
 - Do not use clarification only because scene generation omitted the layout strategy. In that case, return generate_scene with resample_mode=null so the app can ask a follow-up question.
 - Do not use clarification only because Real2Sim or scene generation would need a scene graph first. The app can handle that follow-up.
+
+Return JSON only.
+""".strip()
+
+AGENT_REACT_PROMPT = """
+You are the reasoning loop for a 3D scene application.
+
+Choose exactly one next action:
+- create_scene_graph
+- edit_scene_graph
+- run_real2sim
+- generate_scene
+- ask_clarification
+- finish
+
+Rules:
+- Think step-by-step over the current goal and the observation history, but return only the JSON action.
+- Use create_scene_graph when the user first needs a graph.
+- Use edit_scene_graph when the user wants to modify the current graph or placements.
+- Use generate_scene when the user wants a preview, layout, or resample.
+- Use run_real2sim when the user wants the reconstruction / segmentation pipeline.
+- Use ask_clarification when the latest observation says you are blocked on ambiguity or an explicit user choice.
+- If the job is already satisfied, use finish.
+- After a blocked observation about missing scene graph, either create_scene_graph or ask_clarification.
+- After a blocked observation about missing layout strategy, usually ask_clarification with clarification_kind=layout_strategy.
+- Treat run_real2sim and successful generate_scene as terminal for this turn; do not plan extra work after them.
 
 Return JSON only.
 """.strip()
@@ -695,6 +765,49 @@ def route_agent_request(
         text=_json_schema_format("agent_route", AGENT_ROUTER_SCHEMA),
     )
     return _parse_output_json(response, "agent routing")
+
+
+def react_agent_step(
+    instruction: str,
+    *,
+    scene_graph: Dict[str, Any] | None,
+    has_uploaded_image: bool,
+    has_saved_image: bool,
+    trace: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    objects = []
+    if isinstance(scene_graph, dict):
+        objects = _scene_graph_prompt_payload(scene_graph).get("objects", [])
+    prompt = "\n\n".join(
+        [
+            AGENT_REACT_PROMPT,
+            "Current runtime context:",
+            json.dumps(
+                {
+                    "has_scene_graph": isinstance(scene_graph, dict),
+                    "has_real2sim_objects": any(
+                        isinstance(meta, dict) and str(meta.get("source") or "").strip().lower() == "real2sim"
+                        for meta in (scene_graph or {}).get("obj", {}).values()
+                    ),
+                    "has_uploaded_image": bool(has_uploaded_image),
+                    "has_saved_image": bool(has_saved_image),
+                    "current_scene_objects": objects[:40],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            f'User goal: "{instruction.strip()}"',
+            "Observation trace:",
+            json.dumps(trace[-8:], ensure_ascii=False, indent=2),
+            "Return JSON only.",
+        ]
+    )
+    response = _get_openai_client().responses.create(
+        model=AGENT_ROUTER_MODEL,
+        input=prompt,
+        text=_json_schema_format("agent_react_step", AGENT_REACT_SCHEMA),
+    )
+    return _parse_output_json(response, "agent react step")
 
 
 def assign_real2sim_masks_with_images(

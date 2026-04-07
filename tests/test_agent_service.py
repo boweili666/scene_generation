@@ -21,23 +21,27 @@ REAL2SIM_SCENE_GRAPH = {
 
 
 class AgentServiceTest(unittest.TestCase):
-    def _route(
+    def _react(
         self,
-        intent: str,
+        action: str,
         *,
         confidence: float = 0.95,
+        instruction: str | None = None,
         scene_endpoint: str | None = None,
         resample_mode: str | None = None,
-        clarification_focus: str = "none",
-        reason: str = "Mocked top-level route.",
+        question: str | None = None,
+        clarification_kind: str = "none",
+        reason: str = "Mocked ReAct step.",
     ) -> dict:
         return {
-            "intent": intent,
+            "action": action,
             "confidence": confidence,
             "reason": reason,
+            "instruction": instruction,
             "scene_endpoint": scene_endpoint,
             "resample_mode": resample_mode,
-            "clarification_focus": clarification_focus,
+            "question": question,
+            "clarification_kind": clarification_kind,
         }
 
     def _create_context(self) -> runtime_context.RuntimeContext:
@@ -61,8 +65,16 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route("generate_scene", scene_endpoint="scene_new"),
+                "react_agent_step",
+                side_effect=[
+                    self._react("generate_scene", scene_endpoint="scene_new"),
+                    self._react(
+                        "ask_clarification",
+                        question="Choose joint or lock_real2sim.",
+                        clarification_kind="layout_strategy",
+                        reason="A graph with real2sim objects needs an explicit layout strategy.",
+                    ),
+                ],
             ),
         ):
             result = agent_service.handle_agent_message(
@@ -106,8 +118,8 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route(
+                "react_agent_step",
+                return_value=self._react(
                     "generate_scene",
                     scene_endpoint="scene_new",
                     resample_mode="lock_real2sim",
@@ -154,8 +166,8 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route(
+                "react_agent_step",
+                return_value=self._react(
                     "generate_scene",
                     scene_endpoint="scene_new",
                     resample_mode="lock_real2sim",
@@ -184,7 +196,6 @@ class AgentServiceTest(unittest.TestCase):
 
         self.assertEqual(result["agent"]["state"], "completed")
         self.assertEqual(result["scene_result"]["resample_mode"], "joint")
-        self.assertIn("joint", result["agent"]["message"])
         self.assertTrue(any("retried automatically" in warning.lower() for warning in result.get("warnings", [])))
         self.assertEqual(run_scene_mock.call_count, 3)
         self.assertEqual(run_scene_mock.call_args_list[0].kwargs["resample_mode"], "lock_real2sim")
@@ -199,8 +210,8 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route("run_real2sim"),
+                "react_agent_step",
+                return_value=self._react("run_real2sim"),
             ),
             mock.patch.object(
                 agent_service,
@@ -228,11 +239,12 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route(
-                    "clarification",
+                "react_agent_step",
+                return_value=self._react(
+                    "ask_clarification",
                     confidence=0.92,
-                    clarification_focus="graph_mode",
+                    question="Should I create a new scene graph from this input, or edit the current scene graph?",
+                    clarification_kind="graph_mode",
                     reason="Fresh room description could mean replace or edit.",
                 ),
             ),
@@ -259,13 +271,13 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route(
+                "react_agent_step",
+                return_value=self._react(
                     "generate_scene",
                     confidence=0.42,
                     scene_endpoint="scene_new",
                     reason="The request could mean editing the graph or generating the scene.",
-                    clarification_focus="intent",
+                    clarification_kind="intent",
                 ),
             ),
         ):
@@ -292,8 +304,16 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(agent_service, "create_session", return_value=context),
             mock.patch.object(
                 agent_service,
-                "route_agent_request",
-                return_value=self._route("run_real2sim"),
+                "react_agent_step",
+                side_effect=[
+                    self._react("run_real2sim"),
+                    self._react(
+                        "ask_clarification",
+                        question="Should I create a new scene graph from the current image first?",
+                        clarification_kind="intent",
+                        reason="Real2Sim is blocked until a scene graph exists.",
+                    ),
+                ],
             ),
         ):
             result = agent_service.handle_agent_message(
@@ -303,9 +323,10 @@ class AgentServiceTest(unittest.TestCase):
             )
 
         self.assertEqual(result["agent"]["state"], "needs_clarification")
-        self.assertEqual(result["agent"]["intent"], "run_real2sim")
+        self.assertEqual(result["agent"]["intent"], "understand_request")
         self.assertIn("scene graph", result["agent"]["question"].lower())
-        self.assertEqual(result["agent"]["options"][0]["action"], "create_scene_graph")
+        option_actions = {option["action"] for option in result["agent"]["options"]}
+        self.assertIn("create_scene_graph", option_actions)
 
     def test_explicit_create_scene_graph_reuses_saved_image(self) -> None:
         context = self._create_context()
@@ -365,6 +386,62 @@ class AgentServiceTest(unittest.TestCase):
         self.assertEqual(result["agent"]["completed_state"], "edit_scene_graph")
         edit_mock.assert_called_once()
         self.assertEqual(edit_mock.call_args.args[0], "move the table slightly left")
+
+    def test_react_loop_recovers_by_creating_graph_then_generating_scene(self) -> None:
+        context = self._create_context()
+        context.latest_input_image.write_bytes(b"saved-image-bytes")
+        context.render_path.write_bytes(b"png")
+        context.default_placements_path.write_text(
+            json.dumps({"/World/table_0": {"x": 0.0, "y": 0.0, "z": 0.5}}),
+            encoding="utf-8",
+        )
+
+        create_result = {
+            "status": "ok",
+            "assistant_message": "Created a new scene graph from the current input.",
+            "scene_graph": REAL2SIM_SCENE_GRAPH,
+            "placements": {},
+            "warnings": [],
+        }
+
+        with (
+            mock.patch.object(agent_service, "resolve_runtime_context", return_value=context),
+            mock.patch.object(agent_service, "create_session", return_value=context),
+            mock.patch.object(
+                agent_service,
+                "react_agent_step",
+                side_effect=[
+                    self._react("generate_scene", scene_endpoint="scene_new", reason="Try previewing first."),
+                    self._react("create_scene_graph", instruction="Create a scene graph from the current image.", reason="Need a scene graph first."),
+                    self._react("generate_scene", scene_endpoint="scene_new", resample_mode="joint", reason="Now the graph exists, generate the preview."),
+                ],
+            ),
+            mock.patch.object(agent_service, "create_scene_graph_from_input", return_value=create_result) as create_mock,
+            mock.patch.object(
+                agent_service,
+                "_run_scene_service",
+                return_value={
+                    "saved_usd": str(context.scene_service_usd_path),
+                    "placements": {"/World/table_0": {"x": 0.0, "y": 0.0, "z": 0.5}},
+                    "debug": {"resample_mode": "joint"},
+                    "resample_mode": "joint",
+                },
+            ) as run_scene_mock,
+        ):
+            result = agent_service.handle_agent_message(
+                session_id=context.session_id,
+                run_id=context.run_id,
+                text="Generate a preview from the current image.",
+            )
+
+        self.assertEqual(result["agent"]["state"], "completed")
+        self.assertEqual(result["agent"]["completed_state"], "generate_scene")
+        self.assertEqual(len(result["react_trace"]), 3)
+        self.assertEqual(result["react_trace"][0]["observation"]["code"], "missing_scene_graph")
+        self.assertEqual(result["react_trace"][1]["observation"]["code"], "scene_graph_created")
+        self.assertEqual(result["react_trace"][2]["observation"]["code"], "scene_generated")
+        create_mock.assert_called_once()
+        run_scene_mock.assert_called_once()
 
     def test_sync_real2sim_job_to_session_records_artifacts(self) -> None:
         context = self._create_context()

@@ -10,7 +10,7 @@ import requests
 
 from ..config import RUNTIME_DIR, SCENE_SERVICE_URL
 from .instruction_service import apply_instruction, create_scene_graph_from_input
-from .openai_service import read_json_file, route_agent_request
+from .openai_service import react_agent_step, read_json_file, route_agent_request
 from .pipeline_service import collect_scene_result_artifacts, start_real2sim_job
 from .runtime_context import RuntimeContext, create_session, resolve_runtime_context
 
@@ -28,6 +28,7 @@ STATE_COMPLETED = "completed"
 STATE_FAILED = "failed"
 
 TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD = 0.7
+REACT_MAX_STEPS = 4
 
 
 def _utcnow_iso() -> str:
@@ -1317,6 +1318,426 @@ def _continue_pending_question(
     )
 
 
+def _normalize_react_action(value: str | None) -> str | None:
+    normalized = _normalize_text(value).lower()
+    if normalized in {
+        STATE_CREATE_SCENE_GRAPH,
+        STATE_EDIT_SCENE_GRAPH,
+        STATE_RUN_REAL2SIM,
+        STATE_GENERATE_SCENE,
+        "ask_clarification",
+        "finish",
+    }:
+        return normalized
+    return None
+
+
+def _react_trace_entry(step: int, *, reason: str, action: str, observation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step": step,
+        "reason": reason,
+        "action": action,
+        "observation": observation,
+    }
+
+
+def _react_finish_response(
+    context: RuntimeContext,
+    state: dict[str, Any],
+    *,
+    completed_state: str,
+    decision: dict[str, Any],
+    message: str,
+    latest_graph_result: dict[str, Any] | None,
+    latest_scene_result: dict[str, Any] | None,
+    warnings: list[str],
+    react_trace: list[dict[str, Any]],
+) -> dict[str, Any]:
+    state["pending_question"] = None
+    _append_agent_history(state, "assistant", message)
+    _set_current_state(
+        state,
+        STATE_COMPLETED,
+        last_intent=completed_state,
+        last_completed_state=completed_state,
+        last_decision=decision,
+    )
+    _save_agent_state(context, state)
+    return _build_agent_response(
+        context,
+        state=STATE_COMPLETED,
+        intent=completed_state,
+        message=message,
+        reason=decision["reason"],
+        decision=decision,
+        completed_state=completed_state,
+        session_state=_session_state_snapshot(state, context),
+        scene_graph=latest_graph_result.get("scene_graph") if latest_graph_result else None,
+        placements=latest_graph_result.get("placements") if latest_graph_result else None,
+        scene_result=latest_scene_result,
+        warnings=warnings,
+        react_trace=react_trace,
+    )
+
+
+def _react_clarification_response(
+    context: RuntimeContext,
+    state: dict[str, Any],
+    *,
+    question: str,
+    clarification_kind: str,
+    reason: str,
+    react_trace: list[dict[str, Any]],
+    scene_endpoint: str | None = None,
+) -> dict[str, Any]:
+    normalized_kind = _normalize_text(clarification_kind).lower()
+    if normalized_kind == "layout_strategy":
+        options = _layout_strategy_options()
+        pending_type = "layout_strategy"
+        agent_state = STATE_AWAIT_LAYOUT_STRATEGY
+        intent = STATE_GENERATE_SCENE
+    elif normalized_kind == "graph_mode":
+        options = _graph_mode_options()
+        pending_type = "intent_clarification"
+        agent_state = STATE_NEEDS_CLARIFICATION
+        intent = STATE_UNDERSTAND_REQUEST
+    else:
+        options = _generic_intent_options(
+            has_scene_graph=context.scene_graph_path.exists(),
+            has_saved_image=context.latest_input_image.exists(),
+        )
+        pending_type = "intent_clarification"
+        agent_state = STATE_NEEDS_CLARIFICATION
+        intent = STATE_UNDERSTAND_REQUEST
+
+    decision = _decision_payload(
+        intent=intent,
+        state=agent_state,
+        reason=reason,
+        requires_clarification=True,
+        question=question,
+        options=options,
+        router={"react_trace": react_trace},
+        scene_endpoint=scene_endpoint,
+    )
+    pending_question = _question_payload(
+        pending_type,
+        question,
+        options=options,
+        run_id=context.run_id,
+        scene_endpoint=scene_endpoint if pending_type == "layout_strategy" else None,
+    )
+    state["pending_question"] = pending_question
+    _append_agent_history(state, "assistant", question)
+    _set_current_state(state, agent_state, last_intent=intent, last_decision=decision)
+    _save_agent_state(context, state)
+    return _clarification_response(
+        context,
+        state=agent_state,
+        intent=intent,
+        message=reason,
+        question=question,
+        reason=reason,
+        decision=decision,
+        pending_question=pending_question,
+        session_state=_session_state_snapshot(state, context),
+    )
+
+
+def _run_react_loop(
+    context: RuntimeContext,
+    state: dict[str, Any],
+    *,
+    instruction: str,
+    image_bytes: bytes | None,
+    class_names_raw: str,
+    has_saved_image: bool,
+    has_uploaded_image: bool,
+    scene_service_url: str,
+) -> dict[str, Any]:
+    react_trace: list[dict[str, Any]] = []
+    latest_graph_result: dict[str, Any] | None = None
+    latest_scene_result: dict[str, Any] | None = None
+    accumulated_warnings: list[str] = []
+    last_generate_endpoint: str | None = None
+
+    for step_index in range(1, REACT_MAX_STEPS + 1):
+        current_scene_graph = _load_scene_graph(context.scene_graph_path) or (
+            latest_graph_result.get("scene_graph") if latest_graph_result else None
+        )
+        try:
+            reaction = react_agent_step(
+                instruction,
+                scene_graph=current_scene_graph,
+                has_uploaded_image=has_uploaded_image,
+                has_saved_image=has_saved_image,
+                trace=react_trace,
+            )
+        except Exception as exc:
+            return _react_clarification_response(
+                context,
+                state,
+                question="I could not complete the reasoning loop. Tell me whether you want graph editing, Real2Sim, or scene generation.",
+                clarification_kind="intent",
+                reason=f"ReAct loop is unavailable right now: {exc}",
+                react_trace=react_trace,
+            )
+
+        action = _normalize_react_action(reaction.get("action"))
+        confidence = float(reaction.get("confidence") or 0.0)
+        reason = str(reaction.get("reason") or "The ReAct loop did not provide a reason.")
+        step_instruction = _normalize_text(reaction.get("instruction")) or instruction
+        scene_endpoint = _normalize_scene_endpoint_value(reaction.get("scene_endpoint")) or "scene_new"
+        resample_mode = _normalize_resample_mode_value(reaction.get("resample_mode"))
+        question = _normalize_text(reaction.get("question"))
+        clarification_kind = _normalize_text(reaction.get("clarification_kind")).lower() or "intent"
+
+        if action is None or confidence < TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD:
+            return _react_clarification_response(
+                context,
+                state,
+                question=question or "Tell me whether you want to edit the graph, run Real2Sim, or generate the scene.",
+                clarification_kind=clarification_kind,
+                reason=f"{reason} Confidence {confidence:.2f} is below the execution threshold.",
+                react_trace=react_trace,
+                scene_endpoint=last_generate_endpoint,
+            )
+
+        if action == "ask_clarification":
+            return _react_clarification_response(
+                context,
+                state,
+                question=question or "I need one detail before continuing.",
+                clarification_kind=clarification_kind,
+                reason=reason,
+                react_trace=react_trace,
+                scene_endpoint=last_generate_endpoint,
+            )
+
+        if action == "finish":
+            completed_state = STATE_GENERATE_SCENE if latest_scene_result else (
+                STATE_EDIT_SCENE_GRAPH if latest_graph_result else STATE_UNDERSTAND_REQUEST
+            )
+            return _react_finish_response(
+                context,
+                state,
+                completed_state=completed_state,
+                decision=_decision_payload(intent=completed_state, state=completed_state, reason=reason, router=reaction),
+                message="Finished the ReAct loop for this request.",
+                latest_graph_result=latest_graph_result,
+                latest_scene_result=latest_scene_result,
+                warnings=accumulated_warnings,
+                react_trace=react_trace,
+            )
+
+        if action == STATE_CREATE_SCENE_GRAPH:
+            latest_graph_result = create_scene_graph_from_input(
+                step_instruction,
+                class_names_raw=class_names_raw,
+                image_bytes=image_bytes,
+                scene_graph_path=context.scene_graph_path,
+                placements_path=context.default_placements_path,
+                latest_input_image_path=context.latest_input_image,
+                reuse_saved_image=image_bytes is None,
+            )
+            current_scene_graph = latest_graph_result.get("scene_graph") or _load_scene_graph(context.scene_graph_path)
+            observation = {
+                "status": "ok",
+                "code": "scene_graph_created",
+                "message": latest_graph_result.get("assistant_message") or "Scene graph created.",
+                "warning_count": len(latest_graph_result.get("warnings") or []),
+            }
+            accumulated_warnings.extend(latest_graph_result.get("warnings") or [])
+            react_trace.append(_react_trace_entry(step_index, reason=reason, action=action, observation=observation))
+            continue
+
+        if action == STATE_EDIT_SCENE_GRAPH:
+            if current_scene_graph is None:
+                react_trace.append(
+                    _react_trace_entry(
+                        step_index,
+                        reason=reason,
+                        action=action,
+                        observation={
+                            "status": "blocked",
+                            "code": "missing_scene_graph",
+                            "message": "Editing requires a scene graph first.",
+                        },
+                    )
+                )
+                continue
+            latest_graph_result = apply_instruction(
+                step_instruction,
+                class_names_raw=class_names_raw,
+                image_bytes=image_bytes,
+                scene_graph_path=context.scene_graph_path,
+                placements_path=context.default_placements_path,
+                latest_input_image_path=context.latest_input_image,
+                render_path=context.render_path,
+            )
+            observation = {
+                "status": "ok",
+                "code": "scene_graph_updated",
+                "message": latest_graph_result.get("assistant_message") or "Scene graph updated.",
+                "warning_count": len(latest_graph_result.get("warnings") or []),
+            }
+            accumulated_warnings.extend(latest_graph_result.get("warnings") or [])
+            react_trace.append(_react_trace_entry(step_index, reason=reason, action=action, observation=observation))
+            continue
+
+        if action == STATE_RUN_REAL2SIM:
+            if current_scene_graph is None:
+                react_trace.append(
+                    _react_trace_entry(
+                        step_index,
+                        reason=reason,
+                        action=action,
+                        observation={
+                            "status": "blocked",
+                            "code": "missing_scene_graph",
+                            "message": "Real2Sim requires a scene graph first.",
+                        },
+                    )
+                )
+                continue
+            payload = {
+                "session_id": context.session_id,
+                "run_id": context.run_id,
+                "image_path": str(context.latest_input_image),
+                "scene_graph_path": str(context.scene_graph_path),
+                "log_path": str(context.real2sim_log_path),
+                "real2sim_root_dir": str(context.run_root),
+                "mask_output": str(context.real2sim_masks_dir),
+                "mesh_output_dir": str(context.real2sim_meshes_dir),
+                "reuse_mesh_dir": str(context.real2sim_meshes_dir),
+                "scene_results_dir": str(context.real2sim_scene_results_dir),
+            }
+            job = start_real2sim_job(payload)
+            _record_real2sim_state(
+                state,
+                context,
+                status="running",
+                job_id=str(job.get("job_id") or ""),
+                artifacts=_collect_real2sim_artifacts_for_context(context),
+                log_path=str(job.get("log_path") or context.real2sim_log_path),
+                log_start_offset=int(job.get("log_start_offset") or 0),
+            )
+            react_trace.append(
+                _react_trace_entry(
+                    step_index,
+                    reason=reason,
+                    action=action,
+                    observation={"status": "started_job", "code": "real2sim_started", "job_id": job.get("job_id")},
+                )
+            )
+            state["pending_question"] = None
+            _append_agent_history(state, "assistant", f"Started ReAct Real2Sim job {job['job_id']}.")
+            decision = _decision_payload(intent=STATE_RUN_REAL2SIM, state=STATE_RUN_REAL2SIM, reason=reason, router=reaction)
+            _set_current_state(state, STATE_RUN_REAL2SIM, last_intent=STATE_RUN_REAL2SIM, last_decision=decision)
+            _save_agent_state(context, state)
+            return _build_agent_response(
+                context,
+                state=STATE_RUN_REAL2SIM,
+                intent=STATE_RUN_REAL2SIM,
+                message="Started Real2Sim from the ReAct loop.",
+                reason=reason,
+                decision=decision,
+                outcome="started_job",
+                session_state=_session_state_snapshot(state, context),
+                real2sim_job=job,
+                scene_graph=latest_graph_result.get("scene_graph") if latest_graph_result else None,
+                placements=latest_graph_result.get("placements") if latest_graph_result else None,
+                warnings=accumulated_warnings,
+                react_trace=react_trace,
+            )
+
+        if action == STATE_GENERATE_SCENE:
+            if current_scene_graph is None:
+                react_trace.append(
+                    _react_trace_entry(
+                        step_index,
+                        reason=reason,
+                        action=action,
+                        observation={
+                            "status": "blocked",
+                            "code": "missing_scene_graph",
+                            "message": "Scene generation requires a scene graph first.",
+                        },
+                    )
+                )
+                continue
+            last_generate_endpoint = scene_endpoint
+            if _has_real2sim_objects(current_scene_graph) and resample_mode is None:
+                react_trace.append(
+                    _react_trace_entry(
+                        step_index,
+                        reason=reason,
+                        action=action,
+                        observation={
+                            "status": "blocked",
+                            "code": "missing_layout_strategy",
+                            "message": "Scene generation needs joint or lock_real2sim for graphs with real2sim objects.",
+                            "scene_endpoint": scene_endpoint,
+                        },
+                    )
+                )
+                continue
+            strategy = str(resample_mode or "joint")
+            result, repair_warnings = _run_scene_service_with_repair(
+                context,
+                scene_endpoint=scene_endpoint,
+                resample_mode=strategy,
+                scene_service_url=scene_service_url,
+                scene_graph=current_scene_graph,
+            )
+            accumulated_warnings.extend(repair_warnings)
+            accumulated_warnings.extend(_load_manifest_warnings(context))
+            latest_scene_result = _record_scene_generation_state(
+                state,
+                context,
+                scene_result=result,
+                scene_endpoint=scene_endpoint,
+                resample_mode=strategy,
+            )
+            state["last_layout_strategy"] = str(latest_scene_result.get("resample_mode") or strategy)
+            react_trace.append(
+                _react_trace_entry(
+                    step_index,
+                    reason=reason,
+                    action=action,
+                    observation={"status": "completed", "code": "scene_generated", "scene_endpoint": scene_endpoint},
+                )
+            )
+            return _react_finish_response(
+                context,
+                state,
+                completed_state=STATE_GENERATE_SCENE,
+                decision=_decision_payload(
+                    intent=STATE_GENERATE_SCENE,
+                    state=STATE_GENERATE_SCENE,
+                    reason=reason,
+                    scene_endpoint=scene_endpoint,
+                    resample_mode=strategy,
+                    router=reaction,
+                ),
+                message="Generated the scene from the ReAct loop.",
+                latest_graph_result=latest_graph_result,
+                latest_scene_result=latest_scene_result,
+                warnings=accumulated_warnings,
+                react_trace=react_trace,
+            )
+
+    return _react_clarification_response(
+        context,
+        state,
+        question="I hit the reasoning step limit. Tell me the single next thing you want: create/edit graph, run Real2Sim, or generate scene.",
+        clarification_kind="intent",
+        reason=f"The ReAct loop hit its step limit of {REACT_MAX_STEPS}.",
+        react_trace=react_trace,
+        scene_endpoint=last_generate_endpoint,
+    )
+
+
 def handle_agent_message(
     *,
     session_id: str | None,
@@ -1355,6 +1776,18 @@ def handle_agent_message(
     )
     if pending_result is not None:
         return pending_result
+
+    if action is None and (normalized_text or has_uploaded_image):
+        return _run_react_loop(
+            context,
+            state,
+            instruction=normalized_text,
+            image_bytes=image_bytes,
+            class_names_raw=class_names_raw,
+            has_saved_image=has_saved_image,
+            has_uploaded_image=has_uploaded_image,
+            scene_service_url=scene_service_url or SCENE_SERVICE_URL,
+        )
 
     decision = _decide_request(
         normalized_text,
