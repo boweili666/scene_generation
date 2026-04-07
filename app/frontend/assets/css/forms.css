@@ -311,6 +311,103 @@
     .artifact-link:hover{
       text-decoration: underline;
     }
+    .assignment-review-panel{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .assignment-review-toolbar{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .assignment-review-actions{
+      display:flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .assignment-review-summary{
+      font-size: 12px;
+      line-height: 1.45;
+      color: #334155;
+      border: 1px solid rgba(15,23,42,0.08);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.84);
+    }
+    .assignment-review-summary.needs-attention{
+      border-color: rgba(245,158,11,0.22);
+      background: rgba(255,251,235,0.92);
+      color: #92400e;
+    }
+    .assignment-review-note{
+      font-size: 12px;
+      line-height: 1.45;
+      color: #475569;
+      border-left: 3px solid rgba(37,99,235,0.22);
+      padding: 8px 10px;
+      background: rgba(239,246,255,0.78);
+      border-radius: 10px;
+    }
+    .assignment-review-note.warning{
+      border-left-color: rgba(245,158,11,0.34);
+      background: rgba(255,251,235,0.92);
+      color: #92400e;
+    }
+    .assignment-review-list{
+      display:flex;
+      flex-direction:column;
+      gap: 10px;
+    }
+    .assignment-review-row{
+      display:flex;
+      flex-direction:column;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: rgba(255,255,255,0.92);
+      box-shadow: 0 10px 18px rgba(2,6,23,0.04);
+    }
+    .assignment-review-row-head{
+      display:flex;
+      flex-direction:column;
+      gap: 4px;
+    }
+    .assignment-review-row-title{
+      font-size: 12px;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: 0.01em;
+    }
+    .assignment-review-row-meta{
+      font-size: 12px;
+      line-height: 1.45;
+      color: #64748b;
+      word-break: break-word;
+    }
+    .assignment-review-select{
+      width: 100%;
+      min-width: 0;
+    }
+    .assignment-overlay-wrap{
+      position: relative;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      min-height: 240px;
+      border-radius: 16px;
+      border: 1px solid rgba(15,23,42,0.08);
+      background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,255,0.96));
+      overflow: hidden;
+    }
+    .assignment-overlay-wrap img{
+      display:none;
+      width: 100%;
+      max-height: 420px;
+      object-fit: contain;
+      background: #fff;
+    }
     button{
       border: none;
       cursor: pointer;

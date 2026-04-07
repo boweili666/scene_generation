@@ -125,16 +125,16 @@
               <div class="action-copy">
                 <span class="action-badge good">Real Pipeline</span>
                 <div class="action-title">Real2Sim</div>
-                <div class="action-note">Extract observed objects from the latest input image and stream them into the preview.</div>
+                <div class="action-note">Shortcut: draft a prompt to extract observed objects from the latest input image.</div>
               </div>
-              <button class="toolbtn good toolbtn-wide" id="real2simBtn" onclick="runReal2Sim()">Run Real2Sim</button>
+              <button class="toolbtn good toolbtn-wide" id="real2simBtn" onclick="runReal2Sim()">Draft Real2Sim Prompt</button>
             </div>
 
             <div class="action-card action-card-scene">
               <div class="action-copy">
                 <span class="action-badge primary">Scene Preview</span>
                 <div class="action-title">Scene Service</div>
-                <div class="action-note">Resample is the main layout action. Use Edit Scene only when you want to keep the current placements.</div>
+                <div class="action-note">Shortcut: draft a prompt for fresh resampling or a keep-layout preview.</div>
               </div>
               <div class="scene-action-stack">
                 <div class="scene-mode-copy">
@@ -166,8 +166,8 @@
                   </button>
                 </div>
                 <input type="hidden" id="resampleModeSelect" value="joint" />
-                <button class="btn-primary scene-primary-btn" onclick="runResample()">Resample Scene</button>
-                <button class="toolbtn toolbtn-quiet toolbtn-wide" onclick="callSceneService('scene')">Edit Scene (Keep Layout)</button>
+                <button class="btn-primary scene-primary-btn" onclick="runResample()">Draft Resample Prompt</button>
+                <button class="toolbtn toolbtn-quiet toolbtn-wide" onclick="callSceneService('scene')">Draft Keep-Layout Prompt</button>
               </div>
             </div>
           </div>
@@ -262,6 +262,23 @@
             <div>
               <div class="label">Error Reason <span class="hint" id="agentErrorMeta">No active errors</span></div>
               <div class="codebox" id="agentErrorBox">No errors.</div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-grid">
+            <div>
+              <div class="label">Mask Assignment Review <span class="hint" id="maskReviewMeta">No review data</span></div>
+              <div class="assignment-review-panel" id="maskReviewPanel">
+                <div class="artifact-empty">Run Real2Sim to inspect or correct mask-to-node assignment.</div>
+              </div>
+            </div>
+            <div>
+              <div class="label">Numbered Mask Overlay <span class="hint" id="maskOverlayMeta">Unavailable</span></div>
+              <div class="assignment-overlay-wrap">
+                <img id="maskOverlayImage" alt="Numbered mask overlay" />
+                <div class="artifact-empty" id="maskOverlayEmpty">No numbered mask overlay available yet.</div>
+              </div>
             </div>
           </div>
         </div>

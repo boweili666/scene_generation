@@ -46,6 +46,10 @@
       offset: 0,
       path: "real2sim.log"
     };
+    const assignmentReviewState = {
+      data: null,
+      saving: false,
+    };
     const runtimeSessionState = {
       sessionId: null,
       runId: null,

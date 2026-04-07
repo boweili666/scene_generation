@@ -15,6 +15,7 @@
 
       let done = false;
       let finalJobStatus = null;
+      let finalJob = null;
       let loadedObjectCount = 0;
       let loadedMerged = false;
       while (!done) {
@@ -33,6 +34,7 @@
         }
 
         const job = pollData.job;
+        finalJob = job;
         const progress = job.progress || {};
         const artifacts = job.artifacts || {};
         const objectUrls = Array.isArray(artifacts.object_glb_urls) ? artifacts.object_glb_urls : [];
@@ -85,49 +87,52 @@
       } catch (logErr) {
         console.warn("Final Real2Sim log refresh failed:", logErr);
       }
+      try {
+        const review = await refreshMaskAssignmentReview({ silent: true });
+        if (review?.needs_attention) {
+          if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
+          toast(
+            "warn",
+            "Review mask mapping",
+            "Real2Sim finished, but the mask-to-node assignment still needs confirmation."
+          );
+        }
+      } catch (reviewErr) {
+        console.warn("Mask assignment review refresh failed:", reviewErr);
+      }
       if (finalJobStatus === "succeeded") {
         document.getElementById("real2simLogStatus").textContent = "Completed";
       } else if (finalJobStatus === "failed") {
         document.getElementById("real2simLogStatus").textContent = "Failed";
+        if (finalJob?.error_info?.code === "mask_assignment_failed") {
+          if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
+          toast("warn", "Mask assignment needs review", "Open the drawer and correct the assignment before continuing.");
+        }
       }
     }
 
-    /* ===== Real2Sim ===== */
-    async function runReal2Sim() {
-      const btn = document.getElementById("real2simBtn");
-      const resultEl = document.getElementById("sceneSvcResult");
-      const statusEl = document.getElementById("sceneSvcStatus");
-
-      btn.disabled = true;
-      setPill("sim","warn","Real2Sim...");
-      document.getElementById("statusSimText").textContent = "Running Real2Sim...";
-      statusEl.textContent = "Real2Sim running";
-      resultEl.textContent = "Submitting Real2Sim job...";
-      setAgentErrorInfo(null);
-      showThreeViewer().then(() => clearThreeViewer()).catch((viewerErr) => {
-        console.warn("Three viewer unavailable:", viewerErr);
-        setPreviewMessage("Three.js viewer failed to load. Check browser console / CDN access.");
-      });
-      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
-      resetSimProgress();
-      resetReal2SimLog();
-      setSimProgress({ phase: "queued", percent: 1, generated_objects: 0, expected_objects: null, has_merged_scene: false });
-
-      try {
-        await sendAgentMessage({
-          instruction: "Run Real2Sim on the current scene graph.",
-          action: "run_real2sim",
-        });
-      } catch (err) {
-        console.error(err);
-        setPill("sim","err","Failed");
-        document.getElementById("statusSimText").textContent = "Failed";
-        document.getElementById("real2simLogStatus").textContent = "Unavailable";
-        setAgentErrorInfo(null, String(err));
-        toast("err","Real2Sim error", "Check backend logs / service status.");
-      } finally {
-        btn.disabled = false;
+    function prefillAgentShortcut(prompt, options = {}) {
+      const input = document.getElementById("sceneInput");
+      if (!input) return;
+      input.value = prompt;
+      updateInputMeta();
+      if (options.resampleMode) {
+        setResampleMode(options.resampleMode);
       }
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      setFeedback([
+        "Shortcut drafted a prompt for the single agent entry.",
+        "Review the text if needed, then press Apply Instruction.",
+      ]);
+      toast("info", "Prompt drafted", "Review or edit the prompt, then use Apply Instruction.");
+    }
+
+    /* ===== Real2Sim ===== */
+    function runReal2Sim() {
+      prefillAgentShortcut(
+        "Please run Real2Sim on the current scene graph and reference image, then show me the numbered mask assignment for review."
+      );
     }
 
     /* ===== Isaac Scene Service ===== */
@@ -148,7 +153,7 @@
       return input && input.value ? input.value : "joint";
     }
 
-    async function runResample() {
+    function runResample() {
       return callSceneService("scene_new", { resampleMode: getSelectedResampleMode() });
     }
 
@@ -166,35 +171,25 @@
       }
     }
 
-    async function callSceneService(endpoint, options = {}) {
-      const statusEl = document.getElementById("sceneSvcStatus");
-      const resultEl = document.getElementById("sceneSvcResult");
+    function callSceneService(endpoint, options = {}) {
       const resampleMode = options.resampleMode || "joint";
-
-      statusEl.textContent = `Calling /${endpoint}...`;
-      setPill("sim","warn","Calling...");
-      document.getElementById("statusSimText").textContent =
-        endpoint === "scene_new" ? `Calling /${endpoint} (${resampleMode})...` : `Calling /${endpoint}...`;
-      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
-      resetSimProgress();
-      resetSceneDebug();
-      setAgentErrorInfo(null);
-      resultEl.textContent = "Requesting...";
-
-      try {
-        await sendAgentMessage({
-          instruction: endpoint === "scene_new" ? "Generate the scene." : "Edit the scene and keep the current layout.",
-          action: "generate_scene",
-          sceneEndpoint: endpoint,
-          resampleMode,
-        });
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = "Failed";
-        resultEl.textContent = String(err);
-        setPill("sim","err","Failed");
-        setAgentErrorInfo(null, String(err));
-        appendAgentTranscript("assistant", "Scene generation failed.", String(err));
-        toast("err","Request failed", "Possibly scene service is not running.");
+      if (endpoint === "scene") {
+        prefillAgentShortcut(
+          "Please keep layout and generate a scene preview, and tell me if any real2sim nodes are still missing from the manifest."
+        );
+        return;
       }
+
+      if (resampleMode === "lock_real2sim") {
+        prefillAgentShortcut(
+          "Please generate a fresh scene preview in lock real2sim mode, keep the observed Real2Sim support chains rigid, and retry automatically if layout conflicts happen.",
+          { resampleMode }
+        );
+        return;
+      }
+
+      prefillAgentShortcut(
+        "Please generate a fresh scene preview with joint resampling, and retry automatically if the layout collides.",
+        { resampleMode }
+      );
     }

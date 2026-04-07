@@ -39,6 +39,22 @@
       updateArtifactPanel(data);
       setAgentErrorInfo(data?.error_info || null);
 
+      const shouldRefreshMaskReview =
+        !!data?.real2sim_job?.job_id ||
+        !!data?.job?.artifacts?.assignment_json_url ||
+        !!data?.session_state?.current_run?.real2sim?.artifacts?.assignment_json_url ||
+        data?.error_info?.code === "mask_assignment_failed";
+      if (shouldRefreshMaskReview) {
+        try {
+          const review = await refreshMaskAssignmentReview({ silent: true });
+          if (review?.needs_attention) {
+            feedbackLines.push("Mask assignment still needs confirmation before you trust downstream layout steps.");
+          }
+        } catch (reviewErr) {
+          console.warn("Mask assignment review unavailable:", reviewErr);
+        }
+      }
+
       if (data?.scene_graph) {
         await ensureCytoscape();
         renderSceneGraph(data.scene_graph);

@@ -271,6 +271,261 @@
       }
     }
 
+    function formatSceneObjectOptionLabel(obj = {}) {
+      const parts = [obj.path || ""];
+      if (obj.class) parts.push(obj.class);
+      if (obj.caption && obj.caption !== obj.class) parts.push(obj.caption);
+      return parts.filter(Boolean).join(" • ");
+    }
+
+    function resetMaskAssignmentReview(message = "Run Real2Sim to inspect or correct mask-to-node assignment.") {
+      assignmentReviewState.data = null;
+      const meta = document.getElementById("maskReviewMeta");
+      const panel = document.getElementById("maskReviewPanel");
+      const overlayMeta = document.getElementById("maskOverlayMeta");
+      const overlayImage = document.getElementById("maskOverlayImage");
+      const overlayEmpty = document.getElementById("maskOverlayEmpty");
+      if (meta) meta.textContent = "No review data";
+      if (panel) {
+        panel.innerHTML = "";
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = message;
+        panel.appendChild(empty);
+      }
+      if (overlayMeta) overlayMeta.textContent = "Unavailable";
+      if (overlayImage) {
+        overlayImage.removeAttribute("src");
+        overlayImage.style.display = "none";
+      }
+      if (overlayEmpty) {
+        overlayEmpty.style.display = "flex";
+        overlayEmpty.textContent = "No numbered mask overlay available yet.";
+      }
+    }
+
+    function renderMaskAssignmentReview(review) {
+      const meta = document.getElementById("maskReviewMeta");
+      const panel = document.getElementById("maskReviewPanel");
+      const overlayMeta = document.getElementById("maskOverlayMeta");
+      const overlayImage = document.getElementById("maskOverlayImage");
+      const overlayEmpty = document.getElementById("maskOverlayEmpty");
+      if (!meta || !panel || !overlayMeta || !overlayImage || !overlayEmpty) return;
+
+      if (!review || typeof review !== "object") {
+        resetMaskAssignmentReview();
+        return;
+      }
+
+      assignmentReviewState.data = review;
+      const summary = review.summary || {};
+      const manifest = review.manifest || {};
+      const matched = Number(summary.matched_assignments || 0);
+      const sceneObjects = Number(summary.scene_objects || 0);
+      const maskLabels = Number(summary.mask_labels || 0);
+      const unmatchedNodes = Number(summary.unmatched_scene_paths || 0);
+      const unmatchedMasks = Number(summary.unmatched_mask_labels || 0);
+      const lowConfidence = Number(summary.low_confidence_assignments || 0);
+      meta.textContent = `${matched}/${sceneObjects} nodes matched • ${maskLabels} masks`;
+
+      panel.innerHTML = "";
+
+      const toolbar = document.createElement("div");
+      toolbar.className = "assignment-review-toolbar";
+
+      const summaryCard = document.createElement("div");
+      summaryCard.className = `assignment-review-summary${review.needs_attention ? " needs-attention" : ""}`;
+      summaryCard.textContent =
+        `Nodes ${sceneObjects} • Masks ${maskLabels} • Unmatched nodes ${unmatchedNodes} • ` +
+        `Unmatched masks ${unmatchedMasks} • Low confidence ${lowConfidence}`;
+      toolbar.appendChild(summaryCard);
+
+      const actions = document.createElement("div");
+      actions.className = "assignment-review-actions";
+
+      const reloadBtn = document.createElement("button");
+      reloadBtn.type = "button";
+      reloadBtn.className = "toolbtn toolbtn-quiet";
+      reloadBtn.textContent = "Reload Review";
+      reloadBtn.addEventListener("click", async () => {
+        try {
+          await refreshMaskAssignmentReview();
+        } catch (err) {
+          console.error("Reload mask review failed:", err);
+        }
+      });
+      actions.appendChild(reloadBtn);
+
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "toolbtn primary";
+      saveBtn.textContent = assignmentReviewState.saving ? "Saving..." : "Save Mapping";
+      saveBtn.disabled = !!assignmentReviewState.saving;
+      saveBtn.addEventListener("click", async () => {
+        try {
+          await saveMaskAssignmentReview();
+        } catch (err) {
+          console.error("Save mask review failed:", err);
+        }
+      });
+      actions.appendChild(saveBtn);
+      toolbar.appendChild(actions);
+      panel.appendChild(toolbar);
+
+      if (Array.isArray(review.unmatched_scene_paths) && review.unmatched_scene_paths.length) {
+        const note = document.createElement("div");
+        note.className = "assignment-review-note";
+        note.textContent = `Missing scene nodes in assignment: ${review.unmatched_scene_paths.join(", ")}`;
+        panel.appendChild(note);
+      }
+
+      if (Array.isArray(manifest.unmatched_scene_paths) && manifest.unmatched_scene_paths.length) {
+        const note = document.createElement("div");
+        note.className = "assignment-review-note warning";
+        note.textContent = `Manifest still misses: ${manifest.unmatched_scene_paths.join(", ")}`;
+        panel.appendChild(note);
+      }
+
+      if (Array.isArray(manifest.unmatched_outputs) && manifest.unmatched_outputs.length) {
+        const note = document.createElement("div");
+        note.className = "assignment-review-note";
+        note.textContent = `Unbound outputs: ${manifest.unmatched_outputs.join(", ")}`;
+        panel.appendChild(note);
+      }
+
+      const assignmentByMask = new Map();
+      for (const row of Array.isArray(review.assignments) ? review.assignments : []) {
+        if (!row || typeof row !== "object") continue;
+        assignmentByMask.set(Number(row.mask_label), row);
+      }
+
+      const list = document.createElement("div");
+      list.className = "assignment-review-list";
+      const sceneObjectsList = Array.isArray(review.scene_objects) ? review.scene_objects : [];
+
+      for (const mask of Array.isArray(review.mask_labels) ? review.mask_labels : []) {
+        const current = assignmentByMask.get(Number(mask.mask_label)) || null;
+        const row = document.createElement("div");
+        row.className = "assignment-review-row";
+
+        const header = document.createElement("div");
+        header.className = "assignment-review-row-head";
+
+        const title = document.createElement("div");
+        title.className = "assignment-review-row-title";
+        title.textContent = `Mask ${mask.mask_label} • output ${mask.output_name}`;
+        header.appendChild(title);
+
+        const prompt = document.createElement("div");
+        prompt.className = "assignment-review-row-meta";
+        const promptParts = [];
+        if (mask.prompt) promptParts.push(`prompt ${mask.prompt}`);
+        if (Array.isArray(mask.bbox_xyxy)) promptParts.push(`bbox ${mask.bbox_xyxy.join(", ")}`);
+        if (current && Number.isFinite(Number(current.confidence))) {
+          promptParts.push(`confidence ${(Number(current.confidence) * 100).toFixed(0)}%`);
+        }
+        prompt.textContent = promptParts.join(" • ") || "No prompt metadata";
+        header.appendChild(prompt);
+        row.appendChild(header);
+
+        const select = document.createElement("select");
+        select.className = "toolselect assignment-review-select";
+        select.dataset.maskAssignmentSelect = String(mask.mask_label);
+
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "Leave Unassigned";
+        select.appendChild(emptyOption);
+
+        for (const obj of sceneObjectsList) {
+          const option = document.createElement("option");
+          option.value = obj.path || "";
+          option.textContent = formatSceneObjectOptionLabel(obj);
+          if (current && current.scene_path === obj.path) {
+            option.selected = true;
+          }
+          select.appendChild(option);
+        }
+        row.appendChild(select);
+
+        const reason = document.createElement("div");
+        reason.className = "assignment-review-row-meta";
+        reason.textContent = current?.reason || "No reviewer note.";
+        row.appendChild(reason);
+        list.appendChild(row);
+      }
+      panel.appendChild(list);
+
+      if (review.overlay_image_url) {
+        overlayImage.src = review.overlay_image_url;
+        overlayImage.style.display = "block";
+        overlayEmpty.style.display = "none";
+        overlayMeta.textContent = review.needs_attention ? "Needs confirmation" : "Ready";
+      } else {
+        overlayImage.removeAttribute("src");
+        overlayImage.style.display = "none";
+        overlayEmpty.style.display = "flex";
+        overlayMeta.textContent = "Unavailable";
+      }
+    }
+
+    function collectMaskAssignmentSelections() {
+      const selections = [];
+      document.querySelectorAll("[data-mask-assignment-select]").forEach((selectEl) => {
+        const maskLabel = Number(selectEl.dataset.maskAssignmentSelect || 0);
+        const scenePath = String(selectEl.value || "").trim();
+        if (!maskLabel || !scenePath) return;
+        selections.push({
+          mask_label: maskLabel,
+          scene_path: scenePath,
+          confidence: 1.0,
+          reason: "Confirmed via manual review.",
+        });
+      });
+      selections.sort((a, b) => a.mask_label - b.mask_label);
+      return selections;
+    }
+
+    async function refreshMaskAssignmentReview(options = {}) {
+      const silent = !!options.silent;
+      await ensureRuntimeContext();
+      const response = await fetch(withRuntimeQuery("/real2sim/assignment"));
+      const data = await response.json();
+      if (!response.ok) {
+        if (!silent) {
+          resetMaskAssignmentReview(data?.error || "Mask assignment review is not available yet.");
+        }
+        return null;
+      }
+      const review = data?.review || null;
+      renderMaskAssignmentReview(review);
+      return review;
+    }
+
+    async function saveMaskAssignmentReview() {
+      if (assignmentReviewState.saving) return null;
+      assignmentReviewState.saving = true;
+      try {
+        const response = await fetch(withRuntimeQuery("/real2sim/assignment"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assignments: collectMaskAssignmentSelections() }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data?.error || "Failed to save the reviewed mask assignment.");
+        }
+        renderMaskAssignmentReview(data?.review || null);
+        toast("ok", "Mask mapping saved", "Updated assignment.json and refreshed the Real2Sim manifest.");
+        return data?.review || null;
+      } finally {
+        assignmentReviewState.saving = false;
+        if (assignmentReviewState.data) {
+          renderMaskAssignmentReview(assignmentReviewState.data);
+        }
+      }
+    }
+
     function formatAgentStateLabel(state, completedState = "") {
       const value = String(state || completedState || "idle").trim();
       const labels = {
@@ -358,6 +613,7 @@
       clearAgentTranscript();
       resetArtifactPanel();
       setAgentErrorInfo(null);
+      resetMaskAssignmentReview();
     }
 
     function setMetrics({objects="-", edges="-", score="-"}){

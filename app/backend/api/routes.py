@@ -34,6 +34,7 @@ from ..services.pipeline_service import (
     read_real2sim_log,
     start_real2sim_job,
 )
+from ..services.real2sim_review_service import load_assignment_review, save_assignment_review
 from ..services.runtime_context import (
     create_run,
     create_session,
@@ -159,6 +160,30 @@ def _to_artifact_urls(artifacts: dict) -> dict:
         result["manifest_json_url"] = manifest_url
     else:
         result["manifest_json_url"] = None
+    return result
+
+
+def _annotate_assignment_review_urls(review: dict | None) -> dict | None:
+    if not isinstance(review, dict):
+        return None
+
+    result = dict(review)
+    overlay_abs = review.get("overlay_image_abs_path")
+    review_abs = review.get("review_image_abs_path")
+    manifest_path = review.get("manifest_path")
+    result["overlay_image_url"] = _to_runtime_file_url(Path(overlay_abs)) if overlay_abs else None
+    result["review_image_url"] = _to_runtime_file_url(Path(review_abs)) if review_abs else None
+    result["manifest_url"] = _to_runtime_file_url(Path(manifest_path)) if manifest_path else None
+
+    rows: list[dict] = []
+    for row in review.get("mask_labels", []):
+        if not isinstance(row, dict):
+            continue
+        next_row = dict(row)
+        mask_path = row.get("mask_path")
+        next_row["mask_url"] = _to_runtime_file_url(Path(mask_path)) if mask_path else None
+        rows.append(next_row)
+    result["mask_labels"] = rows
     return result
 
 
@@ -524,3 +549,55 @@ def register_routes(app):
         log_path = str(paths["real2sim_log_path"])
         data = read_real2sim_log(offset=offset, limit=limit, log_path=log_path)
         return jsonify({"status": "ok", **data, "path": log_path})
+
+    @app.route("/real2sim/assignment", methods=["GET", "POST"])
+    def real2sim_assignment():
+        paths = _request_runtime_paths(create=request.method == "POST")
+        context = paths.get("context")
+
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            try:
+                review = save_assignment_review(
+                    assignments=payload.get("assignments") or [],
+                    scene_graph_path=paths["scene_graph_path"],
+                    masks_dir=paths["real2sim_mask_output_dir"],
+                    results_dir=paths["real2sim_scene_results_dir"],
+                    latest_input_image=paths["latest_input_image"],
+                )
+            except (FileNotFoundError, ValueError) as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
+
+            response = {
+                "status": "ok",
+                "review": _annotate_assignment_review_urls(review),
+            }
+            if context is not None:
+                response["session_id"] = context.session_id
+                response["run_id"] = context.run_id
+            return jsonify(response)
+
+        try:
+            review = load_assignment_review(
+                scene_graph_path=paths["scene_graph_path"],
+                masks_dir=paths["real2sim_mask_output_dir"],
+                results_dir=paths["real2sim_scene_results_dir"],
+                latest_input_image=paths["latest_input_image"],
+            )
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
+
+        response = {
+            "status": "ok",
+            "review": _annotate_assignment_review_urls(review),
+        }
+        if context is not None:
+            response["session_id"] = context.session_id
+            response["run_id"] = context.run_id
+        return jsonify(response)

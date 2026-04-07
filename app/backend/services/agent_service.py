@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,8 @@ from typing import Any
 import requests
 
 from ..config import RUNTIME_DIR, SCENE_SERVICE_URL
-from .instruction_router import collect_instruction_signals, normalize_instruction_text
 from .instruction_service import apply_instruction, create_scene_graph_from_input
-from .openai_service import read_json_file
+from .openai_service import read_json_file, route_agent_request
 from .pipeline_service import collect_scene_result_artifacts, start_real2sim_job
 from .runtime_context import RuntimeContext, create_session, resolve_runtime_context
 
@@ -27,26 +27,7 @@ STATE_GENERATE_SCENE = "generate_scene"
 STATE_COMPLETED = "completed"
 STATE_FAILED = "failed"
 
-_REAL2SIM_KEYWORDS = ("real2sim", "sam3d", "sam 3d", "reconstruct", "observed objects")
-_GENERATE_SCENE_KEYWORDS = ("generate scene", "resample", "preview scene", "build scene", "scene service", "layout")
-_KEEP_LAYOUT_KEYWORDS = ("keep layout", "edit scene", "preserve layout", "do not resample")
-_CREATE_SCENE_GRAPH_KEYWORDS = (
-    "create scene graph",
-    "generate scene graph",
-    "new scene graph",
-    "rebuild scene graph",
-    "replace scene graph",
-    "from scratch",
-    "start over with a new graph",
-)
-_EDIT_SCENE_GRAPH_KEYWORDS = (
-    "edit scene graph",
-    "update scene graph",
-    "modify scene graph",
-    "edit the graph",
-    "update the graph",
-)
-_GRAPH_EDIT_SIGNALS = {"create", "delete", "replace", "move", "rotate", "relation", "support", "reset"}
+TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD = 0.7
 
 
 def _utcnow_iso() -> str:
@@ -213,53 +194,21 @@ def _resolve_scene_endpoint(text: str | None, explicit_value: str | None) -> str
     normalized_explicit = _normalize_text(explicit_value).lower()
     if normalized_explicit in {"scene", "scene_new"}:
         return normalized_explicit
-
-    normalized = _normalize_text(text).lower()
-    if any(token in normalized for token in _KEEP_LAYOUT_KEYWORDS):
-        return "scene"
     return "scene_new"
 
 
-def _empty_signal_payload(text: str) -> dict[str, Any]:
-    return {
-        "text": normalize_instruction_text(text),
-        "mentioned_paths": [],
-        "mentioned_existing_count": 0,
-        "placements_available": False,
-        "has_reset": False,
-        "has_create": False,
-        "has_delete": False,
-        "has_replace": False,
-        "has_move": False,
-        "has_rotate": False,
-        "has_relation": False,
-        "has_support_phrase": False,
-        "has_numeric_unit": False,
-        "has_soft_layout": False,
-        "signals": [],
-        "scores": {"reset": 0, "graph": 0, "placement": 0, "both": 0},
-    }
+def _normalize_scene_endpoint_value(value: str | None) -> str | None:
+    normalized = _normalize_text(value).lower()
+    if normalized in {"scene", "scene_new"}:
+        return normalized
+    return None
 
 
-def _collect_graph_signals(text: str, scene_graph: dict[str, Any] | None) -> dict[str, Any]:
-    if not _normalize_text(text):
-        return _empty_signal_payload(text)
-    return collect_instruction_signals(text, scene_graph, None)
-
-
-def _looks_like_fresh_scene_description(text: str, signals: dict[str, Any]) -> bool:
-    normalized = normalize_instruction_text(text)
-    if not normalized:
-        return False
-    if any(signal in _GRAPH_EDIT_SIGNALS for signal in signals.get("signals") or []):
-        return False
-    if any(keyword in normalized for keyword in _EDIT_SCENE_GRAPH_KEYWORDS):
-        return False
-    return (
-        normalized.startswith(("a ", "an ", "the room", "a room", "an office", "a bedroom", "a living room"))
-        or " room with " in f" {normalized} "
-        or " scene with " in f" {normalized} "
-    )
+def _normalize_resample_mode_value(value: str | None) -> str | None:
+    normalized = _normalize_text(value).lower()
+    if normalized in {"joint", "lock_real2sim"}:
+        return normalized
+    return None
 
 
 def _option(
@@ -412,6 +361,9 @@ def _decision_payload(
     requires_clarification: bool = False,
     question: str | None = None,
     options: list[dict[str, Any]] | None = None,
+    scene_endpoint: str | None = None,
+    resample_mode: str | None = None,
+    router: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "intent": intent,
@@ -421,6 +373,9 @@ def _decision_payload(
         "requires_clarification": requires_clarification,
         "question": question,
         "options": options or [],
+        "scene_endpoint": scene_endpoint,
+        "resample_mode": resample_mode,
+        "router": router or {},
     }
 
 
@@ -439,6 +394,16 @@ def _resolve_explicit_intent(action: str | None) -> str | None:
     return None
 
 
+def _resolve_explicit_scene_endpoint(action: str | None, explicit_value: str | None) -> str | None:
+    normalized_explicit = _normalize_scene_endpoint_value(explicit_value)
+    if normalized_explicit is not None:
+        return normalized_explicit
+    normalized_action = _normalize_text(action).lower()
+    if normalized_action in {"scene", "scene_new"}:
+        return normalized_action
+    return None
+
+
 def _decide_graph_intent(
     text: str,
     *,
@@ -448,8 +413,7 @@ def _decide_graph_intent(
     has_saved_image: bool,
 ) -> dict[str, Any]:
     scene_exists = _scene_graph_exists(scene_graph)
-    normalized = normalize_instruction_text(text)
-    signals = _collect_graph_signals(text, scene_graph)
+    normalized = _normalize_text(text)
 
     if explicit_intent == STATE_CREATE_SCENE_GRAPH:
         if not normalized and not has_uploaded_image and not has_saved_image:
@@ -458,7 +422,6 @@ def _decide_graph_intent(
                 intent=STATE_CREATE_SCENE_GRAPH,
                 state=STATE_NEEDS_CLARIFICATION,
                 reason="Explicit create_scene_graph action was requested without any scene description or image.",
-                signals=signals["signals"],
                 requires_clarification=True,
                 question=question,
             )
@@ -466,7 +429,6 @@ def _decide_graph_intent(
             intent=STATE_CREATE_SCENE_GRAPH,
             state=STATE_CREATE_SCENE_GRAPH,
             reason="Explicit create_scene_graph action was provided.",
-            signals=signals["signals"],
         )
 
     if explicit_intent == STATE_EDIT_SCENE_GRAPH:
@@ -477,7 +439,6 @@ def _decide_graph_intent(
                 intent=STATE_EDIT_SCENE_GRAPH,
                 state=STATE_NEEDS_CLARIFICATION,
                 reason="Explicit edit_scene_graph action was requested, but the current run has no scene graph.",
-                signals=signals["signals"],
                 requires_clarification=True,
                 question=question,
                 options=options,
@@ -488,7 +449,6 @@ def _decide_graph_intent(
                 intent=STATE_EDIT_SCENE_GRAPH,
                 state=STATE_NEEDS_CLARIFICATION,
                 reason="Editing an existing scene graph requires a text instruction.",
-                signals=signals["signals"],
                 requires_clarification=True,
                 question=question,
             )
@@ -496,80 +456,6 @@ def _decide_graph_intent(
             intent=STATE_EDIT_SCENE_GRAPH,
             state=STATE_EDIT_SCENE_GRAPH,
             reason="Explicit edit_scene_graph action was provided.",
-            signals=signals["signals"],
-        )
-
-    if not scene_exists:
-        if not normalized and not has_uploaded_image:
-            question = (
-                "There is no scene graph in this run yet. "
-                "Upload a reference image or describe the scene so I can create one."
-            )
-            options = _bootstrap_scene_graph_options(from_saved_image=has_saved_image)
-            return _decision_payload(
-                intent=STATE_UNDERSTAND_REQUEST,
-                state=STATE_NEEDS_CLARIFICATION,
-                reason="No scene graph exists and the request did not include enough graph-building input.",
-                signals=signals["signals"],
-                requires_clarification=True,
-                question=question,
-                options=options,
-            )
-        return _decision_payload(
-            intent=STATE_CREATE_SCENE_GRAPH,
-            state=STATE_CREATE_SCENE_GRAPH,
-            reason="No scene graph exists in the current run, so the next step is to create one.",
-            signals=signals["signals"],
-        )
-
-    if has_uploaded_image and not normalized:
-        question = "Do you want me to create a new scene graph from this image, or edit the current scene graph?"
-        options = _graph_mode_options()
-        return _decision_payload(
-            intent=STATE_UNDERSTAND_REQUEST,
-            state=STATE_NEEDS_CLARIFICATION,
-            reason="An image was uploaded while a scene graph already exists, so create-vs-edit is ambiguous.",
-            signals=signals["signals"],
-            requires_clarification=True,
-            question=question,
-            options=options,
-        )
-
-    if any(keyword in normalized for keyword in _CREATE_SCENE_GRAPH_KEYWORDS):
-        return _decision_payload(
-            intent=STATE_CREATE_SCENE_GRAPH,
-            state=STATE_CREATE_SCENE_GRAPH,
-            reason="The instruction explicitly asked to create or rebuild the scene graph.",
-            signals=signals["signals"],
-        )
-
-    if any(keyword in normalized for keyword in _EDIT_SCENE_GRAPH_KEYWORDS):
-        return _decision_payload(
-            intent=STATE_EDIT_SCENE_GRAPH,
-            state=STATE_EDIT_SCENE_GRAPH,
-            reason="The instruction explicitly asked to edit the current scene graph.",
-            signals=signals["signals"],
-        )
-
-    if _looks_like_fresh_scene_description(text, signals):
-        question = "This reads like a fresh scene description. Should I create a new scene graph, or edit the current one?"
-        options = _graph_mode_options()
-        return _decision_payload(
-            intent=STATE_UNDERSTAND_REQUEST,
-            state=STATE_NEEDS_CLARIFICATION,
-            reason="The instruction looks like a full scene description, which is ambiguous while a scene graph already exists.",
-            signals=signals["signals"],
-            requires_clarification=True,
-            question=question,
-            options=options,
-        )
-
-    if signals["mentioned_existing_count"] > 0 or any(signal in _GRAPH_EDIT_SIGNALS for signal in signals["signals"]):
-        return _decision_payload(
-            intent=STATE_EDIT_SCENE_GRAPH,
-            state=STATE_EDIT_SCENE_GRAPH,
-            reason="The instruction references the current scene graph or contains graph-edit signals.",
-            signals=signals["signals"],
         )
 
     question = "Should I create a new scene graph from this input, or treat it as an edit to the current scene graph?"
@@ -577,24 +463,69 @@ def _decide_graph_intent(
     return _decision_payload(
         intent=STATE_UNDERSTAND_REQUEST,
         state=STATE_NEEDS_CLARIFICATION,
-        reason="The request looks graph-related, but it does not clearly say whether to replace or edit the current graph.",
-        signals=signals["signals"],
+        reason="The explicit scene-graph request does not clearly say whether to replace or edit the current graph.",
         requires_clarification=True,
         question=question,
         options=options,
     )
 
 
+def _build_top_level_clarification(
+    *,
+    reason: str,
+    scene_graph: dict[str, Any] | None,
+    has_saved_image: bool,
+    suggested_focus: str | None = None,
+    router: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    has_scene_graph = _scene_graph_exists(scene_graph)
+    focus = _normalize_text(suggested_focus).lower() or "intent"
+
+    if focus == "graph_mode" and has_scene_graph:
+        question = "Should I create a new scene graph from this input, or edit the current scene graph?"
+        options = _graph_mode_options()
+    else:
+        question = "Tell me whether you want to create/edit the scene graph, run Real2Sim, or generate the scene."
+        options = _generic_intent_options(
+            has_scene_graph=has_scene_graph,
+            has_saved_image=has_saved_image,
+        )
+
+    return _decision_payload(
+        intent=STATE_UNDERSTAND_REQUEST,
+        state=STATE_NEEDS_CLARIFICATION,
+        reason=reason,
+        requires_clarification=True,
+        question=question,
+        options=options,
+        router=router,
+    )
+
+
+def _map_agent_route_intent(intent: str | None) -> str | None:
+    normalized = _normalize_text(intent).lower()
+    if normalized == STATE_CREATE_SCENE_GRAPH:
+        return STATE_CREATE_SCENE_GRAPH
+    if normalized == STATE_EDIT_SCENE_GRAPH:
+        return STATE_EDIT_SCENE_GRAPH
+    if normalized == STATE_RUN_REAL2SIM:
+        return STATE_RUN_REAL2SIM
+    if normalized == STATE_GENERATE_SCENE:
+        return STATE_GENERATE_SCENE
+    return None
+
+
 def _decide_request(
     text: str,
     *,
     explicit_action: str | None,
+    scene_endpoint: str | None,
+    resample_mode: str | None,
     scene_graph: dict[str, Any] | None,
     has_uploaded_image: bool,
     has_saved_image: bool,
 ) -> dict[str, Any]:
     explicit_intent = _resolve_explicit_intent(explicit_action)
-    normalized = normalize_instruction_text(text)
 
     if explicit_intent == STATE_RUN_REAL2SIM:
         return _decision_payload(
@@ -607,8 +538,10 @@ def _decide_request(
             intent=STATE_GENERATE_SCENE,
             state=STATE_GENERATE_SCENE,
             reason="Explicit scene-generation action was provided.",
+            scene_endpoint=_resolve_explicit_scene_endpoint(explicit_action, scene_endpoint),
+            resample_mode=_normalize_resample_mode_value(resample_mode),
         )
-    if explicit_intent in {STATE_CREATE_SCENE_GRAPH, STATE_EDIT_SCENE_GRAPH, "scene_graph"}:
+    if explicit_intent in {STATE_CREATE_SCENE_GRAPH, STATE_EDIT_SCENE_GRAPH}:
         return _decide_graph_intent(
             text,
             scene_graph=scene_graph,
@@ -617,40 +550,60 @@ def _decide_request(
             has_saved_image=has_saved_image,
         )
 
-    if any(keyword in normalized for keyword in _REAL2SIM_KEYWORDS):
-        return _decision_payload(
-            intent=STATE_RUN_REAL2SIM,
-            state=STATE_RUN_REAL2SIM,
-            reason="Matched Real2Sim-specific keywords in the instruction.",
-        )
-
-    if any(keyword in normalized for keyword in _GENERATE_SCENE_KEYWORDS):
-        return _decision_payload(
-            intent=STATE_GENERATE_SCENE,
-            state=STATE_GENERATE_SCENE,
-            reason="Matched scene-generation keywords in the instruction.",
-        )
-
+    normalized = _normalize_text(text)
     if not normalized and not has_uploaded_image:
-        question = "Tell me whether you want to create/edit the scene graph, run Real2Sim, or generate the scene."
-        return _decision_payload(
-            intent=STATE_UNDERSTAND_REQUEST,
-            state=STATE_NEEDS_CLARIFICATION,
+        return _build_top_level_clarification(
             reason="The request did not include a text instruction or a new image upload.",
-            requires_clarification=True,
-            question=question,
-            options=_generic_intent_options(
-                has_scene_graph=_scene_graph_exists(scene_graph),
-                has_saved_image=has_saved_image,
-            ),
+            scene_graph=scene_graph,
+            has_saved_image=has_saved_image,
         )
 
-    return _decide_graph_intent(
-        text,
-        scene_graph=scene_graph,
-        explicit_intent=explicit_intent,
-        has_uploaded_image=has_uploaded_image,
-        has_saved_image=has_saved_image,
+    try:
+        router = route_agent_request(
+            normalized,
+            scene_graph=scene_graph,
+            has_uploaded_image=has_uploaded_image,
+            has_saved_image=has_saved_image,
+        )
+    except Exception as exc:
+        return _build_top_level_clarification(
+            reason=f"Top-level LLM routing is unavailable right now: {exc}",
+            scene_graph=scene_graph,
+            has_saved_image=has_saved_image,
+        )
+
+    route_intent = _map_agent_route_intent(router.get("intent"))
+    confidence = float(router.get("confidence") or 0.0)
+    scene_endpoint = _normalize_scene_endpoint_value(router.get("scene_endpoint"))
+    routed_resample_mode = _normalize_resample_mode_value(router.get("resample_mode"))
+    clarification_focus = _normalize_text(router.get("clarification_focus")).lower() or "intent"
+    route_reason = str(router.get("reason") or "The top-level router did not provide a reason.")
+
+    if route_intent is None or router.get("intent") == "clarification":
+        return _build_top_level_clarification(
+            reason=route_reason,
+            scene_graph=scene_graph,
+            has_saved_image=has_saved_image,
+            suggested_focus=clarification_focus,
+            router=router,
+        )
+
+    if confidence < TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD:
+        return _build_top_level_clarification(
+            reason=f"{route_reason} Confidence {confidence:.2f} is below the execution threshold.",
+            scene_graph=scene_graph,
+            has_saved_image=has_saved_image,
+            suggested_focus=clarification_focus,
+            router=router,
+        )
+
+    return _decision_payload(
+        intent=route_intent,
+        state=route_intent,
+        reason=route_reason,
+        scene_endpoint=scene_endpoint,
+        resample_mode=routed_resample_mode,
+        router=router,
     )
 
 
@@ -1114,8 +1067,9 @@ def _scene_service_payload(
     *,
     scene_endpoint: str,
     resample_mode: str,
+    seed: int | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "session_id": context.session_id,
         "run_id": context.run_id,
         "camera_eye": [18.0, 0.0, 18.0],
@@ -1132,6 +1086,9 @@ def _scene_service_payload(
         "room_include_front_wall": False,
         "resample_mode": resample_mode if scene_endpoint == "scene_new" else "joint",
     }
+    if seed is not None:
+        payload["seed"] = int(seed)
+    return payload
 
 
 def _run_scene_service(
@@ -1140,8 +1097,14 @@ def _run_scene_service(
     scene_endpoint: str,
     resample_mode: str,
     scene_service_url: str,
+    seed: int | None = None,
 ) -> dict[str, Any]:
-    payload = _scene_service_payload(context, scene_endpoint=scene_endpoint, resample_mode=resample_mode)
+    payload = _scene_service_payload(
+        context,
+        scene_endpoint=scene_endpoint,
+        resample_mode=resample_mode,
+        seed=seed,
+    )
     url = scene_service_url.rstrip("/") + f"/{scene_endpoint}"
     try:
         response = requests.post(url, json=payload, timeout=(10, 600))
@@ -1164,6 +1127,102 @@ def _run_scene_service(
     if not isinstance(data, dict):
         raise RuntimeError("Scene service returned an invalid JSON payload.")
     return data
+
+
+def _looks_like_layout_conflict_error(message: str | None) -> bool:
+    normalized = _normalize_text(message).lower()
+    return "collision-free layout" in normalized or "layout collision" in normalized
+
+
+def _load_manifest_warnings(context: RuntimeContext) -> list[str]:
+    manifest_path = context.real2sim_manifest_path
+    if not manifest_path.exists():
+        return []
+    payload = read_json_file(manifest_path)
+    if not isinstance(payload, dict):
+        return []
+
+    warnings: list[str] = []
+    unmatched_scene_paths = [
+        str(path)
+        for path in payload.get("unmatched_scene_paths", [])
+        if isinstance(path, str) and path
+    ]
+    unmatched_outputs = [
+        str(output_name)
+        for output_name in payload.get("unmatched_outputs", [])
+        if isinstance(output_name, str) and output_name
+    ]
+    if unmatched_scene_paths:
+        warnings.append(
+            "Real2Sim manifest is still missing node bindings for: "
+            + ", ".join(unmatched_scene_paths)
+        )
+    if unmatched_outputs:
+        warnings.append(
+            "Real2Sim produced outputs that are not bound to scene nodes: "
+            + ", ".join(unmatched_outputs)
+        )
+    return warnings
+
+
+def _run_scene_service_with_repair(
+    context: RuntimeContext,
+    *,
+    scene_endpoint: str,
+    resample_mode: str,
+    scene_service_url: str,
+    scene_graph: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    requested_mode = resample_mode
+
+    try:
+        return (
+            _run_scene_service(
+                context,
+                scene_endpoint=scene_endpoint,
+                resample_mode=requested_mode,
+                scene_service_url=scene_service_url,
+            ),
+            warnings,
+        )
+    except RuntimeError as exc:
+        if scene_endpoint != "scene_new" or not _looks_like_layout_conflict_error(str(exc)):
+            raise
+
+        retry_seed = random.SystemRandom().randrange(0, 2**32 - 1)
+        try:
+            result = _run_scene_service(
+                context,
+                scene_endpoint=scene_endpoint,
+                resample_mode=requested_mode,
+                scene_service_url=scene_service_url,
+                seed=retry_seed,
+            )
+            warnings.append(
+                "Scene generation hit layout conflicts once and retried automatically with a new seed."
+            )
+            return result, warnings
+        except RuntimeError as retry_exc:
+            if requested_mode != "lock_real2sim" or not _has_real2sim_objects(scene_graph):
+                raise retry_exc
+
+            fallback_seed = random.SystemRandom().randrange(0, 2**32 - 1)
+            result = _run_scene_service(
+                context,
+                scene_endpoint=scene_endpoint,
+                resample_mode="joint",
+                scene_service_url=scene_service_url,
+                seed=fallback_seed,
+            )
+            warnings.extend(
+                [
+                    "Lock Real2Sim layout conflicted repeatedly, so the agent retried automatically with joint resampling.",
+                    "Review the latest Real2Sim manifest before trusting locked-relative placement behavior.",
+                ]
+            )
+            return result, warnings
 
 
 def _continue_pending_question(
@@ -1217,12 +1276,14 @@ def _continue_pending_question(
         )
 
     scene_endpoint = str(pending.get("scene_endpoint") or "scene_new")
-    result = _run_scene_service(
+    result, repair_warnings = _run_scene_service_with_repair(
         context,
         scene_endpoint=scene_endpoint,
         resample_mode=strategy,
         scene_service_url=scene_service_url,
+        scene_graph=_load_scene_graph(context.scene_graph_path),
     )
+    repair_warnings.extend(_load_manifest_warnings(context))
     normalized_result = _record_scene_generation_state(
         state,
         context,
@@ -1230,9 +1291,10 @@ def _continue_pending_question(
         scene_endpoint=scene_endpoint,
         resample_mode=strategy,
     )
+    effective_strategy = str(normalized_result.get("resample_mode") or strategy)
     state["pending_question"] = None
-    state["last_layout_strategy"] = strategy
-    _append_agent_history(state, "assistant", f"Generated scene with strategy {strategy}.")
+    state["last_layout_strategy"] = effective_strategy
+    _append_agent_history(state, "assistant", f"Generated scene with strategy {effective_strategy}.")
     _set_current_state(
         state,
         STATE_COMPLETED,
@@ -1245,12 +1307,13 @@ def _continue_pending_question(
         context,
         state=STATE_COMPLETED,
         intent=STATE_GENERATE_SCENE,
-        message=f"Scene generated with layout strategy '{strategy}'.",
+        message=f"Scene generated with layout strategy '{effective_strategy}'.",
         reason="Resolved the pending layout strategy question and completed scene generation.",
         decision=decision,
         completed_state=STATE_GENERATE_SCENE,
         session_state=_session_state_snapshot(state, context),
         scene_result=normalized_result,
+        warnings=repair_warnings,
     )
 
 
@@ -1296,6 +1359,8 @@ def handle_agent_message(
     decision = _decide_request(
         normalized_text,
         explicit_action=action,
+        scene_endpoint=scene_endpoint,
+        resample_mode=resample_mode,
         scene_graph=scene_graph,
         has_uploaded_image=has_uploaded_image,
         has_saved_image=has_saved_image,
@@ -1498,8 +1563,15 @@ def handle_agent_message(
                 session_state=_session_state_snapshot(state, context),
             )
 
-        resolved_endpoint = _resolve_scene_endpoint(normalized_text, scene_endpoint)
-        strategy = resample_mode or _parse_layout_strategy(normalized_text)
+        resolved_endpoint = (
+            _normalize_scene_endpoint_value(scene_endpoint)
+            or _normalize_scene_endpoint_value(decision.get("scene_endpoint"))
+            or _resolve_scene_endpoint(None, None)
+        )
+        strategy = (
+            _normalize_resample_mode_value(resample_mode)
+            or _normalize_resample_mode_value(decision.get("resample_mode"))
+        )
         if _has_real2sim_objects(scene_graph) and strategy is None:
             question = (
                 "This scene contains real2sim objects. Choose a layout strategy: "
@@ -1538,12 +1610,14 @@ def handle_agent_message(
             )
 
         strategy = strategy or "joint"
-        result = _run_scene_service(
+        result, repair_warnings = _run_scene_service_with_repair(
             context,
             scene_endpoint=resolved_endpoint,
             resample_mode=strategy,
             scene_service_url=scene_service_url or SCENE_SERVICE_URL,
+            scene_graph=scene_graph,
         )
+        repair_warnings.extend(_load_manifest_warnings(context))
         normalized_result = _record_scene_generation_state(
             state,
             context,
@@ -1551,9 +1625,10 @@ def handle_agent_message(
             scene_endpoint=resolved_endpoint,
             resample_mode=strategy,
         )
+        effective_strategy = str(normalized_result.get("resample_mode") or strategy)
         state["pending_question"] = None
-        state["last_layout_strategy"] = strategy
-        _append_agent_history(state, "assistant", f"Generated scene with strategy {strategy}.")
+        state["last_layout_strategy"] = effective_strategy
+        _append_agent_history(state, "assistant", f"Generated scene with strategy {effective_strategy}.")
         _set_current_state(
             state,
             STATE_COMPLETED,
@@ -1566,12 +1641,13 @@ def handle_agent_message(
             context,
             state=STATE_COMPLETED,
             intent=STATE_GENERATE_SCENE,
-            message=f"Scene generated with layout strategy '{strategy}'.",
+            message=f"Scene generated with layout strategy '{effective_strategy}'.",
             reason=decision["reason"],
             decision=decision,
             completed_state=STATE_GENERATE_SCENE,
             session_state=_session_state_snapshot(state, context),
             scene_result=normalized_result,
+            warnings=repair_warnings,
         )
 
     raise ValueError(f"Unsupported agent intent: {intent}")
