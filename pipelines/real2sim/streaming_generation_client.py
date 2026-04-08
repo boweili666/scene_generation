@@ -87,6 +87,36 @@ def copy_mask_metadata(mask_dir: Path | None, output_dir: Path) -> None:
     )
 
 
+def select_masks_from_assignment(mask_paths: list[Path], assignment_path: Path) -> list[Path]:
+    if not assignment_path.exists() or not assignment_path.is_file():
+        raise FileNotFoundError(f"Assignment file not found: {assignment_path}")
+
+    payload = json.loads(assignment_path.read_text(encoding="utf-8"))
+    assignments = payload.get("assignments")
+    if not isinstance(assignments, list):
+        raise ValueError("assignment.json is missing the assignments array.")
+
+    selected_output_names = []
+    seen_output_names: set[str] = set()
+    for row in assignments:
+        if not isinstance(row, dict):
+            continue
+        output_name = str(row.get("output_name") or "").strip()
+        if not output_name or output_name in seen_output_names:
+            continue
+        seen_output_names.add(output_name)
+        selected_output_names.append(output_name)
+
+    if not selected_output_names:
+        raise RuntimeError("assignment.json did not select any masks for remote generation.")
+
+    mask_by_output_name = {path.stem: path for path in mask_paths}
+    selected_masks = [mask_by_output_name[name] for name in selected_output_names if name in mask_by_output_name]
+    if not selected_masks:
+        raise RuntimeError("assignment.json selected masks that are missing from the local mask set.")
+    return selected_masks
+
+
 def build_parser() -> argparse.ArgumentParser:
     project_root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
@@ -481,6 +511,7 @@ def main() -> None:
             )
             clear_previous_outputs(output_dir)
             copy_mask_metadata(args.mask_dir, output_dir)
+            selected_mask_paths = mask_paths
             if args.with_vlm_assignment and args.scene_graph is not None:
                 try:
                     assignment_path = generate_vlm_mask_assignment(
@@ -501,11 +532,17 @@ def main() -> None:
                             f" overlay={assignment.get('overlay_image_path')}"
                         )
                         print(f"[PRE] assignment saved: {assignment_path}")
+                        selected_mask_paths = select_masks_from_assignment(mask_paths, assignment_path)
+                        print(
+                            "[PRE] remote generation masks:"
+                            f" selected={len(selected_mask_paths)}"
+                            f" total={len(mask_paths)}"
+                        )
                 except Exception as exc:
                     if args.vlm_assignment_strict:
                         raise
                     print(f"[WARN] VLM mask assignment skipped: {exc}")
-            run_once(args, mask_paths, output_dir, url)
+            run_once(args, selected_mask_paths, output_dir, url)
             summary = postprocess_real2sim_outputs(output_dir, scene_graph_path=args.scene_graph)
             print(
                 "[POST] scene postprocess:"
