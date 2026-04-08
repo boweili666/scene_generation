@@ -584,6 +584,62 @@ class AgentServiceTest(unittest.TestCase):
         self.assertEqual(result["real2sim_job"]["log_path"], str(context.real2sim_log_path))
         self.assertEqual(result["session_state"]["history"][0]["content"], "Choose joint or lock_real2sim.")
 
+    def test_get_agent_state_response_refreshes_live_real2sim_artifacts_from_disk(self) -> None:
+        context = self._create_context()
+        runtime_root = Path(self.tmpdir.name) / "runtime"
+        context.real2sim_scene_results_dir.mkdir(parents=True, exist_ok=True)
+        context.real2sim_objects_dir.mkdir(parents=True, exist_ok=True)
+        context.real2sim_assignment_path.write_text(
+            json.dumps({"assignments": [{"mask_label": 1, "scene_path": "/World/table_0", "output_name": "1"}]}),
+            encoding="utf-8",
+        )
+        context.real2sim_manifest_path.write_text(json.dumps({"objects": {}}), encoding="utf-8")
+        (context.real2sim_objects_dir / "1.glb").write_bytes(b"glb")
+
+        state_path = context.session_root / "agent_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "session_id": context.session_id,
+                    "current_run_id": context.run_id,
+                    "current_state": "run_real2sim",
+                    "last_intent": "run_real2sim",
+                    "runs": {
+                        context.run_id: {
+                            "run_id": context.run_id,
+                            "real2sim": {
+                                "status": "running",
+                                "job_id": "job_live",
+                                "log_path": str(context.real2sim_log_path),
+                                "log_start_offset": 7,
+                            },
+                        }
+                    },
+                    "history": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with (
+            mock.patch.object(agent_service, "resolve_runtime_context", return_value=context),
+            mock.patch.object(agent_service, "create_session", return_value=context),
+            mock.patch.object(agent_service, "RUNTIME_DIR", runtime_root),
+        ):
+            result = agent_service.get_agent_state_response(
+                session_id=context.session_id,
+                run_id=context.run_id,
+            )
+
+        self.assertEqual(result["real2sim_job"]["job_id"], "job_live")
+        artifacts = result["session_state"]["current_run"]["real2sim"]["artifacts"]
+        self.assertEqual(artifacts["assignment_json_path"], str(context.real2sim_assignment_path))
+        self.assertEqual(artifacts["manifest_json_path"], str(context.real2sim_manifest_path))
+        self.assertEqual(artifacts["object_glb_paths"], [str(context.real2sim_objects_dir / "1.glb")])
+        self.assertTrue(str(artifacts["assignment_json_url"]).startswith("/runtime_file/"))
+        self.assertEqual(len(artifacts["object_glb_urls"]), 1)
+        self.assertTrue(str(artifacts["object_glb_urls"][0]).startswith("/runtime_file/"))
+
 
 if __name__ == "__main__":
     unittest.main()

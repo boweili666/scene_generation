@@ -137,6 +137,26 @@ def _has_real2sim_artifacts(artifacts: dict[str, Any] | None) -> bool:
     )
 
 
+def _refresh_real2sim_state_from_disk(state: dict[str, Any], context: RuntimeContext) -> dict[str, Any] | None:
+    run_state = _ensure_run_state(state, context)
+    real2sim_state = run_state.get("real2sim")
+    if not isinstance(real2sim_state, dict):
+        return None
+
+    existing_artifacts = real2sim_state.get("artifacts") if isinstance(real2sim_state.get("artifacts"), dict) else {}
+    live_artifacts = _collect_real2sim_artifacts_for_context(context)
+    if not _has_real2sim_artifacts(existing_artifacts) and not _has_real2sim_artifacts(live_artifacts):
+        return real2sim_state
+
+    merged_artifacts = dict(existing_artifacts or {})
+    merged_artifacts.update(live_artifacts)
+    real2sim_state["artifacts"] = merged_artifacts
+    real2sim_state["results_dir"] = str(context.real2sim_scene_results_dir)
+    real2sim_state["updated_at"] = _utcnow_iso()
+    run_state["real2sim"] = real2sim_state
+    return real2sim_state
+
+
 def _normalize_scene_result_for_agent(context: RuntimeContext, scene_result: dict[str, Any]) -> dict[str, Any]:
     result = dict(scene_result or {})
     saved_usd_path = _resolve_context_path(context, result.get("saved_usd") or context.scene_service_usd_path)
@@ -934,6 +954,8 @@ def get_agent_state_response(*, session_id: str | None, run_id: str | None) -> d
 
     state = _load_agent_state(context)
     state["current_run_id"] = context.run_id
+    current_run = _ensure_run_state(state, context)
+    _refresh_real2sim_state_from_disk(state, context)
     current_run = _ensure_run_state(state, context)
     _save_agent_state(context, state)
 

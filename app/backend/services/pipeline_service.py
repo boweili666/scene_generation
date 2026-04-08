@@ -43,6 +43,13 @@ def _stringify_cmd(cmd: Any) -> str:
     return str(cmd or "")
 
 
+def _resolve_repo_script(path_like: str | os.PathLike[str]) -> str:
+    candidate = Path(path_like)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((Path(REAL2SIM_ROOT_DIR) / candidate).resolve())
+
+
 def _combined_error_text(error: Exception) -> str:
     parts: list[str] = [str(error)]
     output = getattr(error, "output", None)
@@ -134,6 +141,21 @@ def classify_real2sim_failure(error: Exception) -> dict[str, Any]:
         return _payload(
             "mask_generation_failed",
             "Real2Sim did not produce usable masks from the current image.",
+            retryable=True,
+            category="segmentation",
+        )
+
+    if step == "segment_masks" and (
+        "httpx.readtimeout" in lowered
+        or "httpcore.readtimeout" in lowered
+        or "huggingface_hub" in lowered
+        or "facebook/sam3" in lowered
+        or "from_pretrained" in lowered
+        or "list_repo_tree" in lowered
+    ):
+        return _payload(
+            "segmentation_model_timeout",
+            "Loading the SAM3 model or processor timed out before mask generation could start.",
             retryable=True,
             category="segmentation",
         )
@@ -501,6 +523,30 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
     }
 
 
+def _expected_real2sim_object_count(real2sim_root: str, artifacts: dict[str, Any], mask_output: str) -> int | None:
+    assignment_json = artifacts.get("assignment_json")
+    if isinstance(assignment_json, str) and assignment_json:
+        assignment_path = (Path(real2sim_root).resolve() / assignment_json).resolve()
+        if assignment_path.exists() and assignment_path.is_file():
+            try:
+                payload = json.loads(assignment_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("assignments"), list):
+                return len([row for row in payload["assignments"] if isinstance(row, dict)])
+
+    masks_dir = (Path(real2sim_root).resolve() / Path(mask_output)).resolve()
+    if masks_dir.exists() and masks_dir.is_dir():
+        return len(
+            [
+                p
+                for p in masks_dir.glob("*.png")
+                if p.is_file() and p.name.lower() != "image.png"
+            ]
+        )
+    return None
+
+
 def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict:
     payload = payload or {}
     real2sim_root = Path(str(payload.get("real2sim_root_dir") or REAL2SIM_ROOT_DIR)).resolve()
@@ -548,7 +594,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     step1_cmd = [
         sam3_python,
         "-u",
-        REAL2SIM_SEGMENT_SCRIPT,
+        _resolve_repo_script(REAL2SIM_SEGMENT_SCRIPT),
         "--image",
         image_path,
         "--scene-graph",
@@ -580,7 +626,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
     step2_cmd = [
         sam3_python,
         "-u",
-        REAL2SIM_PREDICT_STREAM_CLIENT,
+        _resolve_repo_script(REAL2SIM_PREDICT_STREAM_CLIENT),
         "--server",
         predict_stream_server,
         "--image",
@@ -724,16 +770,7 @@ def get_real2sim_job_status(job_id: str) -> dict | None:
     merged_artifacts["manifest_json"] = live_artifacts.get("manifest_json")
 
     mask_output = str(payload.get("mask_output") or REAL2SIM_MASK_OUTPUT_DIR)
-    masks_dir = (Path(real2sim_root).resolve() / Path(mask_output)).resolve()
-    expected_objects = None
-    if masks_dir.exists() and masks_dir.is_dir():
-        expected_objects = len(
-            [
-                p
-                for p in masks_dir.glob("*.png")
-                if p.is_file() and p.name.lower() != "image.png"
-            ]
-        )
+    expected_objects = _expected_real2sim_object_count(real2sim_root, merged_artifacts, mask_output)
 
     generated_objects = len(merged_artifacts["object_glbs"])
     has_merged_scene = bool(merged_artifacts.get("scene_glb"))
