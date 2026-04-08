@@ -39,19 +39,36 @@
       updateArtifactPanel(data);
       setAgentErrorInfo(data?.error_info || null);
 
+      const real2simJobInfo = getReal2SimJobInfoFromPayload(data);
       const shouldRefreshMaskReview =
-        !!data?.real2sim_job?.job_id ||
+        !!real2simJobInfo?.job_id ||
+        !!getReal2SimArtifactsFromPayload(data) ||
         !!data?.job?.artifacts?.assignment_json_url ||
         !!data?.session_state?.current_run?.real2sim?.artifacts?.assignment_json_url ||
         data?.error_info?.code === "mask_assignment_failed";
-      if (shouldRefreshMaskReview) {
+      if (shouldRefreshMaskReview || real2simJobInfo?.job_id) {
         try {
-          const review = await refreshMaskAssignmentReview({ silent: true });
+          const livePreview = await hydrateReal2SimLivePreview(data, {
+            refreshReview: shouldRefreshMaskReview,
+            silentReview: true,
+            autoReview: true,
+          });
+          const review = livePreview?.review || null;
+          const real2simState = getReal2SimStateFromPayload(data);
+          const real2simStatus = String(real2simState?.status || "");
+          if (real2simStatus === "queued" || real2simStatus === "running") {
+            setPill("sim", "warn", "Real2Sim");
+            document.getElementById("sceneSvcStatus").textContent = `Job ${String(real2simState?.job_id || "").slice(0, 8)} running`;
+          } else if (real2simStatus === "succeeded") {
+            setPill("sim", "ok", "Ready");
+          } else if (real2simStatus === "failed") {
+            setPill("sim", "err", "Failed");
+          }
           if (review?.needs_attention) {
             feedbackLines.push("Mask assignment still needs confirmation before you trust downstream layout steps.");
           }
         } catch (reviewErr) {
-          console.warn("Mask assignment review unavailable:", reviewErr);
+          console.warn("Real2Sim live preview restore unavailable:", reviewErr);
         }
       }
 
@@ -83,8 +100,8 @@
         refreshRuntimeRenderImage();
       }
 
-      if (data?.real2sim_job?.job_id) {
-        await monitorReal2SimJob(data.real2sim_job);
+      if (real2simJobInfo?.job_id) {
+        await monitorReal2SimJob(real2simJobInfo);
       }
 
       if (!feedbackLines.length) {

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -14,10 +15,37 @@ from pipelines.real2sim.streaming_generation_client import (
     collect_usd_conversion_pairs,
     convert_outputs_to_usd,
     resolve_scene_graph_path,
+    select_masks_from_assignment,
 )
 
 
 class Real2SimStreamingGenerationClientTest(unittest.TestCase):
+    def test_select_masks_from_assignment_filters_to_assigned_outputs_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mask_paths = []
+            for name in ("0.png", "1.png", "2.png", "3.png"):
+                path = root / name
+                path.write_bytes(b"mask")
+                mask_paths.append(path)
+
+            assignment_path = root / "assignment.json"
+            assignment_path.write_text(
+                json.dumps(
+                    {
+                        "assignments": [
+                            {"output_name": "2"},
+                            {"output_name": "0"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            selected = select_masks_from_assignment(mask_paths, assignment_path)
+
+            self.assertEqual([path.name for path in selected], ["2.png", "0.png"])
+
     def test_build_parser_uses_runtime_defaults(self) -> None:
         args = build_parser().parse_args([])
 

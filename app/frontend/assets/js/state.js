@@ -49,6 +49,13 @@
     const assignmentReviewState = {
       data: null,
       saving: false,
+      dirty: false,
+      signature: "",
+    };
+    const real2simMonitorState = {
+      activeJobId: "",
+      activePromise: null,
+      token: 0,
     };
     const runtimeSessionState = {
       sessionId: null,
@@ -103,9 +110,32 @@
       return runtimeSessionState;
     }
 
+    function clearPersistedRuntimeState() {
+      const previousSessionId = runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY) || null;
+      if (previousSessionId) {
+        window.localStorage.removeItem(runtimeRunStorageKey(previousSessionId));
+      }
+      window.localStorage.removeItem(RUNTIME_SESSION_STORAGE_KEY);
+      window.localStorage.removeItem(RUNTIME_RUN_STORAGE_KEY);
+      window.sessionStorage.removeItem(RUNTIME_RUN_STORAGE_KEY);
+    }
+
+    function invalidateReal2SimMonitor() {
+      real2simMonitorState.token += 1;
+      real2simMonitorState.activeJobId = "";
+      real2simMonitorState.activePromise = null;
+    }
+
     async function ensureRuntimeContext(options = {}) {
       hydrateRuntimeStateFromStorage();
       const forceNewRun = !!options.forceNewRun;
+      const forceNewSession = !!options.forceNewSession;
+      if (forceNewSession) {
+        clearPersistedRuntimeState();
+        runtimeSessionState.sessionId = null;
+        runtimeSessionState.runId = null;
+        runtimeSessionState.context = null;
+      }
       if (!forceNewRun && runtimeSessionState.sessionId && runtimeSessionState.runId) {
         return runtimeSessionState;
       }
@@ -113,7 +143,7 @@
         return runtimeSessionState.initializing;
       }
 
-      const existingSessionId = runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY);
+      const existingSessionId = forceNewSession ? null : (runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY));
       runtimeSessionState.initializing = (async () => {
         let response;
         if (existingSessionId) {
@@ -170,6 +200,111 @@
         resolved.searchParams.set(key, String(value));
       });
       return resolved.toString();
+    }
+
+    async function startNewSession() {
+      invalidateReal2SimMonitor();
+      clearPersistedRuntimeState();
+      runtimeSessionState.sessionId = null;
+      runtimeSessionState.runId = null;
+      runtimeSessionState.context = null;
+      runtimeSessionState.initializing = null;
+
+      interactionState.startedAt = null;
+      interactionState.lastInstruction = "";
+      interactionState.lastJson = null;
+      interactionState.currentSceneGraph = null;
+      real2simLogState.offset = 0;
+      real2simLogState.path = "real2sim.log";
+
+      clearThreeViewer();
+      setPreviewMessage("No render yet. Run Real2Sim or Scene Service to refresh the preview.");
+      resetSimProgress();
+      resetSceneDebug();
+      resetAgentPanel();
+      setAgentErrorInfo(null);
+      document.getElementById("sceneSvcStatus").textContent = "Idle";
+      document.getElementById("statusSimText").textContent = "Idle";
+      document.getElementById("sceneSvcResult").textContent = "Waiting for response...";
+      document.getElementById("jsonStatus").textContent = "Idle";
+      document.getElementById("jsonPreview").textContent = "Waiting for result...";
+      document.getElementById("feedbackBox").textContent = "-";
+      document.getElementById("real2simLog").textContent = "Waiting for Real2Sim logs...";
+      document.getElementById("real2simLogStatus").textContent = "Idle";
+      document.getElementById("sceneInput").value = "";
+      const classDirPicker = document.getElementById("classDirPicker");
+      if (classDirPicker) {
+        classDirPicker.value = "";
+      }
+      clearReferenceImageInput();
+      setResampleMode("joint");
+      updateInputMeta();
+      setMetrics({ objects: "-", edges: "-", score: "-" });
+      setPill("model", "", "Idle");
+      setPill("graph", "", "Idle");
+      setPill("sim", "", "Idle");
+
+      const button = document.getElementById("btnNewSession");
+      if (button) {
+        button.disabled = true;
+      }
+      try {
+        await ensureRuntimeContext({ forceNewSession: true });
+        const restored = await restoreAgentState();
+        if (!restored?.scene_graph) {
+          await loadSceneGraph();
+        }
+        toast("ok", "New session", "Started a fresh session with a new run.");
+      } catch (err) {
+        console.error(err);
+        toast("err", "New session failed", String(err));
+      } finally {
+        if (button) {
+          button.disabled = false;
+        }
+      }
+    }
+
+    function getReal2SimStateFromPayload(payload = {}) {
+      if (payload?.session_state?.current_run?.real2sim && typeof payload.session_state.current_run.real2sim === "object") {
+        return payload.session_state.current_run.real2sim;
+      }
+      if (payload?.job?.session_state?.current_run?.real2sim && typeof payload.job.session_state.current_run.real2sim === "object") {
+        return payload.job.session_state.current_run.real2sim;
+      }
+      return null;
+    }
+
+    function getReal2SimArtifactsFromPayload(payload = {}) {
+      const real2simState = getReal2SimStateFromPayload(payload);
+      if (real2simState?.artifacts && typeof real2simState.artifacts === "object") {
+        return real2simState.artifacts;
+      }
+      if (payload?.job?.artifacts && typeof payload.job.artifacts === "object") {
+        return payload.job.artifacts;
+      }
+      if (payload?.real2sim_artifacts && typeof payload.real2sim_artifacts === "object") {
+        return payload.real2sim_artifacts;
+      }
+      return null;
+    }
+
+    function getReal2SimJobInfoFromPayload(payload = {}) {
+      const explicitJob = payload?.real2sim_job;
+      if (explicitJob && typeof explicitJob === "object" && explicitJob.job_id) {
+        return explicitJob;
+      }
+
+      const real2simState = getReal2SimStateFromPayload(payload);
+      const status = String(real2simState?.status || "");
+      if ((status === "queued" || status === "running") && real2simState?.job_id) {
+        return {
+          job_id: String(real2simState.job_id),
+          log_path: String(real2simState.log_path || "real2sim.log"),
+          log_start_offset: Number(real2simState.log_start_offset || 0),
+        };
+      }
+      return null;
     }
 
     function setPreviewMessage(message) {
@@ -908,7 +1043,7 @@
     }
 
     async function addGlbToViewer(url, opts = {}) {
-      await initThreeViewer();
+      await showThreeViewer();
       if (!url) return false;
       if (opts.isMerged) {
         if (viewerState.mergedUrl === url || viewerState.loadingMerged) return false;
