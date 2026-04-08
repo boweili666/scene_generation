@@ -95,6 +95,18 @@
       flex-wrap: wrap;
       justify-content:flex-end;
     }
+    .topbar-actions{
+      display:flex;
+      align-items:center;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .topbar-session-btn{
+      min-width: 118px;
+      border-radius: 999px;
+      padding-inline: 14px;
+      white-space: nowrap;
+    }
     .pill{
       display:inline-flex;
       align-items:center;

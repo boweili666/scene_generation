@@ -280,6 +280,8 @@
 
     function resetMaskAssignmentReview(message = "Run Real2Sim to inspect or correct mask-to-node assignment.") {
       assignmentReviewState.data = null;
+      assignmentReviewState.dirty = false;
+      assignmentReviewState.signature = "";
       const meta = document.getElementById("maskReviewMeta");
       const panel = document.getElementById("maskReviewPanel");
       const overlayMeta = document.getElementById("maskOverlayMeta");
@@ -304,6 +306,28 @@
       }
     }
 
+    function getMaskAssignmentReviewSignature(review) {
+      if (!review || typeof review !== "object") return "";
+      const signaturePayload = {
+        overlay_image_url: review.overlay_image_url || "",
+        assignments: Array.isArray(review.assignments)
+          ? review.assignments.map((row) => ({
+              scene_path: row?.scene_path || "",
+              mask_label: Number(row?.mask_label || 0),
+              output_name: row?.output_name || "",
+              confidence: Number(row?.confidence || 0),
+            }))
+          : [],
+        unmatched_scene_paths: Array.isArray(review.unmatched_scene_paths) ? review.unmatched_scene_paths : [],
+        unmatched_mask_labels: Array.isArray(review.unmatched_mask_labels) ? review.unmatched_mask_labels : [],
+        manifest: {
+          unmatched_scene_paths: Array.isArray(review?.manifest?.unmatched_scene_paths) ? review.manifest.unmatched_scene_paths : [],
+          unmatched_outputs: Array.isArray(review?.manifest?.unmatched_outputs) ? review.manifest.unmatched_outputs : [],
+        },
+      };
+      return JSON.stringify(signaturePayload);
+    }
+
     function renderMaskAssignmentReview(review) {
       const meta = document.getElementById("maskReviewMeta");
       const panel = document.getElementById("maskReviewPanel");
@@ -318,6 +342,8 @@
       }
 
       assignmentReviewState.data = review;
+      assignmentReviewState.signature = getMaskAssignmentReviewSignature(review);
+      assignmentReviewState.dirty = false;
       const summary = review.summary || {};
       const manifest = review.manifest || {};
       const matched = Number(summary.matched_assignments || 0);
@@ -446,6 +472,9 @@
           }
           select.appendChild(option);
         }
+        select.addEventListener("change", () => {
+          assignmentReviewState.dirty = true;
+        });
         row.appendChild(select);
 
         const reason = document.createElement("div");
@@ -488,6 +517,10 @@
 
     async function refreshMaskAssignmentReview(options = {}) {
       const silent = !!options.silent;
+      const auto = !!options.auto;
+      if (auto && assignmentReviewState.dirty) {
+        return assignmentReviewState.data;
+      }
       await ensureRuntimeContext();
       const response = await fetch(withRuntimeQuery("/real2sim/assignment"));
       const data = await response.json();
@@ -498,6 +531,11 @@
         return null;
       }
       const review = data?.review || null;
+      const nextSignature = getMaskAssignmentReviewSignature(review);
+      if (auto && nextSignature && nextSignature === assignmentReviewState.signature) {
+        assignmentReviewState.data = review;
+        return review;
+      }
       renderMaskAssignmentReview(review);
       return review;
     }
@@ -515,6 +553,7 @@
         if (!response.ok) {
           throw new Error(data?.error || "Failed to save the reviewed mask assignment.");
         }
+        assignmentReviewState.dirty = false;
         renderMaskAssignmentReview(data?.review || null);
         toast("ok", "Mask mapping saved", "Updated assignment.json and refreshed the Real2Sim manifest.");
         return data?.review || null;

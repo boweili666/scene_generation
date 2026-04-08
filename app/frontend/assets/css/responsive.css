@@ -25,5 +25,6 @@
       textarea{ min-height: 180px; }
       .drawer-grid{ grid-template-columns: 1fr; }
       .topbar-inner{ flex-direction:column; align-items:flex-start; }
+      .topbar-actions{ margin-left: 0; }
       .status-row{ justify-content:flex-start; }
     }

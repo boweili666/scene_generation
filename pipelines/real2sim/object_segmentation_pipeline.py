@@ -18,6 +18,7 @@ DEFAULT_MESH_OUTPUT = Path("runtime/real2sim/meshes")
 DEFAULT_REUSE_MESH_DIR = Path("runtime/real2sim/meshes")
 DEFAULT_PROMPTS = ["table", "desk lamp", "alarm clock", "notebook", "pen", "glass cup"]
 MASK_METADATA_FILENAME = "mask_metadata.json"
+SAM3_MODEL_ID = "facebook/sam3"
 
 
 def normalize_label(text: str) -> str:
@@ -95,6 +96,42 @@ def choose_prompts(args: argparse.Namespace) -> list[str]:
 
     return DEFAULT_PROMPTS
 
+
+def _is_network_timeout_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(
+        token in text
+        for token in (
+            "readtimeout",
+            "read timed out",
+            "timed out",
+            "connectionerror",
+            "connection timed out",
+        )
+    )
+
+
+def _load_pretrained_with_local_fallback(loader: Any, *, component_name: str, local_files_only: bool) -> Any:
+    if local_files_only:
+        return loader.from_pretrained(SAM3_MODEL_ID, local_files_only=True)
+
+    try:
+        return loader.from_pretrained(SAM3_MODEL_ID, local_files_only=False)
+    except Exception as exc:
+        if not _is_network_timeout_error(exc):
+            raise
+        print(
+            f"[WARN] Timed out while loading {component_name} from Hugging Face. "
+            "Retrying with local_files_only=True."
+        )
+        try:
+            return loader.from_pretrained(SAM3_MODEL_ID, local_files_only=True)
+        except Exception as local_exc:
+            raise RuntimeError(
+                f"Timed out while loading {component_name} for {SAM3_MODEL_ID}, "
+                "and no usable local cache was found."
+            ) from local_exc
+
 def copy_reused_meshes(prompts: list[str], reuse_mesh_dir: Path, mesh_output_dir: Path) -> int:
     if not reuse_mesh_dir.exists():
         print(f"[WARN] Reuse mesh directory does not exist: {reuse_mesh_dir}")
@@ -146,8 +183,16 @@ def main() -> None:
     print(f"[INFO] Prompts: {prompts}")
     print(f"[INFO] Scene graph: {args.scene_graph}")
 
-    model = Sam3Model.from_pretrained("facebook/sam3", local_files_only=args.local_files_only).to(device)
-    processor = Sam3Processor.from_pretrained("facebook/sam3", local_files_only=args.local_files_only)
+    model = _load_pretrained_with_local_fallback(
+        Sam3Model,
+        component_name="SAM3 model weights",
+        local_files_only=args.local_files_only,
+    ).to(device)
+    processor = _load_pretrained_with_local_fallback(
+        Sam3Processor,
+        component_name="SAM3 processor assets",
+        local_files_only=args.local_files_only,
+    )
 
     image = Image.open(args.image).convert("RGB")
     image_np = np.array(image)
