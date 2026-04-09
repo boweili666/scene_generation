@@ -54,6 +54,7 @@ parser.add_argument("--append", action="store_true", default=False, help="Append
 parser.add_argument("--lin_step", type=float, default=0.015, help="Mouse UI translation step size in meters.")
 parser.add_argument("--ang_step", type=float, default=0.10, help="Mouse UI rotation step size in radians.")
 parser.add_argument("--arm_side", type=str, default="left", choices=["left", "right"], help="Active arm to teleoperate for agibot/r1lite.")
+parser.add_argument("--show-workspace", action="store_true", default=False, help="Render the robot working-area box in Isaac Sim.")
 parser.add_argument("--scene_usd_path", type=str, default=str(DEFAULT_SCENE_USD_PATH), help="Current scene USD path.")
 parser.add_argument("--scene_graph_path", type=str, default=str(SCENE_GRAPH_PATH), help="Current scene graph JSON path.")
 parser.add_argument("--placements_path", type=str, default=str(DEFAULT_PLACEMENTS_PATH), help="Current placements JSON path.")
@@ -165,6 +166,7 @@ def main():
             plan_output_dir=args_cli.plan_output_dir,
             base_z_bias=args_cli.base_z_bias,
             arm_side=args_cli.arm_side,
+            show_workspace=args_cli.show_workspace,
         ),
     )
 

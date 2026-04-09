@@ -575,6 +575,7 @@ class RobotStackController:
         self.left_arm_joint_ids: torch.Tensor | None = None
         self.right_arm_joint_ids: torch.Tensor | None = None
         self.bimanual_ik_controller: IsaacLabBimanualPoseController | None = None
+        self._arm_controller_cache: dict[str, tuple[IsaacLabPoseController, IsaacLabPoseController]] = {}
         if self.use_whole_body:
             if spec.name == "agibot":
                 torso_patterns = ("idx01_body_joint1", "idx02_body_joint2")
@@ -623,6 +624,11 @@ class RobotStackController:
                 device=sim.device,
                 robot=self.robot,
             )
+        if self.arm_switch_supported:
+            for side in ("left", "right"):
+                self._arm_controller_cache[side] = self._build_arm_controllers(side)
+        else:
+            self._arm_controller_cache[self.active_arm_side] = self._build_arm_controllers(self.active_arm_side)
         self._configure_active_arm(self.active_arm_side)
 
         marker_cfg = FRAME_MARKER_CFG.copy()
@@ -656,6 +662,34 @@ class RobotStackController:
             "hold_open_patterns": self.spec.gripper.hold_open_patterns,
         }
 
+    def _build_arm_controllers(self, arm_side: str) -> tuple[IsaacLabPoseController, IsaacLabPoseController]:
+        side = normalize_arm_side(self.spec.name, arm_side if self.arm_switch_supported else "left")
+        return (
+            IsaacLabPoseController(
+                robot_name=self.spec.name,
+                num_envs=self.scene.num_envs,
+                device=self.sim.device,
+                robot=self.robot,
+                arm_side=side,
+            ),
+            IsaacLabPoseController(
+                robot_name=self.spec.name,
+                num_envs=self.scene.num_envs,
+                device=self.sim.device,
+                robot=self.robot,
+                arm_side=side,
+                use_relative_mode=True,
+            ),
+        )
+
+    def _get_arm_controllers(self, arm_side: str) -> tuple[IsaacLabPoseController, IsaacLabPoseController]:
+        side = normalize_arm_side(self.spec.name, arm_side if self.arm_switch_supported else "left")
+        controllers = self._arm_controller_cache.get(side)
+        if controllers is None:
+            controllers = self._build_arm_controllers(side)
+            self._arm_controller_cache[side] = controllers
+        return controllers
+
     def _configure_active_arm(self, arm_side: str) -> None:
         side = normalize_arm_side(self.spec.name, arm_side if self.arm_switch_supported else "left")
         fields = self._active_arm_fields(side)
@@ -680,21 +714,7 @@ class RobotStackController:
             torch.tensor(hold_open_joint_ids, dtype=torch.long, device=self.sim.device) if hold_open_joint_ids else None
         )
 
-        self.ik_controller = IsaacLabPoseController(
-            robot_name=self.spec.name,
-            num_envs=self.scene.num_envs,
-            device=self.sim.device,
-            robot=self.robot,
-            arm_side=side,
-        )
-        self.teleop_ik_controller = IsaacLabPoseController(
-            robot_name=self.spec.name,
-            num_envs=self.scene.num_envs,
-            device=self.sim.device,
-            robot=self.robot,
-            arm_side=side,
-            use_relative_mode=True,
-        )
+        self.ik_controller, self.teleop_ik_controller = self._get_arm_controllers(side)
         self.active_arm_side = side
         self.ui_target_pos = None
         self.ui_target_quat = None

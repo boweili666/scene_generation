@@ -77,6 +77,7 @@ class SceneMouseCollectArgs:
     plan_output_dir: str
     base_z_bias: float
     arm_side: str
+    show_workspace: bool
 
 
 @dataclass(frozen=True)
@@ -508,6 +509,19 @@ def _compute_world_prim_min_z(stage, prim_path: str) -> float | None:
     if aligned.IsEmpty():
         return None
     return float(aligned.GetMin()[2])
+
+
+def _compute_world_prim_max_z(stage, prim_path: str) -> float | None:
+    from pxr import Usd, UsdGeom
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim or not prim.IsValid():
+        return None
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
+    aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    if aligned.IsEmpty():
+        return None
+    return float(aligned.GetMax()[2])
 
 
 def _align_robot_root_to_floor(
@@ -1082,6 +1096,8 @@ def _build_scene_mouse_collect(
     robot_name: str,
     args: SceneMouseCollectArgs,
 ):
+    from .robot_workspaces import add_projected_workspace_visual_to_stage, project_workspace_box_to_support
+
     scene_graph, placements = load_scene_state(args.scene_graph_path, args.placements_path)
     plan = plan_robot_base_pose(
         scene_graph,
@@ -1099,6 +1115,7 @@ def _build_scene_mouse_collect(
         env_spacing=spec.env_spacing,
     )
     scene = InteractiveScene(scene_cfg)
+    workspace_visual_summary = None
     scene_root_path = f"{scene.env_prim_paths[0]}/GeneratedScene"
     removed_physics_scenes = _remove_nested_physics_scenes(scene.stage, scene_root_path)
     if removed_physics_scenes:
@@ -1124,6 +1141,24 @@ def _build_scene_mouse_collect(
         convex_decomposition_settings=resolved_convex_decomposition_settings,
     )
     floor_realign_summary = _realign_generated_scene_floor_objects(scene.stage, scene_root_path, scene_graph)
+    if args.show_workspace:
+        support_live_prim_path = f"{scene_root_path}/{Path(plan.support_prim).name}"
+        support_top_z = _compute_world_prim_max_z(scene.stage, support_live_prim_path)
+        projected_workspace = project_workspace_box_to_support(
+            robot=robot_name,
+            base_pose=plan.base_pose,
+            support_center_xy=plan.support_center_xy,
+            support_half_extents_xy=plan.support_half_extents_xy,
+            support_yaw_deg=plan.support_yaw_deg,
+        )
+        if support_top_z is not None and projected_workspace is not None:
+            workspace_visual_summary = add_projected_workspace_visual_to_stage(
+                scene.stage,
+                robot=robot_name,
+                root_prim_path=f"{scene_root_path}/TaskWorkspaceVisuals",
+                projected_workspace=projected_workspace,
+                top_z=support_top_z,
+            )
     sim.reset()
 
     cameras = {"world": scene["world_camera"]}
@@ -1212,6 +1247,7 @@ def _build_scene_mouse_collect(
         aligned_base_z,
         physics_rebind_summary,
         floor_realign_summary,
+        workspace_visual_summary,
     )
 
 
@@ -1237,6 +1273,7 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
             aligned_base_z,
             physics_rebind_summary,
             floor_realign_summary,
+            workspace_visual_summary,
         ) = _build_scene_mouse_collect(
             sim,
             robot_name,
@@ -1308,6 +1345,8 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
             f"visual_roots={floor_realign_summary['visual_roots']} "
             f"grounded_roots={floor_realign_summary['grounded_roots']}"
         )
+        if workspace_visual_summary is not None:
+            print(f"[INFO] Workspace visuals: {workspace_visual_summary['workspace_root_path']}")
         print(f"[INFO] Dataset: {os.path.abspath(writer.dataset_file)}")
 
         sim_time = 0.0
