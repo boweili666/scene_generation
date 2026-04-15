@@ -63,7 +63,7 @@ parser.add_argument("--support", type=str, default=None, help="Optional explicit
 parser.add_argument(
     "--object_collision_approx",
     type=str,
-    default="default",
+    default="convex_decomposition",
     choices=[
         "default",
         "triangle_mesh",
@@ -80,7 +80,7 @@ parser.add_argument(
 parser.add_argument(
     "--target_collision_approx",
     type=str,
-    default="default",
+    default="convex_decomposition",
     choices=[
         "default",
         "triangle_mesh",

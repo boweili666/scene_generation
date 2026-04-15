@@ -499,12 +499,17 @@ def _apply_root_pose(controller: RobotStackController, plan: RobotPlacementPlan,
 
 
 def _compute_world_prim_min_z(stage, prim_path: str) -> float | None:
+    # For static scenery (support/table), the classic `UsdGeom.BBoxCache` is
+    # fine: nothing moves it so the authored xformOps reflect the truth. This
+    # helper is no longer used for the dynamic grasp target — for that, see
+    # `_read_rigid_body_world_position_z` below, which goes through the
+    # physx backend via `SingleXFormPrim.get_world_pose()`.
     from pxr import Usd, UsdGeom
 
     prim = stage.GetPrimAtPath(prim_path)
     if not prim or not prim.IsValid():
         return None
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["render", "default"], useExtentsHint=False)
     aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
     if aligned.IsEmpty():
         return None
@@ -517,11 +522,54 @@ def _compute_world_prim_max_z(stage, prim_path: str) -> float | None:
     prim = stage.GetPrimAtPath(prim_path)
     if not prim or not prim.IsValid():
         return None
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default"], useExtentsHint=True)
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["render", "default"], useExtentsHint=False)
     aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
     if aligned.IsEmpty():
         return None
     return float(aligned.GetMax()[2])
+
+
+_RIGID_BODY_VIEW_CACHE: dict[str, object] = {}
+
+
+def _get_rigid_body_view(prim_path: str):
+    # Create (once) and cache a physx-backed rigid-body view for the given
+    # prim path. Isaac Lab's own `RigidObject` uses exactly this mechanism
+    # (`SimulationManager.get_physics_sim_view().create_rigid_body_view(...)`)
+    # to read live rigid body state on GPU physics scenes. We can't reuse
+    # isaaclab's `RigidObject` because our target lives inside an untracked
+    # `AssetBaseCfg` USD reference, but we can create a parallel view here.
+    cached = _RIGID_BODY_VIEW_CACHE.get(prim_path)
+    if cached is not None:
+        return cached
+    from isaacsim.core.simulation_manager import SimulationManager
+
+    physics_sim_view = SimulationManager.get_physics_sim_view()
+    if physics_sim_view is None:
+        return None
+    view = physics_sim_view.create_rigid_body_view(prim_path)
+    if view is None or getattr(view, "_backend", None) is None:
+        return None
+    _RIGID_BODY_VIEW_CACHE[prim_path] = view
+    return view
+
+
+def _read_rigid_body_world_position_z(prim_path: str) -> float | None:
+    # Live read of a rigid body's world Z from the physx tensor backend.
+    # `get_transforms()` returns `(N, 7)` with `[px, py, pz, qx, qy, qz, qw]`
+    # per instance, reflecting the true physics state — unlike classic USD
+    # `xformOp` reads, which lag behind on GPU physics scenes.
+    view = _get_rigid_body_view(prim_path)
+    if view is None:
+        return None
+    transforms = view.get_transforms()
+    if transforms is None or transforms.shape[0] == 0:
+        return None
+    return float(transforms[0, 2].item())
+
+
+def _clear_rigid_body_view_cache() -> None:
+    _RIGID_BODY_VIEW_CACHE.clear()
 
 
 def _align_robot_root_to_floor(
@@ -579,72 +627,16 @@ def _iter_collision_prims(root_prim):
     return [prim for prim in Usd.PrimRange(root_prim) if prim.IsA(UsdGeom.Gprim)]
 
 
-def _is_proxy_collision_prim(prim) -> bool:
-    return bool(prim and prim.IsValid() and prim.GetName().startswith("CollisionProxy"))
-
-
 def _iter_visual_collision_prims(root_prim):
     from pxr import UsdGeom
 
     visual_prims = []
     for prim in _iter_collision_prims(root_prim):
-        if _is_proxy_collision_prim(prim):
-            continue
         purpose = UsdGeom.Imageable(prim).GetPurposeAttr().Get()
         if purpose == UsdGeom.Tokens.guide:
             continue
         visual_prims.append(prim)
     return visual_prims
-
-
-def _set_collision_enabled(prim, enabled: bool) -> None:
-    from pxr import UsdPhysics
-
-    if not prim or not prim.IsValid():
-        return
-    collision_api = UsdPhysics.CollisionAPI.Apply(prim)
-    collision_api.CreateCollisionEnabledAttr(bool(enabled))
-
-
-def _remove_collision_proxy_prims(root_prim) -> None:
-    if not root_prim or not root_prim.IsValid():
-        return
-    stage = root_prim.GetStage()
-    to_remove = []
-    root_prefix = str(root_prim.GetPath()) + "/"
-    for prim in stage.Traverse():
-        prim_path = str(prim.GetPath())
-        if not prim_path.startswith(root_prefix):
-            continue
-        if prim.GetName().startswith("CollisionProxy"):
-            to_remove.append(prim_path)
-    for prim_path in sorted(to_remove, key=len, reverse=True):
-        stage.RemovePrim(prim_path)
-
-
-def _create_collision_cube(stage, prim_path: str, center, size, physics_scene_path: str) -> None:
-    from pxr import Gf, UsdGeom, UsdPhysics
-
-    cube = UsdGeom.Cube.Define(stage, prim_path)
-    cube.CreateSizeAttr(1.0)
-    cube.CreateVisibilityAttr("invisible")
-    cube.CreatePurposeAttr(UsdGeom.Tokens.guide)
-
-    xform = UsdGeom.Xformable(cube.GetPrim())
-    xform.ClearXformOpOrder()
-    xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in center]))
-    xform.AddScaleOp().Set(Gf.Vec3f(*[max(1e-3, float(v)) for v in size]))
-
-    collision_api = UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
-    collision_api.CreateCollisionEnabledAttr(True)
-    _assign_simulation_owner(collision_api, physics_scene_path)
-
-
-def _upsert_collision_proxy(root_prim, center, size, physics_scene_path: str) -> None:
-    if not root_prim or not root_prim.IsValid():
-        return
-    _remove_collision_proxy_prims(root_prim)
-    _create_collision_cube(root_prim.GetStage(), str(root_prim.GetPath().AppendChild("CollisionProxy")), center, size, physics_scene_path)
 
 
 def _supported_scene_object_paths(scene_graph: dict) -> set[str]:
@@ -680,32 +672,6 @@ def _compute_bounds_for_prims(stage, prims) -> object | None:
             continue
         combined.UnionWith(rng)
     return combined if found and not combined.IsEmpty() else None
-
-
-def _compute_local_bbox_info_for_prim(root_prim) -> dict[str, tuple[float, float, float]] | None:
-    from pxr import Usd, UsdGeom
-
-    if not root_prim or not root_prim.IsValid():
-        return None
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"], useExtentsHint=True)
-    bbox = bbox_cache.ComputeLocalBound(root_prim)
-    rng = bbox.ComputeAlignedRange()
-    if rng.IsEmpty():
-        return None
-    bmin = rng.GetMin()
-    bmax = rng.GetMax()
-    return {
-        "center": (
-            float((bmin[0] + bmax[0]) * 0.5),
-            float((bmin[1] + bmax[1]) * 0.5),
-            float((bmin[2] + bmax[2]) * 0.5),
-        ),
-        "size": (
-            float(bmax[0] - bmin[0]),
-            float(bmax[1] - bmin[1]),
-            float(bmax[2] - bmin[2]),
-        ),
-    }
 
 
 def _realign_generated_scene_floor_objects(
@@ -831,8 +797,6 @@ def _rebind_generated_scene_physics(
             "dynamic_roots": 0,
             "room_colliders": 0,
             "object_colliders": 0,
-            "visual_object_colliders": 0,
-            "proxy_object_colliders": 0,
             "object_collision_approx": None,
             "target_collision_approx": None,
             "convex_decomposition_prim_count": 0,
@@ -851,8 +815,6 @@ def _rebind_generated_scene_physics(
 
     dynamic_roots = 0
     object_colliders = 0
-    visual_object_colliders = 0
-    proxy_object_colliders = 0
     applied_object_collision_approx = None
     applied_target_collision_approx = None
     convex_decomposition_prim_count = 0
@@ -872,26 +834,8 @@ def _rebind_generated_scene_physics(
         mass_api = UsdPhysics.MassAPI.Apply(live_prim)
         mass_api.CreateMassAttr(1.0)
 
-        proxy_collision_prims = [prim for prim in _iter_collision_prims(live_prim) if _is_proxy_collision_prim(prim)]
         visual_collision_prims = _iter_visual_collision_prims(live_prim)
-        if not visual_collision_prims and not proxy_collision_prims:
-            bbox_info = _compute_local_bbox_info_for_prim(live_prim)
-            if bbox_info is not None:
-                _upsert_collision_proxy(
-                    live_prim,
-                    bbox_info["center"],
-                    bbox_info["size"],
-                    physics_scene_path,
-                )
-                proxy_collision_prims = [prim for prim in _iter_collision_prims(live_prim) if _is_proxy_collision_prim(prim)]
-
-        active_collision_prims = (
-            visual_collision_prims if visual_collision_prims else proxy_collision_prims
-        )
-
-        for proxy_prim in proxy_collision_prims:
-            _set_collision_enabled(proxy_prim, not visual_collision_prims)
-            _assign_simulation_owner(UsdPhysics.CollisionAPI.Apply(proxy_prim), physics_scene_path)
+        active_collision_prims = visual_collision_prims
 
         for collision_prim in active_collision_prims:
             collision_api = UsdPhysics.CollisionAPI.Apply(collision_prim)
@@ -905,11 +849,7 @@ def _rebind_generated_scene_physics(
                     else (
                         target_collision_approx
                         if target_collision_approx is not None and is_target_prim
-                        else (
-                            "convexHull"
-                            if _is_proxy_collision_prim(collision_prim)
-                            else _DYNAMIC_MESH_COLLISION_APPROX
-                        )
+                        else _DYNAMIC_MESH_COLLISION_APPROX
                     )
                 )
                 UsdPhysics.MeshCollisionAPI.Apply(collision_prim).CreateApproximationAttr(
@@ -923,9 +863,6 @@ def _rebind_generated_scene_physics(
                 elif target_collision_approx is not None and is_target_prim:
                     applied_target_collision_approx = approximation
             object_colliders += 1
-        visual_object_colliders += len(visual_collision_prims)
-        if not visual_collision_prims:
-            proxy_object_colliders += len(proxy_collision_prims)
         dynamic_roots += 1
 
     return {
@@ -933,8 +870,6 @@ def _rebind_generated_scene_physics(
         "dynamic_roots": dynamic_roots,
         "room_colliders": room_colliders,
         "object_colliders": object_colliders,
-        "visual_object_colliders": visual_object_colliders,
-        "proxy_object_colliders": proxy_object_colliders,
         "object_collision_approx": applied_object_collision_approx,
         "target_collision_approx": applied_target_collision_approx,
         "convex_decomposition_prim_count": convex_decomposition_prim_count,
@@ -1316,9 +1251,7 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
             f"scene={physics_rebind_summary['physics_scene_path']} "
             f"dynamic_roots={physics_rebind_summary['dynamic_roots']} "
             f"room_colliders={physics_rebind_summary['room_colliders']} "
-            f"object_colliders={physics_rebind_summary['object_colliders']} "
-            f"visual_object_colliders={physics_rebind_summary['visual_object_colliders']} "
-            f"proxy_object_colliders={physics_rebind_summary['proxy_object_colliders']}"
+            f"object_colliders={physics_rebind_summary['object_colliders']}"
         )
         if physics_rebind_summary["object_collision_approx"] is not None:
             print(

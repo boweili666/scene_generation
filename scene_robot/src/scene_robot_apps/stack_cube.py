@@ -184,7 +184,7 @@ AGIBOT_STACK_SPEC = RobotStackSpec(
         mode="omnipicker",
         joint_patterns=("idx41_gripper_l_outer_joint1",),
         hold_open_patterns=("idx81_gripper_r_outer_joint1",),
-        close_ratio=0.85,
+        close_ratio=1.0,
         close_time=0.45,
         open_time=0.35,
         min_alpha_for_lift=0.9,
@@ -1070,6 +1070,51 @@ class RobotStackController:
             arm_joint_pos_des_raw = self.ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, arm_joint_pos)
             motion_scale = max(0.01, min(self.spec.stack.motion_scale, 1.0))
             arm_joint_pos_des = arm_joint_pos + motion_scale * (arm_joint_pos_des_raw - arm_joint_pos)
+        self._apply_arm_command(arm_joint_pos_des)
+        self._update_hold_joints()
+        self._apply_gripper(sim_dt, gripper_closed)
+        target_pos_w, target_quat_w = combine_frame_transforms(
+            root_pose_w[:, 0:3], root_pose_w[:, 3:7], self.target_pos, self.target_quat
+        )
+        self.ee_marker.visualize(ee_pose_w[:, 0:3], ee_pose_w[:, 3:7])
+        self.goal_marker.visualize(target_pos_w, target_quat_w)
+
+    def current_ee_pose_base(self) -> tuple[torch.Tensor, torch.Tensor]:
+        _jacobian, _ee_pose_w, _arm_joint_pos, ee_pos_b, ee_quat_b = self._current_ee()
+        return ee_pos_b.clone(), ee_quat_b.clone()
+
+    def current_ee_pose_world(self) -> tuple[torch.Tensor, torch.Tensor]:
+        _jacobian, ee_pose_w, _arm_joint_pos, _ee_pos_b, _ee_quat_b = self._current_ee()
+        return ee_pose_w[:, 0:3].clone(), ee_pose_w[:, 3:7].clone()
+
+    def step_pose_target(
+        self,
+        target_pos_b: torch.Tensor,
+        target_quat_b: torch.Tensor,
+        gripper_closed: bool,
+    ) -> None:
+        sim_dt = self.sim.get_physics_dt()
+        jacobian, ee_pose_w, arm_joint_pos, ee_pos_b, ee_quat_b = self._current_ee()
+        root_pose_w = self.robot.data.root_pose_w
+
+        if target_pos_b.ndim == 1:
+            target_pos_b = target_pos_b.unsqueeze(0)
+        if target_quat_b.ndim == 1:
+            target_quat_b = target_quat_b.unsqueeze(0)
+
+        self.target_pos = target_pos_b.clone()
+        self.target_quat = target_quat_b.clone()
+        self.ui_target_pos = self.target_pos.clone()
+        self.ui_target_quat = self.target_quat.clone()
+
+        if self.use_whole_body:
+            arm_joint_pos_des = arm_joint_pos
+        else:
+            self.ik_controller.set_command(torch.cat([self.target_pos, self.target_quat], dim=1))
+            arm_joint_pos_des_raw = self.ik_controller.compute(ee_pos_b, ee_quat_b, jacobian, arm_joint_pos)
+            motion_scale = max(0.01, min(self.spec.stack.motion_scale, 1.0))
+            arm_joint_pos_des = arm_joint_pos + motion_scale * (arm_joint_pos_des_raw - arm_joint_pos)
+
         self._apply_arm_command(arm_joint_pos_des)
         self._update_hold_joints()
         self._apply_gripper(sim_dt, gripper_closed)
