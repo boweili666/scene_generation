@@ -103,7 +103,6 @@ class SceneAutoGraspCollectArgs:
     start_pose_distance_weight: float
     start_pose_rotation_weight: float
     lazy_build_target_annotation: bool
-    show_grasp_poses: bool
     wait_for_run_request: bool
     agibot_ee_frame_remap: str
     num_episodes: int = 1
@@ -1174,10 +1173,28 @@ def _attempt_recorded_grasp(
 # =============================================================================
 # Visuals / preview refresh helpers
 # =============================================================================
-def _clear_grasp_visuals(stage, *, root_prim_path: str = "/Visuals/AutoGraspVisuals") -> None:
-    stage.RemovePrim(root_prim_path)
-    if root_prim_path != "/Visuals/AutoGraspPreviewFrames":
-        stage.RemovePrim("/Visuals/AutoGraspPreviewFrames")
+_PREVIEW_LEAF_NAMES = ("AutoGraspVisuals", "AutoGraspPreviewFrames")
+
+
+def _clear_grasp_visuals(stage, *, root_prim_path: str | None = None) -> None:
+    # Remove *all* copies of the grasp-preview prim subtrees, including the
+    # re-parented ones under `/World/envs/env_N/GeneratedScene/<target>/...`
+    # that get created when `parent_prim_path` is used in
+    # `add_pose_frames_to_stage` / `add_grasp_candidates_visuals_to_stage`.
+    # The old implementation only removed paths at stage root, missing the
+    # re-parented copies so the preview markers persisted after Run.
+    leaf_names = set(_PREVIEW_LEAF_NAMES)
+    if root_prim_path:
+        leaf_names.add(root_prim_path.rsplit("/", 1)[-1])
+    to_remove: list[str] = []
+    for prim in stage.Traverse():
+        if not prim.IsValid():
+            continue
+        if prim.GetName() in leaf_names:
+            to_remove.append(str(prim.GetPath()))
+    # Remove from longest-first so children are gone before parents.
+    for path in sorted(set(to_remove), key=len, reverse=True):
+        stage.RemovePrim(path)
 
 
 def _wait_for_run_request(
@@ -1388,14 +1405,14 @@ def _run_preview_gate(
     args: SceneAutoGraspCollectArgs,
     candidate: FilteredGraspExecution,
 ) -> bool:
-    # Optionally draws the selected grasp's axis marker + the robot's current
-    # gripper frame, then blocks on the `Run Selected Grasp` / `Close Preview`
-    # UI until the user decides. Returns True on Run, False on Close.
+    # Draws the selected grasp's axis marker + the robot's current gripper
+    # frame, then blocks on the `Run Selected Grasp` / `Close Preview` UI
+    # until the user decides. Returns True on Run, False on Close. All
+    # preview visuals are wiped before returning either way so the recorded
+    # rollout starts from a clean scene.
     preview_state = {"candidate": candidate}
 
     def _refresh_preview() -> None:
-        if not args.show_grasp_poses:
-            return
         refreshed_candidate = _refresh_candidate_world_pose_after_reset(
             scene.stage,
             args,
@@ -1410,9 +1427,8 @@ def _run_preview_gate(
             ee_frame_remap=args.agibot_ee_frame_remap,
         )
 
-    if args.show_grasp_poses:
-        # Scene was just built + settled; no reset needed before drawing.
-        _refresh_preview()
+    # Scene was just built + settled; no reset needed before drawing.
+    _refresh_preview()
 
     if not args.wait_for_run_request:
         _clear_grasp_visuals(scene.stage)
@@ -1425,12 +1441,12 @@ def _run_preview_gate(
         controller,
         sync_cameras,
         title=f"{robot_name} Auto Grasp Preview",
-        refresh_preview=_refresh_preview if args.show_grasp_poses else None,
+        refresh_preview=_refresh_preview,
     )
+    _clear_grasp_visuals(scene.stage)
     if not should_run:
         print("[INFO] Auto grasp preview closed before execution.")
         return False
-    _clear_grasp_visuals(scene.stage)
     return True
 
 

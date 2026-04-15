@@ -206,8 +206,12 @@ AGIBOT_G1_OMNIPICKER_CFG = ArticulationCfg(
         joint_pos={
             "idx01_body_joint1": 0.0,
             "idx02_body_joint2": 0.4363,
-            "idx11_head_joint1": 0.8727,
-            "idx12_head_joint2": 0.42,
+            # Head look-down: keep yaw neutral and pitch the head ~30° so the
+            # gripper workspace / table surface is inside the head camera's
+            # field of view. The legacy (0.8727, 0.42) also yawed ~50° which
+            # is wrong for this URDF's convention.
+            "idx11_head_joint1": 0.0,
+            "idx12_head_joint2": 0.52,
             "idx21_arm_l_joint1": -1.0751,
             "idx22_arm_l_joint2": 0.6109,
             "idx23_arm_l_joint3": 0.2793,
@@ -284,6 +288,19 @@ AGIBOT_G1_OMNIPICKER_BIMANUAL_CFG.actuators = {
         velocity_limit_sim=None,
         stiffness=None,
         damping=None,
+    ),
+    # Head joints were missing from this dict entirely, leaving
+    # `idx11_head_joint1` / `idx12_head_joint2` completely passive. That let
+    # the head sag under gravity during reset-settle, so every episode started
+    # with the head already pointing straight ahead and the next reset
+    # visibly re-tilted it down toward the table ("扭头"). Give the head a
+    # stiff PD so it actually holds the authored `init_state.joint_pos` pose.
+    "head": ImplicitActuatorCfg(
+        joint_names_expr=["idx11_head_joint1", "idx12_head_joint2"],
+        effort_limit_sim=50.0,
+        velocity_limit_sim=2.0,
+        stiffness=500.0,
+        damping=50.0,
     ),
     "left_arm": ImplicitActuatorCfg(
         joint_names_expr=["idx2[1-7]_arm_l_joint[1-7]"],

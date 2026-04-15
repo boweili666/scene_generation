@@ -72,7 +72,6 @@ parser.add_argument("--support", type=str, default=None)
 parser.add_argument("--base_z_bias", type=float, default=0.0)
 parser.add_argument("--plan_output_dir", type=str, default=str(PROJECT_ROOT / "runtime" / "robot_placement"))
 parser.add_argument("--arm_side", type=str, default="auto", choices=["auto", "left", "right"])
-parser.add_argument("--show-grasp-poses", action="store_true", default=False)
 parser.add_argument(
     "--wait-for-run-request",
     action=argparse.BooleanOptionalAction,
@@ -99,7 +98,7 @@ parser.add_argument("--retreat-distance", type=float, default=0.08)
 parser.add_argument("--approach-clearance", type=float, default=0.006)
 parser.add_argument("--pre-grasp-steps", type=int, default=90)
 parser.add_argument("--approach-steps", type=int, default=90)
-parser.add_argument("--close-steps", type=int, default=120)
+parser.add_argument("--close-steps", type=int, default=60)
 parser.add_argument("--lift-steps", type=int, default=90)
 parser.add_argument("--retreat-steps", type=int, default=90)
 parser.add_argument("--pos-tol", type=float, default=0.03)
@@ -124,19 +123,19 @@ parser.add_argument(
 parser.add_argument(
     "--fingertip-distance",
     type=float,
-    default=0.0,
-    help="Distance (m) from the controller EE origin (wrist) to the fingertip. When non-zero, IK targets are shifted backwards along approach so the fingertip lands at the grasp point instead of the wrist. Typical AgiBot value: 0.12.",
+    default=0.12,
+    help="Distance (m) from the controller EE origin (wrist) to the fingertip. Non-zero shifts IK targets backwards along approach so the fingertip lands at the grasp point instead of the wrist. Default matches AgiBot.",
 )
 parser.add_argument(
     "--phase-linear-speed",
     type=float,
-    default=0.0,
+    default=0.24,
     help="Max linear speed (m/s) used to interpolate commanded targets during pre_grasp/approach/lift/retreat. 0 disables interpolation and commands the final target every step (controller's own velocity limits apply).",
 )
 parser.add_argument(
     "--phase-angular-speed-deg",
     type=float,
-    default=0.0,
+    default=30.0,
     help="Max angular speed (deg/s) used to interpolate commanded targets. 0 disables rotation interpolation.",
 )
 AppLauncher.add_app_launcher_args(parser)
@@ -234,7 +233,6 @@ def main():
             plan_output_dir=args_cli.plan_output_dir,
             base_z_bias=args_cli.base_z_bias,
             arm_side_preference=args_cli.arm_side,
-            show_grasp_poses=args_cli.show_grasp_poses,
             wait_for_run_request=args_cli.wait_for_run_request,
             manifest_path=args_cli.manifest_path,
             annotation_root=args_cli.annotation_root,
