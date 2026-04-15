@@ -32,7 +32,6 @@ from .mouse_teleop_record import (
     _AGIBOT_CAMERA_SPECS,
     _AGIBOT_MOUNT_POSES,
     _R1LITE_CAMERA_SPECS,
-    _configure_world_camera,
     _make_pinhole_camera_cfg,
 )
 from .stack_cube import CuboidSpec, RobotStackController, STACK_SPECS, _make_cube_cfg
@@ -1009,19 +1008,9 @@ def _build_scene_collect_cfg(spec, scene_usd_path: str, robot_name: str):
             ),
         )
 
-    attrs["world_camera"] = CameraCfg(
-        prim_path="{ENV_REGEX_NS}/WorldCamera",
-        update_period=0.0,
-        width=848,
-        height=480,
-        data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=24.0,
-            focus_distance=400.0,
-            horizontal_aperture=20.955,
-            clipping_range=(0.05, 6.0),
-        ),
-    )
+    # World camera is intentionally omitted: scene auto grasp collection
+    # only records head/left_hand/right_hand onboard cameras, so spawning
+    # an additional render sensor would just waste GPU time each step.
 
     return configclass(type("SceneCollectCfg", (InteractiveSceneCfg,), attrs))
 
@@ -1056,7 +1045,6 @@ def _build_scene_mouse_collect(
     if removed_physics_scenes:
         print(f"[INFO] Removed nested physics scenes from generated scene: {removed_physics_scenes}")
     sim.reset()
-    _configure_world_camera(scene, spec, sim)
     controller = RobotStackController(sim, scene, spec)
     controller.ee_marker.set_visibility(False)
     controller.goal_marker.set_visibility(False)
@@ -1096,8 +1084,10 @@ def _build_scene_mouse_collect(
             )
     sim.reset()
 
-    cameras = {"world": scene["world_camera"]}
-    camera_aliases = {"world": {"prim_path": "{ENV_REGEX_NS}/WorldCamera", "width": 848, "height": 480}}
+    # World camera is intentionally not recorded anymore: episodes only
+    # capture the robot's own three cameras (head, left_hand, right_hand).
+    cameras: dict = {}
+    camera_aliases: dict = {}
     sync_cameras: Callable[[], None] | None = None
 
     if robot_name == "agibot":
