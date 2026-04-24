@@ -10,5 +10,5 @@ logs/
 __pycache__/
 *.pyc
 
-# Recorded dataset artifacts
-datasets/*.hdf5
+# Recorded dataset artifacts (HDF5 collections + converted LeRobotDataset folders)
+datasets/

@@ -138,6 +138,12 @@ parser.add_argument(
     default=30.0,
     help="Max angular speed (deg/s) used to interpolate commanded targets. 0 disables rotation interpolation.",
 )
+parser.add_argument(
+    "--target-forward-randomization",
+    type=float,
+    default=0.03,
+    help="Per-episode randomization range (m) along the robot's forward axis. Each episode samples delta uniform in [-R, +R] and shifts both the target body and the grasp waypoints by that amount. 0 disables randomization.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
@@ -263,6 +269,7 @@ def main():
             fingertip_distance=args_cli.fingertip_distance,
             phase_linear_speed=args_cli.phase_linear_speed,
             phase_angular_speed_deg=args_cli.phase_angular_speed_deg,
+            target_forward_randomization=args_cli.target_forward_randomization,
         ),
     )
 

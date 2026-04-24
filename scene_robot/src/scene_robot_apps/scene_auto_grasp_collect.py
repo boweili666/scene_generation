@@ -120,6 +120,13 @@ class SceneAutoGraspCollectArgs:
     # behaviour that relies on the controller's own velocity limits.
     phase_linear_speed: float = 0.0
     phase_angular_speed_deg: float = 0.0
+    # Per-episode randomization: shift the target rigid body along the
+    # robot's forward axis (world-frame projection of the base +x direction)
+    # by a uniform sample in [-range, +range] meters before each rollout.
+    # The cached grasp candidate's waypoints are shifted by the same vector
+    # so the planned pre-grasp / grasp / lift / retreat poses track the
+    # moved target. 0 disables randomization.
+    target_forward_randomization: float = 0.0
 
 
 # =============================================================================
@@ -501,6 +508,69 @@ def _restore_target_rigid_body_state(snapshot: dict[str, Any] | None) -> None:
     view.set_transforms(pose, indices=torch.arange(pose.shape[0], device=pose.device))
     velocities = torch.zeros((pose.shape[0], 6), device=pose.device, dtype=pose.dtype)
     view.set_velocities(velocities, indices=torch.arange(pose.shape[0], device=pose.device))
+
+
+def _robot_forward_xy_world(controller) -> tuple[float, float]:
+    # World-frame projection of the robot base's +x axis, ignoring Z. Uses
+    # the same (root quat wxyz -> 2D forward) derivation we use for the
+    # world camera override in scene_mouse_collect — kept inline here so
+    # this module can sample a randomization direction without importing
+    # from scene_mouse_collect.
+    root_pose_w = controller.robot.data.root_pose_w  # (N, 7) xyz + wxyz
+    quat = root_pose_w[0, 3:7]
+    qw, qx, qy, qz = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+    fwd_x = 1.0 - 2.0 * (qy * qy + qz * qz)
+    fwd_y = 2.0 * (qx * qy + qw * qz)
+    norm = (fwd_x * fwd_x + fwd_y * fwd_y) ** 0.5
+    if norm < 1e-8:
+        return 1.0, 0.0
+    return fwd_x / norm, fwd_y / norm
+
+
+def _shifted_target_snapshot(
+    snapshot: dict[str, Any] | None,
+    offset_xy: tuple[float, float],
+) -> dict[str, Any] | None:
+    # Clone the physx target-body snapshot and add `offset_xy` to the (x, y)
+    # position columns, leaving z and the quaternion untouched. The clone
+    # isolates per-episode randomization from the canonical snapshot captured
+    # once at scene build time.
+    if snapshot is None:
+        return None
+    transforms = snapshot["transforms"].clone()
+    transforms[:, 0] += float(offset_xy[0])
+    transforms[:, 1] += float(offset_xy[1])
+    return {"prim_path": snapshot["prim_path"], "transforms": transforms}
+
+
+def _shifted_candidate(
+    candidate: FilteredGraspExecution,
+    offset_xy: tuple[float, float],
+) -> FilteredGraspExecution:
+    # Shift every world-frame waypoint on a grasp candidate by `offset_xy`.
+    # The planner caches a single best candidate and we reuse it across
+    # episodes, so when we randomize the target's XY pose we must co-move
+    # the grasp/pre-grasp/lift/retreat points by the same delta — otherwise
+    # the EE would chase the *original* bolt position while physics shows
+    # the bolt shifted, and every episode would miss.
+    import dataclasses
+
+    dx, dy = float(offset_xy[0]), float(offset_xy[1])
+
+    def _shift(pos: tuple[float, float, float]) -> tuple[float, float, float]:
+        return (pos[0] + dx, pos[1] + dy, pos[2])
+
+    shifted_grasp = dataclasses.replace(
+        candidate.grasp,
+        position_world=_shift(candidate.grasp.position_world),
+    )
+    return dataclasses.replace(
+        candidate,
+        grasp=shifted_grasp,
+        pre_grasp_pos_world=_shift(candidate.pre_grasp_pos_world),
+        lift_pos_world=_shift(candidate.lift_pos_world),
+        retreat_pos_world=_shift(candidate.retreat_pos_world),
+    )
 
 
 def _build_action_tensor(controller, target_pos_b: torch.Tensor, target_quat_b: torch.Tensor, *, gripper_closed: bool) -> torch.Tensor:
@@ -1470,8 +1540,24 @@ def _run_episode_loop(
     num_episodes = max(1, int(args.num_episodes))
     episode_results: list[dict[str, Any]] = []
     success_count = 0
+    import random
+
+    randomization_range = float(args.target_forward_randomization)
+    fwd_x, fwd_y = _robot_forward_xy_world(controller) if randomization_range > 0.0 else (0.0, 0.0)
     for episode_idx in range(num_episodes):
         print(f"[INFO] === Episode {episode_idx + 1}/{num_episodes} ===")
+        if randomization_range > 0.0:
+            delta = random.uniform(-randomization_range, randomization_range)
+            offset_xy = (fwd_x * delta, fwd_y * delta)
+            episode_snapshot = _shifted_target_snapshot(target_state_snapshot, offset_xy)
+            episode_candidate = _shifted_candidate(candidate, offset_xy)
+            print(
+                f"[INFO] Target forward randomization: delta={delta:+.4f}m "
+                f"(offset_xy=({offset_xy[0]:+.4f}, {offset_xy[1]:+.4f}))"
+            )
+        else:
+            episode_snapshot = target_state_snapshot
+            episode_candidate = candidate
         try:
             rollout_result = _attempt_recorded_grasp(
                 scene,
@@ -1484,10 +1570,10 @@ def _run_episode_loop(
                 plan,
                 robot_name,
                 base_z,
-                candidate,
+                episode_candidate,
                 selection_payload,
                 args,
-                target_state_snapshot=target_state_snapshot,
+                target_state_snapshot=episode_snapshot,
             )
         except Exception as exc:
             print(f"[WARN] Episode {episode_idx + 1}: rollout raised: {exc}")

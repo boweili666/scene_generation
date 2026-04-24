@@ -332,8 +332,8 @@ def _build_kinova_record_scene(sim: sim_utils.SimulationContext, num_envs: int, 
 _AGIBOT_CAMERA_SPECS = {
     "head": {
         "prim_path": "{ENV_REGEX_NS}/HeadRecordCamera",
-        "width": 1280,
-        "height": 800,
+        "width": 640,
+        "height": 480,
         "spawn": sim_utils.PinholeCameraCfg(
             focal_length=1.93,
             focus_distance=400.0,
@@ -344,7 +344,7 @@ _AGIBOT_CAMERA_SPECS = {
     },
     "left_hand": {
         "prim_path": "{ENV_REGEX_NS}/LeftHandRecordCamera",
-        "width": 848,
+        "width": 640,
         "height": 480,
         "spawn": sim_utils.PinholeCameraCfg(
             focal_length=1.93,
@@ -356,7 +356,7 @@ _AGIBOT_CAMERA_SPECS = {
     },
     "right_hand": {
         "prim_path": "{ENV_REGEX_NS}/RightHandRecordCamera",
-        "width": 848,
+        "width": 640,
         "height": 480,
         "spawn": sim_utils.PinholeCameraCfg(
             focal_length=1.93,
