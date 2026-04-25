@@ -28,8 +28,7 @@ from isaaclab.utils.math import apply_delta_pose, combine_frame_transforms, subt
 
 from controller import IsaacLabBimanualPoseController, IsaacLabPoseController
 
-from .stack_cube import (
-    MouseClickTeleopUI,
+from .robot_spec import (
     Phase,
     RobotStackSpec,
     SWITCHABLE_ARM_SIDE_ROBOTS,
@@ -37,6 +36,7 @@ from .stack_cube import (
     _arm_title_label,
     normalize_arm_side,
 )
+from ..ui.teleop_ui import MouseClickTeleopUI
 
 
 class RobotController:

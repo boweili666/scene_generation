@@ -20,7 +20,10 @@ def __getattr__(name: str) -> Any:
     if name in {"MouseTeleopRecordArgs", "run_mouse_teleop_record"}:
         module = import_module(".pipelines.mouse_teleop_record", __name__)
         return getattr(module, name)
-    if name in {"STACK_SPECS", "build_stack_scene", "run_stack_cube_demo"}:
+    if name == "STACK_SPECS":
+        module = import_module(".control.robot_spec", __name__)
+        return getattr(module, name)
+    if name in {"build_stack_scene", "run_stack_cube_demo"}:
         module = import_module(".control.stack_cube", __name__)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

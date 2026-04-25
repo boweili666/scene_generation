@@ -15,7 +15,8 @@ from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import combine_frame_transforms
 
 from ..control.robot_controller import RobotController
-from ..control.stack_cube import build_single_robot_scene_cfg, resolve_stack_spec
+from ..control.robot_spec import resolve_stack_spec
+from ..control.scene_cfg import build_single_robot_scene_cfg
 
 
 @dataclass(frozen=True)

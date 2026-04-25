@@ -88,7 +88,8 @@ from ..scene.physics import (
     _supported_scene_object_paths,
     _yaw_quat_wxyz,
 )
-from ..control.stack_cube import CuboidSpec, STACK_SPECS, _make_cube_cfg, resolve_stack_spec
+from ..control.robot_spec import CuboidSpec, STACK_SPECS, resolve_stack_spec
+from ..control.scene_cfg import _make_cube_cfg
 
 
 DEFAULT_SCENE_USD_PATH = Path(__file__).resolve().parents[3] / "runtime" / "scene_service" / "usd" / "scene_latest.usd"
