@@ -88,7 +88,7 @@ from ..scene.physics import (
     _supported_scene_object_paths,
     _yaw_quat_wxyz,
 )
-from ..control.robot_spec import CuboidSpec, STACK_SPECS, resolve_stack_spec
+from ..control.robot_spec import CuboidSpec, ROBOT_SPECS, resolve_robot_spec
 from ..control.scene_cfg import _make_cube_cfg
 
 
@@ -195,7 +195,7 @@ def _planned_base_height(robot_name: str) -> float:
     try:
         return float(compute_robot_floor_offset_z(robot_name))
     except Exception:
-        spec = STACK_SPECS[robot_name]
+        spec = ROBOT_SPECS[robot_name]
         return max(0.0, -float(spec.ground_z))
 
 
@@ -229,7 +229,7 @@ def _make_dummy_cube_specs() -> tuple[CuboidSpec, CuboidSpec]:
 
 
 def _make_spec_for_scene_collect(robot_name: str, plan: RobotPlacementPlan, base_z_bias: float, arm_side: str):
-    spec = resolve_stack_spec(robot_name, arm_side)
+    spec = resolve_robot_spec(robot_name, arm_side)
     base_z = _planned_base_height(robot_name) + float(base_z_bias)
     camera_eye, camera_target = _plan_camera_pose(plan)
     cube_base, cube_pick = _make_dummy_cube_specs()
@@ -514,7 +514,7 @@ def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCol
     if args.num_envs != 1:
         raise ValueError("Scene mouse collection only supports --num_envs 1.")
 
-    spec = resolve_stack_spec(robot_name, args.arm_side)
+    spec = resolve_robot_spec(robot_name, args.arm_side)
     env_name = f"Isaac-{robot_name.capitalize()}-SceneMouseCollect-v0"
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args.device))
     sim.set_camera_view(spec.camera_eye, spec.camera_target)

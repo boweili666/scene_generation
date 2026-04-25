@@ -15,7 +15,7 @@ from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import combine_frame_transforms
 
 from ..control.robot_controller import RobotController
-from ..control.robot_spec import resolve_stack_spec
+from ..control.robot_spec import resolve_robot_spec
 from ..control.scene_cfg import build_single_robot_scene_cfg
 
 
@@ -296,7 +296,7 @@ def _configure_world_camera(scene: InteractiveScene, spec, sim: sim_utils.Simula
 
 
 def _build_kinova_record_scene(sim: sim_utils.SimulationContext, num_envs: int, arm_side: str):
-    spec = resolve_stack_spec("kinova", arm_side)
+    spec = resolve_robot_spec("kinova", arm_side)
 
     @configclass
     class _SceneCfg(build_single_robot_scene_cfg(spec)):
@@ -397,7 +397,7 @@ _AGIBOT_MOUNT_POSES = {
 
 
 def _build_agibot_record_scene(sim: sim_utils.SimulationContext, num_envs: int, arm_side: str):
-    spec = resolve_stack_spec("agibot", arm_side)
+    spec = resolve_robot_spec("agibot", arm_side)
 
     @configclass
     class _SceneCfg(build_single_robot_scene_cfg(spec)):
@@ -522,7 +522,7 @@ _R1LITE_CAMERA_SPECS = {
 
 
 def _build_r1lite_record_scene(sim: sim_utils.SimulationContext, num_envs: int, arm_side: str):
-    spec = resolve_stack_spec("r1lite", arm_side)
+    spec = resolve_robot_spec("r1lite", arm_side)
 
     @configclass
     class _SceneCfg(build_single_robot_scene_cfg(spec)):
@@ -624,7 +624,7 @@ def run_mouse_teleop_record(simulation_app, robot_name: str, args: MouseTeleopRe
     if args.num_envs != 1:
         raise ValueError("Mouse teleop recording only supports --num_envs 1.")
 
-    spec = resolve_stack_spec(robot_name, args.arm_side)
+    spec = resolve_robot_spec(robot_name, args.arm_side)
     env_name, build_scene = _RECORD_BUILDERS[robot_name]
 
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args.device))

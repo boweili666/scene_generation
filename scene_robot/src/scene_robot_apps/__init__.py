@@ -7,7 +7,7 @@ from typing import Any
 __all__ = [
     "MouseTeleopRecordArgs",
     "run_mouse_teleop_record",
-    "STACK_SPECS",
+    "ROBOT_SPECS",
     "build_stack_scene",
     "run_stack_cube_demo",
 ]
@@ -20,7 +20,7 @@ def __getattr__(name: str) -> Any:
     if name in {"MouseTeleopRecordArgs", "run_mouse_teleop_record"}:
         module = import_module(".pipelines.mouse_teleop_record", __name__)
         return getattr(module, name)
-    if name == "STACK_SPECS":
+    if name == "ROBOT_SPECS":
         module = import_module(".control.robot_spec", __name__)
         return getattr(module, name)
     if name in {"build_stack_scene", "run_stack_cube_demo"}:

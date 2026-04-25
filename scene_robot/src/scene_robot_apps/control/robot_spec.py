@@ -1,8 +1,8 @@
 """Robot / arm / gripper / stack-task specs and per-robot configurations.
 
 This used to live inside `stack_cube.py`, but in practice almost every
-pipeline in this package needs `RobotStackSpec` / `STACK_SPECS` /
-`resolve_stack_spec` / `normalize_arm_side` / `Phase` regardless of
+pipeline in this package needs `RobotSpec` / `ROBOT_SPECS` /
+`resolve_robot_spec` / `normalize_arm_side` / `Phase` regardless of
 whether they touch the stack-cube task itself, and importing them from
 `stack_cube` was misleading. Pulling the data classes + per-robot specs
 out lets `stack_cube.py` shrink to just the actual stack-cube task code.
@@ -11,13 +11,13 @@ Public surface used elsewhere:
 
 * `Phase` — state-machine indices used by `RobotController.step_stack`.
 * `CuboidSpec`, `TableSpec`, `GripperSpec`, `StackMotionSpec`,
-  `RobotStackSpec` — frozen dataclasses describing the per-robot scene
+  `RobotSpec` — frozen dataclasses describing the per-robot scene
   configuration.
-* `KINOVA_STACK_SPEC`, `AGIBOT_STACK_SPEC`, `R1LITE_STACK_SPEC`,
-  `STACK_SPECS`, `SWITCHABLE_ARM_SIDE_ROBOTS`.
+* `KINOVA_ROBOT_SPEC`, `AGIBOT_ROBOT_SPEC`, `R1LITE_ROBOT_SPEC`,
+  `ROBOT_SPECS`, `SWITCHABLE_ARM_SIDE_ROBOTS`.
 * Arm-side helpers: `normalize_arm_side`, `_arm_title_label`,
   `_arm_config_fields`.
-* `resolve_stack_spec(robot, arm_side)` — primary entry point used by
+* `resolve_robot_spec(robot, arm_side)` — primary entry point used by
   pipelines.
 * `shifted_spec(spec, offset)` — translate a whole spec in space.
 """
@@ -92,7 +92,7 @@ class StackMotionSpec:
 
 
 @dataclass(frozen=True)
-class RobotStackSpec:
+class RobotSpec:
     name: str
     window_title: str
     robot_cfg: object
@@ -115,7 +115,7 @@ class RobotStackSpec:
     camera_target: tuple[float, float, float] = (0.5, 0.0, 0.5)
 
 
-KINOVA_STACK_SPEC = RobotStackSpec(
+KINOVA_ROBOT_SPEC = RobotSpec(
     name="kinova",
     window_title="Kinova Teleop",
     robot_cfg=GEN3_7DOF_VISION_ROBOTIQ_2F85_STACK_CUBE_DIFF_IK_CFG,
@@ -165,7 +165,7 @@ KINOVA_STACK_SPEC = RobotStackSpec(
 )
 
 
-AGIBOT_STACK_SPEC = RobotStackSpec(
+AGIBOT_ROBOT_SPEC = RobotSpec(
     name="agibot",
     window_title="Agibot LeftArm Teleop",
     robot_cfg=AGIBOT_G1_OMNIPICKER_STACK_CUBE_DIFF_IK_CFG,
@@ -207,7 +207,7 @@ AGIBOT_STACK_SPEC = RobotStackSpec(
 )
 
 
-R1LITE_STACK_SPEC = RobotStackSpec(
+R1LITE_ROBOT_SPEC = RobotSpec(
     name="r1lite",
     window_title="R1Lite LeftArm Teleop",
     robot_cfg=R1LITE_STACK_CUBE_DIFF_IK_CFG,
@@ -247,10 +247,10 @@ R1LITE_STACK_SPEC = RobotStackSpec(
 )
 
 
-STACK_SPECS = {
-    "kinova": KINOVA_STACK_SPEC,
-    "agibot": AGIBOT_STACK_SPEC,
-    "r1lite": R1LITE_STACK_SPEC,
+ROBOT_SPECS = {
+    "kinova": KINOVA_ROBOT_SPEC,
+    "agibot": AGIBOT_ROBOT_SPEC,
+    "r1lite": R1LITE_ROBOT_SPEC,
 }
 
 SWITCHABLE_ARM_SIDE_ROBOTS = {"agibot", "r1lite"}
@@ -316,18 +316,18 @@ def _arm_config_fields(robot_name: str, arm_side: str) -> dict[str, object]:
             ),
         }
     return {
-        "ee_joint_patterns": STACK_SPECS[robot_name].ee_joint_patterns,
-        "ee_body_name": STACK_SPECS[robot_name].ee_body_name,
-        "gripper_joint_patterns": STACK_SPECS[robot_name].gripper.joint_patterns,
-        "hold_open_patterns": STACK_SPECS[robot_name].gripper.hold_open_patterns,
-        "hold_default_patterns": STACK_SPECS[robot_name].hold_default_patterns,
+        "ee_joint_patterns": ROBOT_SPECS[robot_name].ee_joint_patterns,
+        "ee_body_name": ROBOT_SPECS[robot_name].ee_body_name,
+        "gripper_joint_patterns": ROBOT_SPECS[robot_name].gripper.joint_patterns,
+        "hold_open_patterns": ROBOT_SPECS[robot_name].gripper.hold_open_patterns,
+        "hold_default_patterns": ROBOT_SPECS[robot_name].hold_default_patterns,
     }
 
 
-def resolve_stack_spec(robot_name: str, arm_side: str | None = None) -> RobotStackSpec:
-    if robot_name not in STACK_SPECS:
-        raise ValueError(f"Unsupported robot '{robot_name}'. Choose from: {sorted(STACK_SPECS)}")
-    base = STACK_SPECS[robot_name]
+def resolve_robot_spec(robot_name: str, arm_side: str | None = None) -> RobotSpec:
+    if robot_name not in ROBOT_SPECS:
+        raise ValueError(f"Unsupported robot '{robot_name}'. Choose from: {sorted(ROBOT_SPECS)}")
+    base = ROBOT_SPECS[robot_name]
     side = normalize_arm_side(robot_name, arm_side)
     if robot_name not in SWITCHABLE_ARM_SIDE_ROBOTS:
         return replace(base, arm_side="left", arm_switch_supported=False)
@@ -359,7 +359,7 @@ def _add_offset(pos: tuple[float, float, float], offset: tuple[float, float, flo
     return tuple(a + b for a, b in zip(pos, offset, strict=True))
 
 
-def shifted_spec(spec: RobotStackSpec, offset: tuple[float, float, float]) -> RobotStackSpec:
+def shifted_spec(spec: RobotSpec, offset: tuple[float, float, float]) -> RobotSpec:
     robot_cfg = spec.robot_cfg.replace(
         init_state=spec.robot_cfg.init_state.replace(pos=_add_offset(spec.robot_cfg.init_state.pos, offset))
     )

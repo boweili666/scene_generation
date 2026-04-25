@@ -19,7 +19,7 @@ from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 
-from .robot_spec import CuboidSpec, RobotStackSpec
+from .robot_spec import CuboidSpec, RobotSpec
 
 
 def _make_material(spec: CuboidSpec):
@@ -48,7 +48,7 @@ def _make_cube_cfg(prim_path: str, spec: CuboidSpec) -> RigidObjectCfg:
     )
 
 
-def build_single_robot_scene_cfg(spec: RobotStackSpec):
+def build_single_robot_scene_cfg(spec: RobotSpec):
     @configclass
     class _SceneCfg(InteractiveSceneCfg):
         ground = AssetBaseCfg(
@@ -82,7 +82,7 @@ def build_single_robot_scene_cfg(spec: RobotStackSpec):
     return _SceneCfg
 
 
-def build_merged_scene_cfg(spec_items: list[tuple[str, RobotStackSpec]]):
+def build_merged_scene_cfg(spec_items: list[tuple[str, RobotSpec]]):
     attrs: dict[str, object] = {
         "ground": AssetBaseCfg(
             prim_path="/World/defaultGroundPlane",

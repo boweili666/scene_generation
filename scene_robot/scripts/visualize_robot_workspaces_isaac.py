@@ -67,9 +67,9 @@ def main() -> None:
 
     from scene_robot_apps.scene.workspaces import add_robot_workspace_visuals_to_stage
     from scene_robot_apps.control.stack_cube import build_stack_scene
-    from scene_robot_apps.control.robot_spec import resolve_stack_spec
+    from scene_robot_apps.control.robot_spec import resolve_robot_spec
 
-    spec = resolve_stack_spec(args_cli.robot, args_cli.arm_side)
+    spec = resolve_robot_spec(args_cli.robot, args_cli.arm_side)
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args_cli.device))
     sim.set_camera_view(spec.camera_eye, spec.camera_target)
 

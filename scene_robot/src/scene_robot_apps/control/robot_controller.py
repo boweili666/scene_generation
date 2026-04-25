@@ -30,7 +30,7 @@ from controller import IsaacLabBimanualPoseController, IsaacLabPoseController
 
 from .robot_spec import (
     Phase,
-    RobotStackSpec,
+    RobotSpec,
     SWITCHABLE_ARM_SIDE_ROBOTS,
     _arm_config_fields,
     _arm_title_label,
@@ -40,7 +40,7 @@ from ..ui.teleop_ui import MouseClickTeleopUI
 
 
 class RobotController:
-    def __init__(self, sim: sim_utils.SimulationContext, scene: InteractiveScene, spec: RobotStackSpec, asset_prefix: str = ""):
+    def __init__(self, sim: sim_utils.SimulationContext, scene: InteractiveScene, spec: RobotSpec, asset_prefix: str = ""):
         self.sim = sim
         self.scene = scene
         self.spec = spec
