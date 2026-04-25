@@ -5,19 +5,19 @@ import sys
 from isaaclab.app import AppLauncher
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from scene_robot_apps import MouseTeleopRecordArgs, run_mouse_teleop_record
 
 
-parser = argparse.ArgumentParser(description="R1Lite mouse teleop data collection.")
+parser = argparse.ArgumentParser(description="Kinova mouse teleop data collection.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments. Only 1 is supported for recording.")
-parser.add_argument("--dataset_file", type=str, default="./datasets/r1lite_mouse_dataset.hdf5", help="Output HDF5 dataset path.")
+parser.add_argument("--dataset_file", type=str, default="./datasets/kinova_mouse_dataset.hdf5", help="Output HDF5 dataset path.")
 parser.add_argument("--capture_hz", type=float, default=10.0, help="Frame sampling rate for dataset recording.")
 parser.add_argument("--append", action="store_true", default=False, help="Append new episodes to an existing dataset.")
 parser.add_argument("--lin_step", type=float, default=0.015, help="Mouse UI translation step size in meters.")
 parser.add_argument("--ang_step", type=float, default=0.10, help="Mouse UI rotation step size in radians.")
-parser.add_argument("--arm_side", type=str, default="left", choices=["left", "right"], help="Active arm to teleoperate.")
+parser.add_argument("--arm_side", type=str, default="left", choices=["left"], help="Kinova only supports the left/default arm slot.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
@@ -29,7 +29,7 @@ simulation_app = app_launcher.app
 def main():
     run_mouse_teleop_record(
         simulation_app,
-        "r1lite",
+        "kinova",
         MouseTeleopRecordArgs(
             device=args_cli.device,
             num_envs=args_cli.num_envs,

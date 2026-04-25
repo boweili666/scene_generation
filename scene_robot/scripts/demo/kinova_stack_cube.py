@@ -5,7 +5,7 @@ import sys
 from isaaclab.app import AppLauncher
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from scene_robot_apps import run_stack_cube_demo
 

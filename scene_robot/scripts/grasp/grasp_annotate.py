@@ -7,8 +7,8 @@ from pathlib import Path
 import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "src"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCENE_ROBOT_SRC = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 

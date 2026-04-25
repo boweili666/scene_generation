@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation as R
 import trimesh
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCENE_ROBOT_SRC = PROJECT_ROOT / "scene_robot" / "src"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))

@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.backend.services.grasp_scene_adapter import build_scene_grasp_proposals, default_scene_grasp_proposals_path
