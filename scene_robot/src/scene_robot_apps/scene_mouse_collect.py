@@ -1,11 +1,40 @@
+"""Mouse-driven scene-based teleop data collection.
+
+This used to be a single 1342-line module that bundled the args, the
+Omni UI, the HDF5 episode writer, every physics-rebind helper, the
+scene config builder, and the orchestrator. Most of that lives in
+focused modules now:
+
+* `episode_writer.SceneTeleopEpisodeWriter` — HDF5 writer.
+* `mouse_collect_ui.MouseCommandCollectUI` — Omni UI window.
+* `scene_physics.*` — collision / BBox / rigid-body / physics-rebind /
+  reset / settle helpers + `ConvexDecompositionSettings`.
+
+What stays here:
+
+* `SceneMouseCollectArgs` — CLI args dataclass.
+* `_resolve_convex_decomposition_settings(args)` — args→settings adapter
+  (keeps the args dependency local; `ConvexDecompositionSettings` itself
+  lives in `scene_physics`).
+* Spec helpers: `_planned_base_height`, `_plan_camera_pose`,
+  `_make_dummy_cube_specs`, `_make_spec_for_scene_collect`.
+* `_build_scene_collect_cfg` — `InteractiveSceneCfg` factory (cameras +
+  robot + cubes + generated scene reference).
+* `_build_scene_mouse_collect` — full scene boot (planner → InteractiveScene
+  → controller → physics rebind → camera mount).
+* `run_scene_mouse_collect` — top-level orchestrator (event loop +
+  episode lifecycle).
+
+Names that used to be defined here are re-exported below so existing
+`from .scene_mouse_collect import _reset_scene_to_plan` (etc.) callers
+keep working unchanged.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-import json
-import math
 import os
+from dataclasses import dataclass, replace
 from pathlib import Path
-import tempfile
 from typing import Callable
 
 import torch
@@ -15,42 +44,100 @@ from isaaclab.assets import AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import CameraCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import combine_frame_transforms
 
-from app.backend.config.settings import DEFAULT_PLACEMENTS_PATH, SCENE_GRAPH_PATH
+from app.backend.config.settings import DEFAULT_PLACEMENTS_PATH, SCENE_GRAPH_PATH  # noqa: F401  (re-exported)
 from app.backend.services.robot_placement import (
-    DEFAULT_OUTPUT_DIR,
+    DEFAULT_OUTPUT_DIR,  # noqa: F401  (re-exported)
     RobotPlacementPlan,
     load_scene_state,
     plan_robot_base_pose,
-    plan_to_payload,
     save_plan_outputs,
 )
 from app.backend.services.robot_scene import compute_robot_floor_offset_z, resolve_robot_asset_path
+
+from .episode_writer import SceneTeleopEpisodeWriter
+from .mouse_collect_ui import MouseCommandCollectUI
 from .mouse_teleop_record import (
     _AGIBOT_CAMERA_SPECS,
     _AGIBOT_MOUNT_POSES,
     _R1LITE_CAMERA_SPECS,
     _make_pinhole_camera_cfg,
 )
-from .stack_cube import CuboidSpec, RobotController, STACK_SPECS, _make_cube_cfg
-from .stack_cube import resolve_stack_spec
+from .robot_controller import RobotController
+from .scene_physics import (
+    ConvexDecompositionSettings,
+    _align_robot_root_to_floor,
+    _apply_root_pose,
+    _clear_rigid_body_view_cache,
+    _compute_bounds_for_prims,
+    _compute_world_prim_max_z,
+    _compute_world_prim_min_z,
+    _find_live_physics_scene_path,
+    _get_rigid_body_view,
+    _iter_collision_prims,
+    _iter_visual_collision_prims,
+    _prepare_scene_usd_without_physics_scenes,
+    _read_rigid_body_world_position_z,
+    _realign_generated_scene_floor_objects,
+    _rebind_generated_scene_physics,
+    _remove_nested_physics_scenes,
+    _reset_scene_to_plan,
+    _resolve_collision_approx,
+    _settle_dynamic_scene,
+    _supported_scene_object_paths,
+    _yaw_quat_wxyz,
+)
+from .stack_cube import CuboidSpec, STACK_SPECS, _make_cube_cfg, resolve_stack_spec
 
 
 DEFAULT_SCENE_USD_PATH = Path(__file__).resolve().parents[3] / "runtime" / "scene_service" / "usd" / "scene_latest.usd"
-_DYNAMIC_MESH_COLLISION_APPROX = "convexHull"
-_COLLISION_APPROX_ALIASES = {
-    "default": None,
-    "triangle_mesh": "none",
-    "convex_hull": "convexHull",
-    "convex_decomposition": "convexDecomposition",
-    "mesh_simplification": "meshSimplification",
-    "bounding_cube": "boundingCube",
-    "bounding_sphere": "boundingSphere",
-    "sdf": "sdf",
-    "sphere_fill": "sphereFill",
-}
+
+
+# Backward-compat re-exports: every symbol below used to be defined in this
+# file and is imported from here by sibling modules / scripts. Keep this
+# namespace stable so the move into `scene_physics` / `episode_writer` /
+# `mouse_collect_ui` is invisible to external callers.
+__all__ = [
+    "ConvexDecompositionSettings",
+    "DEFAULT_OUTPUT_DIR",
+    "DEFAULT_PLACEMENTS_PATH",
+    "DEFAULT_SCENE_USD_PATH",
+    "MouseCommandCollectUI",
+    "ROBOT_BASE_Z_BIAS",
+    "RobotController",
+    "SCENE_GRAPH_PATH",
+    "SceneMouseCollectArgs",
+    "SceneTeleopEpisodeWriter",
+    "_align_robot_root_to_floor",
+    "_apply_root_pose",
+    "_build_scene_collect_cfg",
+    "_build_scene_mouse_collect",
+    "_clear_rigid_body_view_cache",
+    "_compute_bounds_for_prims",
+    "_compute_world_prim_max_z",
+    "_compute_world_prim_min_z",
+    "_find_live_physics_scene_path",
+    "_get_rigid_body_view",
+    "_iter_collision_prims",
+    "_iter_visual_collision_prims",
+    "_make_dummy_cube_specs",
+    "_make_spec_for_scene_collect",
+    "_plan_camera_pose",
+    "_planned_base_height",
+    "_prepare_scene_usd_without_physics_scenes",
+    "_read_rigid_body_world_position_z",
+    "_realign_generated_scene_floor_objects",
+    "_rebind_generated_scene_physics",
+    "_remove_nested_physics_scenes",
+    "_reset_scene_to_plan",
+    "_resolve_collision_approx",
+    "_resolve_convex_decomposition_settings",
+    "_settle_dynamic_scene",
+    "_supported_scene_object_paths",
+    "_yaw_quat_wxyz",
+    "run_scene_mouse_collect",
+]
 
 
 @dataclass(frozen=True)
@@ -79,31 +166,6 @@ class SceneMouseCollectArgs:
     show_workspace: bool
 
 
-@dataclass(frozen=True)
-class ConvexDecompositionSettings:
-    voxel_resolution: int
-    max_convex_hulls: int
-    error_percentage: float
-    shrink_wrap: bool
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "voxel_resolution": self.voxel_resolution,
-            "max_convex_hulls": self.max_convex_hulls,
-            "error_percentage": self.error_percentage,
-            "shrink_wrap": self.shrink_wrap,
-        }
-
-def _resolve_collision_approx(option: str | None) -> str | None:
-    key = str(option or "default").strip().lower()
-    if key not in _COLLISION_APPROX_ALIASES:
-        raise ValueError(
-            f"Unsupported collision approximation '{option}'. "
-            f"Expected one of: {', '.join(sorted(_COLLISION_APPROX_ALIASES))}."
-        )
-    return _COLLISION_APPROX_ALIASES[key]
-
-
 def _resolve_convex_decomposition_settings(args: SceneMouseCollectArgs) -> ConvexDecompositionSettings:
     voxel_resolution = int(args.convex_decomp_voxel_resolution)
     max_convex_hulls = int(args.convex_decomp_max_convex_hulls)
@@ -125,310 +187,9 @@ def _resolve_convex_decomposition_settings(args: SceneMouseCollectArgs) -> Conve
     )
 
 
-def _apply_convex_decomposition_settings(prim, settings: ConvexDecompositionSettings) -> None:
-    from pxr import PhysxSchema
-
-    api = PhysxSchema.PhysxConvexDecompositionCollisionAPI.Apply(prim)
-    api.CreateVoxelResolutionAttr().Set(int(settings.voxel_resolution))
-    api.CreateMaxConvexHullsAttr().Set(int(settings.max_convex_hulls))
-    api.CreateErrorPercentageAttr().Set(float(settings.error_percentage))
-    api.CreateShrinkWrapAttr().Set(bool(settings.shrink_wrap))
-
-
-class MouseCommandCollectUI:
-    _WINDOW_WIDTH = 460
-    _WINDOW_HEIGHT = 430
-    _POSE_BUTTON_WIDTH = 68
-    _POSE_BUTTON_HEIGHT = 76
-    _ACTION_BUTTON_WIDTH = 106
-    _ACTION_BUTTON_HEIGHT = 64
-    _EPISODE_BUTTON_WIDTH = 144
-    _EPISODE_BUTTON_HEIGHT = 64
-
-    def __init__(
-        self,
-        title: str,
-        lin_step: float = 0.015,
-        ang_step: float = 0.10,
-        *,
-        allow_arm_switch: bool = False,
-    ):
-        import omni.ui as ui
-
-        self.lin_step = float(lin_step)
-        self.ang_step = float(ang_step)
-        self.gripper_closed = False
-        self._pending_delta = [0.0] * 6
-        self._start_requested = False
-        self._stop_save_requested = False
-        self._stop_discard_requested = False
-        self._reset_requested = False
-        self._switch_arm_requested = False
-        self._window = ui.Window(title, width=self._WINDOW_WIDTH, height=self._WINDOW_HEIGHT)
-        self._apply_window_size()
-        with self._window.frame:
-            with ui.VStack(spacing=8):
-                ui.Label("Mouse teleop + episode control", height=20)
-                with ui.HStack(spacing=6):
-                    self._make_pose_button(ui, "+X", lambda: self._add_delta(0, +self.lin_step))
-                    self._make_pose_button(ui, "-X", lambda: self._add_delta(0, -self.lin_step))
-                    self._make_pose_button(ui, "+Y", lambda: self._add_delta(1, +self.lin_step))
-                    self._make_pose_button(ui, "-Y", lambda: self._add_delta(1, -self.lin_step))
-                    self._make_pose_button(ui, "+Z", lambda: self._add_delta(2, +self.lin_step))
-                    self._make_pose_button(ui, "-Z", lambda: self._add_delta(2, -self.lin_step))
-                with ui.HStack(spacing=6):
-                    self._make_pose_button(ui, "+R", lambda: self._add_delta(3, +self.ang_step))
-                    self._make_pose_button(ui, "-R", lambda: self._add_delta(3, -self.ang_step))
-                    self._make_pose_button(ui, "+P", lambda: self._add_delta(4, +self.ang_step))
-                    self._make_pose_button(ui, "-P", lambda: self._add_delta(4, -self.ang_step))
-                    self._make_pose_button(ui, "+Yaw", lambda: self._add_delta(5, +self.ang_step))
-                    self._make_pose_button(ui, "-Yaw", lambda: self._add_delta(5, -self.ang_step))
-                with ui.HStack(spacing=6):
-                    self._make_action_button(ui, "Gripper Toggle", self._toggle_gripper)
-                    self._make_action_button(ui, "Clear Step Queue", self._clear_delta)
-                    self._make_action_button(ui, "Reset Robot", self._request_reset)
-                    if allow_arm_switch:
-                        self._make_action_button(ui, "Switch Arm", self._request_switch_arm)
-                ui.Spacer(height=6)
-                with ui.HStack(spacing=6):
-                    self._make_episode_button(ui, "Start Recording", self._request_start)
-                    self._make_episode_button(ui, "Stop + Save", self._request_stop_save)
-                    self._make_episode_button(ui, "Stop + Discard", self._request_stop_discard)
-
-    def _apply_window_size(self) -> None:
-        for attr, value in (("width", self._WINDOW_WIDTH), ("height", self._WINDOW_HEIGHT)):
-            try:
-                setattr(self._window, attr, value)
-            except Exception:
-                pass
-
-    def _make_pose_button(self, ui, label: str, clicked_fn: Callable[[], None]) -> None:
-        ui.Button(label, clicked_fn=clicked_fn, width=self._POSE_BUTTON_WIDTH, height=self._POSE_BUTTON_HEIGHT)
-
-    def _make_action_button(self, ui, label: str, clicked_fn: Callable[[], None]) -> None:
-        ui.Button(label, clicked_fn=clicked_fn, width=self._ACTION_BUTTON_WIDTH, height=self._ACTION_BUTTON_HEIGHT)
-
-    def _make_episode_button(self, ui, label: str, clicked_fn: Callable[[], None]) -> None:
-        ui.Button(label, clicked_fn=clicked_fn, width=self._EPISODE_BUTTON_WIDTH, height=self._EPISODE_BUTTON_HEIGHT)
-
-    def _add_delta(self, idx: int, value: float):
-        self._pending_delta[idx] += value
-
-    def _toggle_gripper(self):
-        self.gripper_closed = not self.gripper_closed
-
-    def _clear_delta(self):
-        self._pending_delta = [0.0] * 6
-
-    def _request_start(self):
-        self._start_requested = True
-
-    def _request_stop_save(self):
-        self._stop_save_requested = True
-
-    def _request_stop_discard(self):
-        self._stop_discard_requested = True
-
-    def _request_reset(self):
-        self._reset_requested = True
-
-    def _request_switch_arm(self):
-        self._switch_arm_requested = True
-
-    def consume_delta(self, device: str) -> torch.Tensor:
-        delta = torch.tensor(self._pending_delta, device=device, dtype=torch.float32)
-        self._pending_delta = [0.0] * 6
-        return delta
-
-    def consume_start_request(self) -> bool:
-        requested = self._start_requested
-        self._start_requested = False
-        return requested
-
-    def consume_stop_save_request(self) -> bool:
-        requested = self._stop_save_requested
-        self._stop_save_requested = False
-        return requested
-
-    def consume_stop_discard_request(self) -> bool:
-        requested = self._stop_discard_requested
-        self._stop_discard_requested = False
-        return requested
-
-    def consume_reset_request(self) -> bool:
-        requested = self._reset_requested
-        self._reset_requested = False
-        return requested
-
-    def consume_switch_arm_request(self) -> bool:
-        requested = self._switch_arm_requested
-        self._switch_arm_requested = False
-        return requested
-
-    def set_title(self, title: str) -> None:
-        try:
-            self._window.title = title
-            self._apply_window_size()
-        except Exception:
-            pass
-
-
-class SceneTeleopEpisodeWriter:
-    def __init__(
-        self,
-        dataset_file: str,
-        capture_hz: float,
-        append: bool,
-        env_name: str,
-        camera_aliases: dict[str, dict[str, object]],
-        plan: RobotPlacementPlan,
-        scene_usd_path: str,
-        scene_graph_path: str,
-        placements_path: str,
-        *,
-        initial_arm_side: str = "left",
-        arm_switch_supported: bool = False,
-    ):
-        self.dataset_file = self._normalize_dataset_file(dataset_file)
-        self.capture_period = 1.0 / max(capture_hz, 1.0e-6)
-        self.file_handler = HDF5DatasetFileHandler()
-        self.recording = False
-        plan_payload = json.loads(json.dumps(plan_to_payload(plan)))
-
-        if append and os.path.exists(self.dataset_file):
-            self.file_handler.open(self.dataset_file, mode="a")
-        else:
-            self.file_handler.create(self.dataset_file, env_name=env_name)
-
-        self.file_handler.add_env_args(
-            {
-                "camera_aliases": camera_aliases,
-                "capture_hz": capture_hz,
-                "scene_usd_path": scene_usd_path,
-                "scene_graph_path": scene_graph_path,
-                "placements_path": placements_path,
-                "placement_plan": plan_payload,
-                "teleop_ui": {
-                    "type": "mouse_click_scene_collect",
-                    "pose_step_buttons": ["+X", "-X", "+Y", "-Y", "+Z", "-Z", "+R", "-R", "+P", "-P", "+Yaw", "-Yaw"],
-                    "gripper_toggle": "Gripper Toggle",
-                    "switch_arm": "Switch Arm" if arm_switch_supported else None,
-                    "start_recording": "Start Recording",
-                    "stop_and_save": "Stop + Save",
-                    "stop_and_discard": "Stop + Discard",
-                    "reset_robot": "Reset Robot",
-                },
-                "initial_arm_side": initial_arm_side,
-            }
-        )
-        self.reset_episode()
-
-    @staticmethod
-    def _normalize_dataset_file(dataset_file: str) -> str:
-        if dataset_file.endswith(".hdf5"):
-            return dataset_file
-        return f"{dataset_file}.hdf5"
-
-    def reset_episode(self):
-        self.episode = EpisodeData()
-        self.frame_count = 0
-        self.episode_start_time = None
-        self.next_capture_time = 0.0
-
-    def start_recording(self, sim_time: float):
-        if self.recording:
-            print("[WARN] Recording is already active.")
-            return
-        self.reset_episode()
-        self.episode_start_time = sim_time
-        self.next_capture_time = sim_time
-        self.recording = True
-        print("[INFO] Recording started.")
-
-    def stop_and_save(self):
-        if not self.recording:
-            print("[WARN] Recording is not active.")
-            return
-        if self.frame_count == 0:
-            print("[WARN] Recording stopped with zero frames. Nothing was saved.")
-            self.recording = False
-            self.reset_episode()
-            return
-        self.episode.success = True
-        self.episode.pre_export()
-        self.file_handler.write_episode(self.episode)
-        self.file_handler.flush()
-        saved_episode_idx = self.file_handler.demo_count - 1
-        print(
-            f"[INFO] Saved episode demo_{saved_episode_idx} with {self.frame_count} frames to "
-            f"{os.path.abspath(self.dataset_file)}"
-        )
-        self.recording = False
-        self.reset_episode()
-
-    def stop_and_discard(self):
-        if not self.recording:
-            print("[WARN] Recording is not active.")
-            return
-        print(f"[INFO] Discarded current recording ({self.frame_count} captured frames).")
-        self.recording = False
-        self.reset_episode()
-
-    def close(self):
-        self.file_handler.close()
-
-    def maybe_record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
-        if not self.recording:
-            return False
-        if self.episode_start_time is None:
-            self.episode_start_time = sim_time
-            self.next_capture_time = sim_time
-        if self.frame_count > 0 and sim_time + 1.0e-9 < self.next_capture_time:
-            return False
-        while self.next_capture_time <= sim_time + 1.0e-9:
-            self.next_capture_time += self.capture_period
-        self._record_frame(sim_time, action, controller, cameras)
-        self.frame_count += 1
-        return True
-
-    def _record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
-        robot = controller.robot
-        _, _, _, ee_pos_b, ee_quat_b = controller._current_ee()
-        target_pos = controller.target_pos if controller.target_pos is not None else ee_pos_b
-        target_quat = controller.target_quat if controller.target_quat is not None else ee_quat_b
-
-        self.episode.add("actions", action.to(dtype=torch.float32, device="cpu"))
-        self.episode.add("timestamps", torch.tensor(sim_time - self.episode_start_time, dtype=torch.float32))
-        self.episode.add("obs/joint_pos", robot.data.joint_pos[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/joint_vel", robot.data.joint_vel[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/root_pose", robot.data.root_pose_w[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/ee_pos", ee_pos_b[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/ee_quat", ee_quat_b[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/target_ee_pos", target_pos[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add("obs/target_ee_quat", target_quat[0].detach().cpu().to(dtype=torch.float32))
-        self.episode.add(
-            "obs/gripper_joint_pos",
-            robot.data.joint_pos[0, controller.gripper_joint_ids].detach().cpu().to(dtype=torch.float32),
-        )
-        self.episode.add(
-            "obs/active_arm_side",
-            torch.tensor(1 if controller.active_arm_side == "right" else 0, dtype=torch.int64),
-        )
-        for camera_name, camera in cameras.items():
-            rgb = camera.data.output["rgb"][0]
-            if rgb.shape[-1] > 3:
-                rgb = rgb[..., :3]
-            rgb = rgb.detach().cpu()
-            if rgb.dtype != torch.uint8:
-                rgb = torch.clamp(rgb, 0, 255).to(dtype=torch.uint8)
-            self.episode.add(f"obs/{camera_name}", rgb.contiguous())
-
-
-def _yaw_quat_wxyz(yaw_deg: float) -> tuple[float, float, float, float]:
-    half = math.radians(yaw_deg) * 0.5
-    return (math.cos(half), 0.0, 0.0, math.sin(half))
-
-
+# =============================================================================
+# Per-robot static spec helpers (base height, planner camera, dummy cubes)
+# =============================================================================
 def _planned_base_height(robot_name: str) -> float:
     try:
         return float(compute_robot_floor_offset_z(robot_name))
@@ -485,440 +246,9 @@ def _make_spec_for_scene_collect(robot_name: str, plan: RobotPlacementPlan, base
     )
 
 
-def _apply_root_pose(controller: RobotController, plan: RobotPlacementPlan, base_z: float) -> None:
-    root_state = controller.robot.data.default_root_state.clone()
-    root_state[:, 0] = float(plan.base_pose[0])
-    root_state[:, 1] = float(plan.base_pose[1])
-    root_state[:, 2] = float(base_z)
-    quat = torch.tensor(_yaw_quat_wxyz(plan.base_pose[3]), device=controller.sim.device, dtype=torch.float32)
-    root_state[:, 3:7] = quat.unsqueeze(0).repeat(controller.scene.num_envs, 1)
-    controller.robot.write_root_pose_to_sim(root_state[:, :7])
-    controller.robot.write_root_velocity_to_sim(root_state[:, 7:])
-    controller.robot.reset()
-
-
-def _compute_world_prim_min_z(stage, prim_path: str) -> float | None:
-    # For static scenery (support/table), the classic `UsdGeom.BBoxCache` is
-    # fine: nothing moves it so the authored xformOps reflect the truth. This
-    # helper is no longer used for the dynamic grasp target — for that, see
-    # `_read_rigid_body_world_position_z` below, which goes through the
-    # physx backend via `SingleXFormPrim.get_world_pose()`.
-    from pxr import Usd, UsdGeom
-
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim or not prim.IsValid():
-        return None
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["render", "default"], useExtentsHint=False)
-    aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
-    if aligned.IsEmpty():
-        return None
-    return float(aligned.GetMin()[2])
-
-
-def _compute_world_prim_max_z(stage, prim_path: str) -> float | None:
-    from pxr import Usd, UsdGeom
-
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim or not prim.IsValid():
-        return None
-    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["render", "default"], useExtentsHint=False)
-    aligned = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
-    if aligned.IsEmpty():
-        return None
-    return float(aligned.GetMax()[2])
-
-
-_RIGID_BODY_VIEW_CACHE: dict[str, object] = {}
-
-
-def _get_rigid_body_view(prim_path: str):
-    # Create (once) and cache a physx-backed rigid-body view for the given
-    # prim path. Isaac Lab's own `RigidObject` uses exactly this mechanism
-    # (`SimulationManager.get_physics_sim_view().create_rigid_body_view(...)`)
-    # to read live rigid body state on GPU physics scenes. We can't reuse
-    # isaaclab's `RigidObject` because our target lives inside an untracked
-    # `AssetBaseCfg` USD reference, but we can create a parallel view here.
-    cached = _RIGID_BODY_VIEW_CACHE.get(prim_path)
-    if cached is not None:
-        return cached
-    from isaacsim.core.simulation_manager import SimulationManager
-
-    physics_sim_view = SimulationManager.get_physics_sim_view()
-    if physics_sim_view is None:
-        return None
-    view = physics_sim_view.create_rigid_body_view(prim_path)
-    if view is None or getattr(view, "_backend", None) is None:
-        return None
-    _RIGID_BODY_VIEW_CACHE[prim_path] = view
-    return view
-
-
-def _read_rigid_body_world_position_z(prim_path: str) -> float | None:
-    # Live read of a rigid body's world Z from the physx tensor backend.
-    # `get_transforms()` returns `(N, 7)` with `[px, py, pz, qx, qy, qz, qw]`
-    # per instance, reflecting the true physics state — unlike classic USD
-    # `xformOp` reads, which lag behind on GPU physics scenes.
-    view = _get_rigid_body_view(prim_path)
-    if view is None:
-        return None
-    transforms = view.get_transforms()
-    if transforms is None or transforms.shape[0] == 0:
-        return None
-    return float(transforms[0, 2].item())
-
-
-def _clear_rigid_body_view_cache() -> None:
-    _RIGID_BODY_VIEW_CACHE.clear()
-
-
-def _align_robot_root_to_floor(
-    scene: InteractiveScene,
-    controller: RobotController,
-    *,
-    floor_z: float = 0.0,
-    max_passes: int = 3,
-) -> float:
-    robot_prim_path = f"{scene.env_prim_paths[0]}/Robot"
-    applied_root_z = float(controller.robot.data.root_pose_w[0, 2].item())
-
-    for _ in range(max_passes):
-        scene.write_data_to_sim()
-        controller.sim.step()
-        scene.update(controller.sim.get_physics_dt())
-        min_z = _compute_world_prim_min_z(scene.stage, robot_prim_path)
-        if min_z is None:
-            return applied_root_z
-        delta_z = float(floor_z) - float(min_z)
-        if abs(delta_z) <= 1.0e-3:
-            return applied_root_z
-        root_pose = controller.robot.data.root_pose_w.clone()
-        root_pose[:, 2] += delta_z
-        root_velocity = controller.robot.data.root_vel_w.clone()
-        controller.robot.write_root_pose_to_sim(root_pose)
-        controller.robot.write_root_velocity_to_sim(root_velocity)
-        controller.robot.reset()
-        applied_root_z = float(root_pose[0, 2].item())
-
-    return applied_root_z
-
-
-def _assign_simulation_owner(api_schema, physics_scene_path: str | None) -> None:
-    if not physics_scene_path:
-        return
-    rel = api_schema.CreateSimulationOwnerRel()
-    rel.SetTargets([physics_scene_path])
-
-
-def _set_disable_gravity_attr(prim, enabled: bool) -> None:
-    from pxr import Sdf
-
-    attr = prim.GetAttribute("physxRigidBody:disableGravity")
-    if not attr.IsValid():
-        attr = prim.CreateAttribute("physxRigidBody:disableGravity", Sdf.ValueTypeNames.Bool, False)
-    attr.Set(not bool(enabled))
-
-
-def _iter_collision_prims(root_prim):
-    from pxr import Usd, UsdGeom
-
-    if not root_prim or not root_prim.IsValid():
-        return []
-    return [prim for prim in Usd.PrimRange(root_prim) if prim.IsA(UsdGeom.Gprim)]
-
-
-def _iter_visual_collision_prims(root_prim):
-    from pxr import UsdGeom
-
-    visual_prims = []
-    for prim in _iter_collision_prims(root_prim):
-        purpose = UsdGeom.Imageable(prim).GetPurposeAttr().Get()
-        if purpose == UsdGeom.Tokens.guide:
-            continue
-        visual_prims.append(prim)
-    return visual_prims
-
-
-def _supported_scene_object_paths(scene_graph: dict) -> set[str]:
-    supported_paths: set[str] = set()
-    for edge in (scene_graph.get("edges") or {}).get("obj-obj", []):
-        if not isinstance(edge, dict):
-            continue
-        relation_tokens = {token.strip().lower() for token in str(edge.get("relation") or "").split(",") if token.strip()}
-        source = edge.get("source")
-        target = edge.get("target")
-        if "supported by" in relation_tokens and isinstance(source, str):
-            supported_paths.add(source)
-        if "supports" in relation_tokens and isinstance(target, str):
-            supported_paths.add(target)
-    return supported_paths
-
-
-def _compute_bounds_for_prims(stage, prims) -> object | None:
-    from pxr import Gf, Usd, UsdGeom
-
-    bounds_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"], useExtentsHint=True)
-    combined = Gf.Range3d()
-    found = False
-    for prim in prims:
-        if not prim or not prim.IsValid():
-            continue
-        rng = bounds_cache.ComputeWorldBound(prim).ComputeAlignedRange()
-        if rng.IsEmpty():
-            continue
-        if not found:
-            combined = Gf.Range3d(rng.GetMin(), rng.GetMax())
-            found = True
-            continue
-        combined.UnionWith(rng)
-    return combined if found and not combined.IsEmpty() else None
-
-
-def _realign_generated_scene_floor_objects(
-    stage,
-    scene_root_path: str,
-    scene_graph: dict,
-    *,
-    floor_z: float = 0.0,
-) -> dict[str, int]:
-    from pxr import Gf, UsdGeom
-
-    supported_paths = _supported_scene_object_paths(scene_graph)
-    grounded_roots = 0
-    visual_roots = 0
-    for prim_path in (scene_graph.get("obj") or {}):
-        if prim_path in supported_paths:
-            continue
-        prim_name = Path(str(prim_path)).name
-        live_prim = stage.GetPrimAtPath(f"{scene_root_path}/{prim_name}")
-        if not live_prim.IsValid():
-            continue
-
-        visual_prims = _iter_visual_collision_prims(live_prim)
-        if not visual_prims:
-            continue
-        visual_roots += 1
-
-        rng = _compute_bounds_for_prims(stage, visual_prims)
-        if rng is None:
-            continue
-        delta_z = float(floor_z) - float(rng.GetMin()[2])
-        if abs(delta_z) <= 1.0e-4:
-            continue
-
-        xform = UsdGeom.Xformable(live_prim)
-        ops = xform.GetOrderedXformOps()
-        if not ops:
-            continue
-
-        mat = Gf.Matrix4d(ops[0].Get())
-        translate = mat.ExtractTranslation()
-        mat.SetTranslateOnly(translate + Gf.Vec3d(0.0, 0.0, delta_z))
-        ops[0].Set(mat)
-        grounded_roots += 1
-
-    return {"visual_roots": visual_roots, "grounded_roots": grounded_roots}
-
-
-def _find_live_physics_scene_path(stage, scene_root_path: str) -> str | None:
-    preferred = None
-    fallback = None
-    scene_root_prefix = scene_root_path.rstrip("/") + "/"
-    for prim in stage.Traverse():
-        if prim.GetTypeName() != "PhysicsScene":
-            continue
-        prim_path = str(prim.GetPath())
-        if fallback is None:
-            fallback = prim_path
-        if not prim_path.startswith(scene_root_prefix):
-            preferred = prim_path
-            break
-    return preferred or fallback
-
-
-def _remove_nested_physics_scenes(stage, scene_root_path: str) -> list[str]:
-    removed_paths: list[str] = []
-    scene_root_prefix = scene_root_path.rstrip("/") + "/"
-    to_remove: list[str] = []
-    for prim in stage.Traverse():
-        prim_name = prim.GetName().lower()
-        if prim.GetTypeName() != "PhysicsScene" and prim_name != "physicsscene":
-            continue
-        prim_path = str(prim.GetPath())
-        if prim_path.startswith(scene_root_prefix):
-            to_remove.append(prim_path)
-    for prim_path in sorted(to_remove, key=len, reverse=True):
-        stage.RemovePrim(prim_path)
-        removed_paths.append(prim_path)
-    return removed_paths
-
-
-def _prepare_scene_usd_without_physics_scenes(scene_usd_path: str) -> str:
-    from pxr import Usd
-
-    source_path = Path(scene_usd_path).resolve()
-    stage = Usd.Stage.Open(str(source_path))
-    if stage is None:
-        return str(source_path)
-
-    to_remove: list[str] = []
-    for prim in stage.Traverse():
-        prim_name = prim.GetName().lower()
-        if prim.GetTypeName() == "PhysicsScene" or prim_name == "physicsscene":
-            to_remove.append(str(prim.GetPath()))
-
-    if not to_remove:
-        return str(source_path)
-
-    for prim_path in sorted(to_remove, key=len, reverse=True):
-        stage.RemovePrim(prim_path)
-
-    sanitized_path = Path(tempfile.gettempdir()) / f"{source_path.stem}.scene_collect_nophysics.usd"
-    stage.GetRootLayer().Export(str(sanitized_path))
-    return str(sanitized_path)
-
-
-def _rebind_generated_scene_physics(
-    stage,
-    scene_root_path: str,
-    scene_graph: dict,
-    *,
-    object_collision_approx: str | None = None,
-    target_prim: str | None = None,
-    target_collision_approx: str | None = None,
-    convex_decomposition_settings: ConvexDecompositionSettings | None = None,
-) -> dict[str, object]:
-    from pxr import UsdGeom, UsdPhysics
-
-    physics_scene_path = _find_live_physics_scene_path(stage, scene_root_path)
-    if physics_scene_path is None:
-        return {
-            "physics_scene_path": None,
-            "dynamic_roots": 0,
-            "room_colliders": 0,
-            "object_colliders": 0,
-            "object_collision_approx": None,
-            "target_collision_approx": None,
-            "convex_decomposition_prim_count": 0,
-            "convex_decomposition_settings": None,
-        }
-
-    room_colliders = 0
-    room_root = stage.GetPrimAtPath(f"{scene_root_path}/GeneratedRoom/Room")
-    for prim in _iter_collision_prims(room_root):
-        collision_api = UsdPhysics.CollisionAPI.Apply(prim)
-        collision_api.CreateCollisionEnabledAttr(True)
-        _assign_simulation_owner(collision_api, physics_scene_path)
-        if prim.IsA(UsdGeom.Mesh):
-            UsdPhysics.MeshCollisionAPI.Apply(prim).CreateApproximationAttr(UsdPhysics.Tokens.none)
-        room_colliders += 1
-
-    dynamic_roots = 0
-    object_colliders = 0
-    applied_object_collision_approx = None
-    applied_target_collision_approx = None
-    convex_decomposition_prim_count = 0
-    for prim_path in (scene_graph.get("obj") or {}):
-        prim_name = Path(str(prim_path)).name
-        live_prim = stage.GetPrimAtPath(f"{scene_root_path}/{prim_name}")
-        if not live_prim.IsValid():
-            continue
-
-        rigid_body_api = UsdPhysics.RigidBodyAPI.Apply(live_prim)
-        rigid_body_api.CreateRigidBodyEnabledAttr(True)
-        rigid_body_api.CreateKinematicEnabledAttr(False)
-        rigid_body_api.CreateStartsAsleepAttr(False)
-        _assign_simulation_owner(rigid_body_api, physics_scene_path)
-        _set_disable_gravity_attr(live_prim, True)
-
-        mass_api = UsdPhysics.MassAPI.Apply(live_prim)
-        mass_api.CreateMassAttr(1.0)
-
-        visual_collision_prims = _iter_visual_collision_prims(live_prim)
-        active_collision_prims = visual_collision_prims
-
-        for collision_prim in active_collision_prims:
-            collision_api = UsdPhysics.CollisionAPI.Apply(collision_prim)
-            collision_api.CreateCollisionEnabledAttr(True)
-            _assign_simulation_owner(collision_api, physics_scene_path)
-            if collision_prim.IsA(UsdGeom.Mesh):
-                is_target_prim = str(prim_path) == str(target_prim)
-                approximation = (
-                    object_collision_approx
-                    if object_collision_approx is not None
-                    else (
-                        target_collision_approx
-                        if target_collision_approx is not None and is_target_prim
-                        else _DYNAMIC_MESH_COLLISION_APPROX
-                    )
-                )
-                UsdPhysics.MeshCollisionAPI.Apply(collision_prim).CreateApproximationAttr(
-                    approximation
-                )
-                if approximation == "convexDecomposition" and convex_decomposition_settings is not None:
-                    _apply_convex_decomposition_settings(collision_prim, convex_decomposition_settings)
-                    convex_decomposition_prim_count += 1
-                if object_collision_approx is not None:
-                    applied_object_collision_approx = approximation
-                elif target_collision_approx is not None and is_target_prim:
-                    applied_target_collision_approx = approximation
-            object_colliders += 1
-        dynamic_roots += 1
-
-    return {
-        "physics_scene_path": physics_scene_path,
-        "dynamic_roots": dynamic_roots,
-        "room_colliders": room_colliders,
-        "object_colliders": object_colliders,
-        "object_collision_approx": applied_object_collision_approx,
-        "target_collision_approx": applied_target_collision_approx,
-        "convex_decomposition_prim_count": convex_decomposition_prim_count,
-        "convex_decomposition_settings": (
-            None if convex_decomposition_prim_count == 0 or convex_decomposition_settings is None
-            else convex_decomposition_settings.as_dict()
-        ),
-    }
-
-
-def _settle_dynamic_scene(
-    scene: InteractiveScene,
-    controller: RobotController,
-    sync_cameras: Callable[[], None] | None,
-    *,
-    settle_steps: int = 90,
-) -> None:
-    for _ in range(max(0, settle_steps)):
-        scene.write_data_to_sim()
-        controller.sim.step()
-        scene.update(controller.sim.get_physics_dt())
-        if sync_cameras is not None:
-            sync_cameras()
-
-
-def _reset_scene_to_plan(
-    scene: InteractiveScene,
-    controller: RobotController,
-    plan: RobotPlacementPlan,
-    base_z: float,
-    sync_cameras: Callable[[], None] | None,
-    *,
-    settle_steps: int = 90,
-) -> float:
-    controller.reset()
-    scene.reset()
-    _apply_root_pose(controller, plan, base_z)
-    if hasattr(controller, "_apply_reset_joint_state"):
-        controller._apply_reset_joint_state()
-    scene.write_data_to_sim()
-    controller.sim.step()
-    scene.update(controller.sim.get_physics_dt())
-    aligned_base_z = _align_robot_root_to_floor(scene, controller, floor_z=0.0)
-    _settle_dynamic_scene(scene, controller, sync_cameras, settle_steps=settle_steps)
-    aligned_base_z = _align_robot_root_to_floor(scene, controller, floor_z=0.0)
-    if sync_cameras is not None:
-        sync_cameras()
-    return aligned_base_z
-
-
+# =============================================================================
+# InteractiveScene cfg + builder
+# =============================================================================
 def _build_scene_collect_cfg(spec, scene_usd_path: str, robot_name: str):
     scene_usd = _prepare_scene_usd_without_physics_scenes(scene_usd_path)
 
@@ -1176,6 +506,9 @@ def _build_scene_mouse_collect(
     )
 
 
+# =============================================================================
+# Top-level orchestrator
+# =============================================================================
 def run_scene_mouse_collect(simulation_app, robot_name: str, args: SceneMouseCollectArgs) -> None:
     if args.num_envs != 1:
         raise ValueError("Scene mouse collection only supports --num_envs 1.")
