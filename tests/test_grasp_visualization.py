@@ -8,8 +8,8 @@ from pxr import Usd
 SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "scene_robot" / "src"
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.grasp_execution import FilteredGraspExecution, GraspExecutionPose
-from scene_robot_apps.grasp_visualization import add_grasp_candidates_visuals_to_stage
+from scene_robot_apps.grasp.execution import FilteredGraspExecution, GraspExecutionPose
+from scene_robot_apps.grasp.visualization import add_grasp_candidates_visuals_to_stage
 
 
 class GraspVisualizationTest(unittest.TestCase):

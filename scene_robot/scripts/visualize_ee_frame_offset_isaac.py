@@ -41,7 +41,7 @@ _maybe_reexec_with_conda_libstdcpp()
 
 from isaaclab.app import AppLauncher
 
-from scene_robot_apps.ee_frame_remap import (
+from scene_robot_apps.control.ee_frame_remap import (
     EE_FRAME_REMAP_ROTATIONS,
     apply_local_ee_frame_remap_to_world_quat,
     apply_local_translation_to_world_pos,
@@ -76,8 +76,8 @@ simulation_app = app_launcher.app
 def main() -> None:
     import isaaclab.sim as sim_utils
 
-    from scene_robot_apps.grasp_visualization import add_pose_frames_to_stage
-    from scene_robot_apps.stack_cube import build_stack_scene, resolve_stack_spec
+    from scene_robot_apps.grasp.visualization import add_pose_frames_to_stage
+    from scene_robot_apps.control.stack_cube import build_stack_scene, resolve_stack_spec
 
     spec = resolve_stack_spec(args_cli.robot, args_cli.arm_side)
     sim = sim_utils.SimulationContext(sim_utils.SimulationCfg(dt=0.01, device=args_cli.device))

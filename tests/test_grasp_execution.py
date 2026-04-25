@@ -6,7 +6,7 @@ import unittest
 SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "scene_robot" / "src"
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.grasp_execution import (
+from scene_robot_apps.grasp.execution import (
     FilteredGraspExecution,
     GraspExecutionPose,
     expand_grasp_candidates,

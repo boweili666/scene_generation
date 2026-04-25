@@ -10,7 +10,7 @@ SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.real2sim_scale_randomization import (
+from scene_robot_apps.pipelines.real2sim_scale_randomization import (
     DEFAULT_MAX_SCALE,
     DEFAULT_MIN_SCALE,
     randomize_real2sim_asset_scales,

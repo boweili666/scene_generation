@@ -93,7 +93,7 @@ def _resolve_default_scene_grasp_proposals_path(scene_usd_path: Path, scene_gras
 
 
 def _candidate_from_payload(payload: dict[str, Any]):
-    from scene_robot_apps.grasp_execution import FilteredGraspExecution, GraspExecutionPose
+    from scene_robot_apps.grasp.execution import FilteredGraspExecution, GraspExecutionPose
 
     grasp_payload = payload.get("grasp", payload)
     grasp = GraspExecutionPose(
@@ -160,7 +160,7 @@ def _load_shortlist_candidates(target_prim: str, shortlist_path: Path | None, ma
 
 
 def _expand_scene_candidates(scene_grasp_payload: dict[str, Any], target_prim: str, max_grasps: int):
-    from scene_robot_apps.grasp_execution import FilteredGraspExecution, expand_grasp_candidates
+    from scene_robot_apps.grasp.execution import FilteredGraspExecution, expand_grasp_candidates
 
     expanded = expand_grasp_candidates(scene_grasp_payload, target_prim=target_prim)
     converted: list[FilteredGraspExecution] = []
@@ -278,7 +278,7 @@ def main() -> None:
     import omni.usd
     import isaaclab.sim as sim_utils
 
-    from scene_robot_apps.grasp_visualization import add_grasp_candidates_visuals_to_stage
+    from scene_robot_apps.grasp.visualization import add_grasp_candidates_visuals_to_stage
 
     scene_usd_path = args_cli.scene_usd_path.resolve()
     scene_grasp_path = _resolve_default_scene_grasp_proposals_path(scene_usd_path, args_cli.scene_grasp_proposals_path)

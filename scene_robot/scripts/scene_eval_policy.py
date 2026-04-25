@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
 from app.backend.config.settings import DEFAULT_PLACEMENTS_PATH, SCENE_GRAPH_PATH
-from scene_robot_apps.ee_frame_remap import EE_FRAME_REMAP_ROTATIONS
+from scene_robot_apps.control.ee_frame_remap import EE_FRAME_REMAP_ROTATIONS
 
 
 DEFAULT_SCENE_USD_PATH = PROJECT_ROOT / "runtime" / "scene_service" / "usd" / "scene_latest.usd"
@@ -141,7 +141,7 @@ def _resolve_session_paths() -> None:
 
 
 def main():
-    from scene_robot_apps.scene_eval_policy import SceneEvalArgs, run_scene_eval
+    from scene_robot_apps.pipelines.scene_eval_policy import SceneEvalArgs, run_scene_eval
 
     _resolve_session_paths()
 

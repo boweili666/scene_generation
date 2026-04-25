@@ -9,7 +9,7 @@ from pxr import Usd
 SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "scene_robot" / "src"
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.robot_workspaces import (
+from scene_robot_apps.scene.workspaces import (
     add_robot_workspace_visuals_to_stage,
     project_workspace_box_to_support,
     default_robot_workspace_specs,

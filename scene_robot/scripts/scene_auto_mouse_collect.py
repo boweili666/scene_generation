@@ -139,7 +139,7 @@ simulation_app = app_launcher.app
 
 
 def main():
-    from scene_robot_apps.scene_mouse_collect import SceneMouseCollectArgs, run_scene_mouse_collect
+    from scene_robot_apps.pipelines.scene_mouse_collect import SceneMouseCollectArgs, run_scene_mouse_collect
 
     run_scene_mouse_collect(
         simulation_app,

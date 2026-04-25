@@ -8,7 +8,7 @@ SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.robot_workspaces import save_robot_workspace_overview
+from scene_robot_apps.scene.workspaces import save_robot_workspace_overview
 
 
 DEFAULT_OUTPUT_IMAGE_PATH = PROJECT_ROOT / "runtime" / "robot_placement" / "robot_workspaces.png"

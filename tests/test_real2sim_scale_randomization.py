@@ -10,7 +10,7 @@ from pxr import Gf, Usd, UsdGeom
 SCENE_ROBOT_SRC = Path(__file__).resolve().parents[1] / "scene_robot" / "src"
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
-from scene_robot_apps.real2sim_scale_randomization import randomize_real2sim_asset_scales
+from scene_robot_apps.pipelines.real2sim_scale_randomization import randomize_real2sim_asset_scales
 
 
 class Real2SimScaleRandomizationTest(unittest.TestCase):

@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCENE_ROBOT_SRC))
 
 from app.backend.services.grasp_scene_adapter import default_scene_grasp_proposals_path
-from scene_robot_apps.grasp_execution import expand_grasp_candidates
+from scene_robot_apps.grasp.execution import expand_grasp_candidates
 
 
 DEFAULT_SELECTED_PATH = PROJECT_ROOT / "runtime" / "robot_placement" / "selected_grasp_proposal.json"
