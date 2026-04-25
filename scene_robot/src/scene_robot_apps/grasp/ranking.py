@@ -29,15 +29,15 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .ee_frame_remap import apply_local_ee_frame_remap_to_world_quat
-from .grasp_execution import (
+from ..control.ee_frame_remap import apply_local_ee_frame_remap_to_world_quat
+from .execution import (
     FilteredGraspExecution,
     expand_grasp_candidates,
     filter_grasp_candidates_geometry,
     rank_filtered_grasp_candidates_by_start_pose,
 )
-from .grasp_proposals_io import _world_bbox_payload
-from .scene_physics import _compute_world_prim_max_z
+from .proposals_io import _world_bbox_payload
+from ..scene.physics import _compute_world_prim_max_z
 
 
 DEFAULT_SHORTLIST_FILENAME = "grasp_candidate_shortlist.json"

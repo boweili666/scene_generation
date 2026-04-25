@@ -12,7 +12,7 @@
 Originally lived inside `scene_mouse_collect.py`; moved here so the
 mouse-collect orchestrator stays focused on scene assembly + episode
 loop control. `scene_mouse_collect.py` re-exports `SceneTeleopEpisodeWriter`
-so all existing `from .scene_mouse_collect import SceneTeleopEpisodeWriter`
+so all existing `from ..pipelines.scene_mouse_collect import SceneTeleopEpisodeWriter`
 callers (e.g. scene_auto_grasp_collect) keep working unchanged.
 """
 
@@ -27,7 +27,7 @@ from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 
 from app.backend.services.robot_placement import RobotPlacementPlan, plan_to_payload
 
-from .robot_controller import RobotController
+from ..control.robot_controller import RobotController
 
 
 class SceneTeleopEpisodeWriter:

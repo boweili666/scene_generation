@@ -33,8 +33,8 @@ from .ee_frame_remap import (
     apply_inverse_local_ee_frame_remap_to_world_quat,
     quat_wxyz_to_matrix,
 )
-from .grasp_execution import pose_error_metrics
-from .grasp_target_state import _quat_wxyz_to_rotvec
+from ..grasp.execution import pose_error_metrics
+from ..grasp.target_state import _quat_wxyz_to_rotvec
 
 
 def _build_action_tensor(controller, target_pos_b: torch.Tensor, target_quat_b: torch.Tensor, *, gripper_closed: bool) -> torch.Tensor:

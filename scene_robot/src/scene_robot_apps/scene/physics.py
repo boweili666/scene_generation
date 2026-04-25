@@ -18,7 +18,7 @@ state:
 * Episode boundary helpers (`_reset_scene_to_plan`, `_settle_dynamic_scene`).
 
 `scene_mouse_collect.py` re-exports the public names so external imports
-that already say `from .scene_mouse_collect import _reset_scene_to_plan`
+that already say `from ..pipelines.scene_mouse_collect import _reset_scene_to_plan`
 keep working unchanged.
 """
 
@@ -36,7 +36,7 @@ from isaaclab.scene import InteractiveScene
 
 from app.backend.services.robot_placement import RobotPlacementPlan
 
-from .robot_controller import RobotController
+from ..control.robot_controller import RobotController
 
 
 # =============================================================================

@@ -25,9 +25,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from .ee_frame_remap import apply_local_ee_frame_remap_to_world_quat, apply_local_translation_to_world_pos
-from .grasp_execution import FilteredGraspExecution
-from .grasp_visualization import add_pose_frames_to_stage
+from ..control.ee_frame_remap import apply_local_ee_frame_remap_to_world_quat, apply_local_translation_to_world_pos
+from ..grasp.execution import FilteredGraspExecution
+from ..grasp.visualization import add_pose_frames_to_stage
 
 
 EE_MARKER_DEBUG_TRANSLATION_LOCAL = (0.12, 0.0, 0.0)

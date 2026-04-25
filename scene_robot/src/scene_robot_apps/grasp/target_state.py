@@ -31,8 +31,8 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
 
-from .grasp_execution import FilteredGraspExecution
-from .scene_physics import _get_rigid_body_view
+from .execution import FilteredGraspExecution
+from ..scene.physics import _get_rigid_body_view
 
 
 def _quat_wxyz_to_rotvec(current_quat_wxyz: torch.Tensor, target_quat_wxyz: torch.Tensor) -> torch.Tensor:
