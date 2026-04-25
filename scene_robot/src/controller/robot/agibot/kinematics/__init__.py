@@ -1,1 +1,0 @@
-from .agibot_g1_arm_kinematics import AgibotG1ArmKinematics

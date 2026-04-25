@@ -1,3 +1,1 @@
 from .r1lite_upper_dynamic_1_config import R1LiteUpperDynamic1Config
-from .r1lite_upper_dynamic_2_config import R1LiteUpperDynamic2Config
-
