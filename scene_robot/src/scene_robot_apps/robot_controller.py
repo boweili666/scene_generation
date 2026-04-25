@@ -6,9 +6,13 @@ class used by every pipeline in this package (auto grasp collection,
 mouse teleop record, scene mouse collect, scene eval) regardless of
 whether they touch the stack-cube task at all. Pulling it out keeps
 `stack_cube.py` focused on the stack-cube task definitions and shrinks
-the file from ~1200 to ~600 lines without changing any imports — every
-existing `from .stack_cube import RobotController` keeps working
-because `stack_cube.py` re-exports it from here.
+that file from ~1200 to ~600 lines.
+
+Import it directly from this module: `from .robot_controller import
+RobotController`. (An earlier version re-exported it from stack_cube.py
+for back-compat, but that re-export caused a circular import once
+episode_writer.py was added in a sibling refactor — RobotController →
+stack_cube → robot_controller — so it was removed.)
 """
 
 from __future__ import annotations

@@ -554,11 +554,13 @@ class KeyboardTeleop:
         return cmd
 
 
-# RobotController has been moved to robot_controller.py — this re-export
-# keeps existing  callers working
-# without modification. New code should import from robot_controller directly.
-from .robot_controller import RobotController  # noqa: E402
-
+# RobotController lives in robot_controller.py. Importing it at the top of
+# this module would create a circular import (robot_controller imports
+# RobotStackSpec / Phase / MouseClickTeleopUI / etc. from here), so we
+# import lazily inside build_stack_scene below. With
+# `from __future__ import annotations` enabled, the type-hint reference
+# in build_stack_scene's signature stays as a string and doesn't need a
+# real symbol at module load time.
 
 
 def build_stack_scene(
@@ -566,7 +568,9 @@ def build_stack_scene(
     robot_name: str,
     num_envs: int = 1,
     arm_side: str = "left",
-) -> tuple[InteractiveScene, RobotController]:
+) -> "tuple[InteractiveScene, RobotController]":
+    from .robot_controller import RobotController
+
     spec = resolve_stack_spec(robot_name, arm_side)
     scene_cfg = build_single_robot_scene_cfg(spec)(num_envs=num_envs, env_spacing=spec.env_spacing)
     scene = InteractiveScene(scene_cfg)
