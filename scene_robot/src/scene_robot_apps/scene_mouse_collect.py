@@ -34,7 +34,7 @@ from .mouse_teleop_record import (
     _R1LITE_CAMERA_SPECS,
     _make_pinhole_camera_cfg,
 )
-from .stack_cube import CuboidSpec, RobotStackController, STACK_SPECS, _make_cube_cfg
+from .stack_cube import CuboidSpec, RobotController, STACK_SPECS, _make_cube_cfg
 from .stack_cube import resolve_stack_spec
 
 
@@ -377,7 +377,7 @@ class SceneTeleopEpisodeWriter:
     def close(self):
         self.file_handler.close()
 
-    def maybe_record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotStackController, cameras: dict[str, object]):
+    def maybe_record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
         if not self.recording:
             return False
         if self.episode_start_time is None:
@@ -391,7 +391,7 @@ class SceneTeleopEpisodeWriter:
         self.frame_count += 1
         return True
 
-    def _record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotStackController, cameras: dict[str, object]):
+    def _record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
         robot = controller.robot
         _, _, _, ee_pos_b, ee_quat_b = controller._current_ee()
         target_pos = controller.target_pos if controller.target_pos is not None else ee_pos_b
@@ -485,7 +485,7 @@ def _make_spec_for_scene_collect(robot_name: str, plan: RobotPlacementPlan, base
     )
 
 
-def _apply_root_pose(controller: RobotStackController, plan: RobotPlacementPlan, base_z: float) -> None:
+def _apply_root_pose(controller: RobotController, plan: RobotPlacementPlan, base_z: float) -> None:
     root_state = controller.robot.data.default_root_state.clone()
     root_state[:, 0] = float(plan.base_pose[0])
     root_state[:, 1] = float(plan.base_pose[1])
@@ -573,7 +573,7 @@ def _clear_rigid_body_view_cache() -> None:
 
 def _align_robot_root_to_floor(
     scene: InteractiveScene,
-    controller: RobotStackController,
+    controller: RobotController,
     *,
     floor_z: float = 0.0,
     max_passes: int = 3,
@@ -881,7 +881,7 @@ def _rebind_generated_scene_physics(
 
 def _settle_dynamic_scene(
     scene: InteractiveScene,
-    controller: RobotStackController,
+    controller: RobotController,
     sync_cameras: Callable[[], None] | None,
     *,
     settle_steps: int = 90,
@@ -896,7 +896,7 @@ def _settle_dynamic_scene(
 
 def _reset_scene_to_plan(
     scene: InteractiveScene,
-    controller: RobotStackController,
+    controller: RobotController,
     plan: RobotPlacementPlan,
     base_z: float,
     sync_cameras: Callable[[], None] | None,
@@ -1045,7 +1045,7 @@ def _build_scene_mouse_collect(
     if removed_physics_scenes:
         print(f"[INFO] Removed nested physics scenes from generated scene: {removed_physics_scenes}")
     sim.reset()
-    controller = RobotStackController(sim, scene, spec)
+    controller = RobotController(sim, scene, spec)
     controller.ee_marker.set_visibility(False)
     controller.goal_marker.set_visibility(False)
     if hasattr(controller, "_apply_reset_joint_state"):

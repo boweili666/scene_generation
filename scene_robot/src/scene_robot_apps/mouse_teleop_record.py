@@ -15,7 +15,7 @@ from isaaclab.utils.datasets import EpisodeData, HDF5DatasetFileHandler
 from isaaclab.utils.math import combine_frame_transforms
 
 from .stack_cube import (
-    RobotStackController,
+    RobotController,
     build_single_robot_scene_cfg,
     resolve_stack_spec,
 )
@@ -225,7 +225,7 @@ class MouseTeleopEpisodeWriter:
     def close(self):
         self.file_handler.close()
 
-    def maybe_record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotStackController, cameras: dict[str, object]):
+    def maybe_record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
         if self.episode_start_time is None:
             self.episode_start_time = sim_time
             self.next_capture_time = sim_time
@@ -240,7 +240,7 @@ class MouseTeleopEpisodeWriter:
         self.frame_count += 1
         return True
 
-    def _record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotStackController, cameras: dict[str, object]):
+    def _record_frame(self, sim_time: float, action: torch.Tensor, controller: RobotController, cameras: dict[str, object]):
         robot = controller.robot
         _, _, _, ee_pos_b, ee_quat_b = controller._current_ee()
         target_pos = controller.target_pos if controller.target_pos is not None else ee_pos_b
@@ -319,7 +319,7 @@ def _build_kinova_record_scene(sim: sim_utils.SimulationContext, num_envs: int, 
     scene = InteractiveScene(_SceneCfg(num_envs=num_envs, env_spacing=spec.env_spacing))
     sim.reset()
     _configure_world_camera(scene, spec, sim)
-    controller = RobotStackController(sim, scene, spec)
+    controller = RobotController(sim, scene, spec)
     controller.ee_marker.set_visibility(False)
     controller.goal_marker.set_visibility(False)
     controller.reset()
@@ -439,7 +439,7 @@ def _build_agibot_record_scene(sim: sim_utils.SimulationContext, num_envs: int, 
     scene = InteractiveScene(_SceneCfg(num_envs=num_envs, env_spacing=spec.env_spacing))
     sim.reset()
     _configure_world_camera(scene, spec, sim)
-    controller = RobotStackController(sim, scene, spec)
+    controller = RobotController(sim, scene, spec)
     controller.ee_marker.set_visibility(False)
     controller.goal_marker.set_visibility(False)
     controller.reset()
@@ -593,7 +593,7 @@ def _build_r1lite_record_scene(sim: sim_utils.SimulationContext, num_envs: int, 
     scene = InteractiveScene(_SceneCfg(num_envs=num_envs, env_spacing=spec.env_spacing))
     sim.reset()
     _configure_world_camera(scene, spec, sim)
-    controller = RobotStackController(sim, scene, spec)
+    controller = RobotController(sim, scene, spec)
     controller.ee_marker.set_visibility(False)
     controller.goal_marker.set_visibility(False)
     controller.reset()
@@ -615,7 +615,7 @@ def _build_r1lite_record_scene(sim: sim_utils.SimulationContext, num_envs: int, 
     return scene, controller, cameras, None, aliases
 
 
-_RECORD_BUILDERS: dict[str, tuple[str, Callable[[sim_utils.SimulationContext, int, str], tuple[InteractiveScene, RobotStackController, dict[str, object], Callable[[], None] | None, dict[str, dict[str, object]]]]]] = {
+_RECORD_BUILDERS: dict[str, tuple[str, Callable[[sim_utils.SimulationContext, int, str], tuple[InteractiveScene, RobotController, dict[str, object], Callable[[], None] | None, dict[str, dict[str, object]]]]]] = {
     "kinova": ("Isaac-Kinova-Gen3-MouseTeleop-v0", _build_kinova_record_scene),
     "agibot": ("Isaac-Agibot-G1-MouseTeleop-v0", _build_agibot_record_scene),
     "r1lite": ("Isaac-R1Lite-MouseTeleop-v0", _build_r1lite_record_scene),
