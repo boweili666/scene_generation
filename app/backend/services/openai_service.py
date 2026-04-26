@@ -264,6 +264,7 @@ AGENT_ROUTER_SCHEMA = {
                 "edit_scene_graph",
                 "run_real2sim",
                 "generate_scene",
+                "run_scene_robot_collect",
                 "clarification",
             ],
         },
@@ -394,6 +395,7 @@ Choose exactly one next intent:
 - edit_scene_graph: modify the existing scene graph or placements
 - run_real2sim: run the observed-object extraction / reconstruction pipeline from the current image and graph
 - generate_scene: call the scene generation service to preview or build the scene layout
+- run_scene_robot_collect: launch the scene_robot auto-grasp data-collection pipeline against the current scene USD
 - clarification: the request is too ambiguous to route safely
 
 Extra routing fields:
@@ -411,6 +413,7 @@ Extra routing fields:
 Rules:
 - Route to generate_scene when the user asks to preview, build, lay out, resample, or render the scene.
 - Route to run_real2sim when the user asks to reconstruct observed objects, segment masks, run Real2Sim, or review mask assignments from the current image.
+- Route to run_scene_robot_collect when the user asks to collect robot demonstrations / grasp episodes / auto-grasp data, or to run scene_robot, robot rollout, or robot data collection on the current scene.
 - Route to edit_scene_graph when the user is modifying the current graph, relations, or placements.
 - Route to create_scene_graph when the user is describing a new scene or providing a reference image to build a graph.
 - If a scene graph already exists and the user gives a fresh room description without clearly saying whether to replace or edit it, return clarification with clarification_focus=graph_mode.

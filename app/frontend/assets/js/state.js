@@ -46,6 +46,10 @@
       offset: 0,
       path: "real2sim.log"
     };
+    const sceneRobotLogState = {
+      offset: 0,
+      path: "scene_robot.log"
+    };
     const assignmentReviewState = {
       data: null,
       saving: false,
@@ -53,6 +57,11 @@
       signature: "",
     };
     const real2simMonitorState = {
+      activeJobId: "",
+      activePromise: null,
+      token: 0,
+    };
+    const sceneRobotMonitorState = {
       activeJobId: "",
       activePromise: null,
       token: 0,
@@ -124,6 +133,12 @@
       real2simMonitorState.token += 1;
       real2simMonitorState.activeJobId = "";
       real2simMonitorState.activePromise = null;
+    }
+
+    function invalidateSceneRobotMonitor() {
+      sceneRobotMonitorState.token += 1;
+      sceneRobotMonitorState.activeJobId = "";
+      sceneRobotMonitorState.activePromise = null;
     }
 
     async function ensureRuntimeContext(options = {}) {
@@ -302,6 +317,144 @@
           job_id: String(real2simState.job_id),
           log_path: String(real2simState.log_path || "real2sim.log"),
           log_start_offset: Number(real2simState.log_start_offset || 0),
+        };
+      }
+      return null;
+    }
+
+    function getSceneRobotStateFromPayload(payload = {}) {
+      if (payload?.session_state?.current_run?.scene_robot && typeof payload.session_state.current_run.scene_robot === "object") {
+        return payload.session_state.current_run.scene_robot;
+      }
+      if (payload?.job?.session_state?.current_run?.scene_robot && typeof payload.job.session_state.current_run.scene_robot === "object") {
+        return payload.job.session_state.current_run.scene_robot;
+      }
+      return null;
+    }
+
+    const RECENT_PLAN_PROMPTS_STORAGE_KEY = "scene_ui_recent_plan_prompts";
+    const RECENT_PLAN_PROMPTS_CAP = 5;
+
+    function getRecentPlanPrompts() {
+      try {
+        const raw = window.localStorage.getItem(RECENT_PLAN_PROMPTS_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((p) => p && typeof p.prompt === "string") : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function getLastPlanPrompt() {
+      const items = getRecentPlanPrompts();
+      return items.length > 0 ? items[0] : null;
+    }
+
+    function saveRecentPlanPrompt(prompt) {
+      const trimmed = String(prompt || "").trim();
+      if (!trimmed) return;
+      const existing = getRecentPlanPrompts().filter((p) => p.prompt !== trimmed);
+      existing.unshift({ prompt: trimmed, ts: new Date().toISOString() });
+      const capped = existing.slice(0, RECENT_PLAN_PROMPTS_CAP);
+      try {
+        window.localStorage.setItem(RECENT_PLAN_PROMPTS_STORAGE_KEY, JSON.stringify(capped));
+      } catch (err) {
+        // localStorage full / disabled — silently ignore.
+      }
+    }
+
+    const NAMED_TEMPLATES_STORAGE_KEY = "scene_ui_named_plan_templates";
+    const NAMED_TEMPLATES_CAP = 20;
+
+    function getNamedTemplates() {
+      try {
+        const raw = window.localStorage.getItem(NAMED_TEMPLATES_STORAGE_KEY);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed)
+          ? parsed.filter((t) => t && typeof t.name === "string" && typeof t.prompt === "string")
+          : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function findNamedTemplate(name) {
+      const norm = String(name || "").trim();
+      if (!norm) return null;
+      return getNamedTemplates().find((t) => t.name === norm) || null;
+    }
+
+    function saveNamedTemplate(name, prompt) {
+      const normName = String(name || "").trim();
+      const normPrompt = String(prompt || "").trim();
+      if (!normName || !normPrompt) return false;
+      const existing = getNamedTemplates().filter((t) => t.name !== normName);
+      existing.unshift({ name: normName, prompt: normPrompt, ts: new Date().toISOString() });
+      const capped = existing.slice(0, NAMED_TEMPLATES_CAP);
+      try {
+        window.localStorage.setItem(NAMED_TEMPLATES_STORAGE_KEY, JSON.stringify(capped));
+        return true;
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function deleteNamedTemplate(name) {
+      const norm = String(name || "").trim();
+      if (!norm) return;
+      const filtered = getNamedTemplates().filter((t) => t.name !== norm);
+      try {
+        window.localStorage.setItem(NAMED_TEMPLATES_STORAGE_KEY, JSON.stringify(filtered));
+      } catch (err) {
+        // ignore
+      }
+    }
+
+    let latestSessionState = null;
+
+    function refreshSessionStateCache(sessionState) {
+      if (sessionState && typeof sessionState === "object" && sessionState.current_run) {
+        latestSessionState = sessionState;
+      }
+    }
+
+    function planStepLiveStatus(step) {
+      if (!step?.result?.job_id || !latestSessionState) return null;
+      const jobId = String(step.result.job_id);
+
+      const real2sim = latestSessionState.current_run?.real2sim;
+      if (real2sim && String(real2sim.job_id || "") === jobId) {
+        return String(real2sim.status || "");
+      }
+      const sceneRobot = latestSessionState.current_run?.scene_robot;
+      if (sceneRobot && String(sceneRobot.job_id || "") === jobId) {
+        return String(sceneRobot.status || "");
+      }
+
+      // Fallback: per-job audit log records the final status of each
+      // long-running job. History plans whose jobs finished after the
+      // plan was archived rely on this lookup to render correctly.
+      const audit = latestSessionState.job_audit;
+      if (audit && audit[jobId]) {
+        return String(audit[jobId].status || "");
+      }
+      return null;
+    }
+
+    function getSceneRobotJobInfoFromPayload(payload = {}) {
+      const explicitJob = payload?.scene_robot_job;
+      if (explicitJob && typeof explicitJob === "object" && explicitJob.job_id) {
+        return explicitJob;
+      }
+      const sceneRobotState = getSceneRobotStateFromPayload(payload);
+      const status = String(sceneRobotState?.status || "");
+      if ((status === "queued" || status === "running") && sceneRobotState?.job_id) {
+        return {
+          job_id: String(sceneRobotState.job_id),
+          log_path: String(sceneRobotState.log_path || "scene_robot.log"),
+          log_start_offset: Number(sceneRobotState.log_start_offset || 0),
         };
       }
       return null;

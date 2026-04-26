@@ -22,6 +22,30 @@
       resetSceneDebug();
       clearReferenceImagePreview();
       resetAgentPanel();
+      refreshRepeatPlanButton();
+      renderTemplateChips();
+
+      const tplNameInput = document.getElementById("savePlanTemplateNameInput");
+      if (tplNameInput) {
+        tplNameInput.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter") {
+            evt.preventDefault();
+            confirmSaveTemplate();
+          } else if (evt.key === "Escape") {
+            evt.preventDefault();
+            cancelSaveTemplate();
+          }
+        });
+      }
+      const tplPromptInput = document.getElementById("savePlanTemplatePromptInput");
+      if (tplPromptInput) {
+        tplPromptInput.addEventListener("keydown", (evt) => {
+          if (evt.key === "Escape") {
+            evt.preventDefault();
+            cancelSaveTemplate();
+          }
+        });
+      }
 
       try {
         await ensureRuntimeContext();

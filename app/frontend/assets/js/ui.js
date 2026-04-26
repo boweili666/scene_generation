@@ -732,6 +732,45 @@
         data.truncated ? "Streaming..." : "Live";
     }
 
+    function resetSceneRobotLog(startOffset = 0, logPath = "scene_robot.log") {
+      sceneRobotLogState.offset = Number.isFinite(Number(startOffset)) ? Number(startOffset) : 0;
+      sceneRobotLogState.path = logPath || "scene_robot.log";
+      document.getElementById("sceneRobotLogStatus").textContent = "Waiting...";
+      document.getElementById("sceneRobotLog").textContent = `[log] watching ${sceneRobotLogState.path}\n`;
+    }
+
+    function appendSceneRobotLog(text) {
+      if (!text) return;
+      const el = document.getElementById("sceneRobotLog");
+      const combined = el.textContent + text;
+      el.textContent = combined.length > 120000 ? combined.slice(-120000) : combined;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    async function refreshSceneRobotLog() {
+      await ensureRuntimeContext();
+      const qs = new URLSearchParams({
+        offset: String(sceneRobotLogState.offset || 0),
+        limit: "65536"
+      });
+      const res = await fetch(withRuntimeQuery("/scene_robot/log", {
+        offset: qs.get("offset"),
+        limit: qs.get("limit"),
+      }));
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error((data && (data.msg || data.error)) || "Failed to fetch scene_robot log");
+      }
+      if (typeof data.next_offset === "number") {
+        sceneRobotLogState.offset = data.next_offset;
+      }
+      if (data.content) {
+        appendSceneRobotLog(data.content);
+      }
+      document.getElementById("sceneRobotLogStatus").textContent =
+        data.truncated ? "Streaming..." : "Live";
+    }
+
     function setSimProgress(progress = {}) {
       const phase = progress.phase || "running";
       const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));

@@ -13,6 +13,7 @@ from .instruction_service import apply_instruction, create_scene_graph_from_inpu
 from .openai_service import read_json_file, route_agent_request
 from .pipeline_service import collect_scene_result_artifacts, start_real2sim_job
 from .runtime_context import RuntimeContext, create_session, resolve_runtime_context
+from .scene_robot_service import start_scene_robot_collect_job
 
 
 _AGENT_STATE_FILENAME = "agent_state.json"
@@ -24,8 +25,14 @@ STATE_EDIT_SCENE_GRAPH = "edit_scene_graph"
 STATE_RUN_REAL2SIM = "run_real2sim"
 STATE_AWAIT_LAYOUT_STRATEGY = "await_layout_strategy"
 STATE_GENERATE_SCENE = "generate_scene"
+STATE_RUN_SCENE_ROBOT_COLLECT = "run_scene_robot_collect"
 STATE_COMPLETED = "completed"
 STATE_FAILED = "failed"
+
+DEFAULT_SCENE_ROBOT_ROBOT = "agibot"
+DEFAULT_SCENE_ROBOT_NUM_EPISODES = 5
+
+MAX_JOB_AUDIT_ENTRIES = 100
 
 TOP_LEVEL_ROUTE_CONFIDENCE_THRESHOLD = 0.7
 
@@ -347,6 +354,13 @@ def _generic_intent_options(*, has_scene_graph: bool, has_saved_image: bool) -> 
                     reply="Generate the scene.",
                     action="generate_scene",
                 ),
+                _option(
+                    "run_scene_robot_collect",
+                    "Run Robot Collect",
+                    description="Run scene_robot auto-grasp data collection on the current scene USD.",
+                    reply="Run scene_robot data collection on the current scene.",
+                    action="run_scene_robot_collect",
+                ),
             ]
         )
     return options
@@ -411,6 +425,14 @@ def _resolve_explicit_intent(action: str | None) -> str | None:
         return STATE_RUN_REAL2SIM
     if normalized in {"generate_scene", "scene", "scene_new"}:
         return STATE_GENERATE_SCENE
+    if normalized in {
+        "run_scene_robot_collect",
+        "scene_robot_collect",
+        "scene_robot",
+        "robot_collect",
+        "collect_scene_robot",
+    }:
+        return STATE_RUN_SCENE_ROBOT_COLLECT
     return None
 
 
@@ -532,6 +554,8 @@ def _map_agent_route_intent(intent: str | None) -> str | None:
         return STATE_RUN_REAL2SIM
     if normalized == STATE_GENERATE_SCENE:
         return STATE_GENERATE_SCENE
+    if normalized == STATE_RUN_SCENE_ROBOT_COLLECT:
+        return STATE_RUN_SCENE_ROBOT_COLLECT
     return None
 
 
@@ -552,6 +576,12 @@ def _decide_request(
             intent=STATE_RUN_REAL2SIM,
             state=STATE_RUN_REAL2SIM,
             reason="Explicit Real2Sim action was provided.",
+        )
+    if explicit_intent == STATE_RUN_SCENE_ROBOT_COLLECT:
+        return _decision_payload(
+            intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+            state=STATE_RUN_SCENE_ROBOT_COLLECT,
+            reason="Explicit scene_robot collect action was provided.",
         )
     if explicit_intent == STATE_GENERATE_SCENE:
         return _decision_payload(
@@ -641,6 +671,10 @@ def _load_agent_state(context: RuntimeContext) -> dict[str, Any]:
             "last_decision": None,
             "latest_real2sim_run_id": None,
             "latest_scene_generation_run_id": None,
+            "latest_scene_robot_run_id": None,
+            "active_plan": None,
+            "plan_history": [],
+            "job_audit": {},
             "runs": {},
             "history": [],
         }
@@ -660,6 +694,10 @@ def _load_agent_state(context: RuntimeContext) -> dict[str, Any]:
     payload.setdefault("last_decision", None)
     payload.setdefault("latest_real2sim_run_id", None)
     payload.setdefault("latest_scene_generation_run_id", None)
+    payload.setdefault("latest_scene_robot_run_id", None)
+    payload.setdefault("active_plan", None)
+    payload.setdefault("plan_history", [])
+    payload.setdefault("job_audit", {})
     payload.setdefault("runs", {})
     payload.setdefault("history", [])
     return payload
@@ -730,9 +768,50 @@ def _session_state_snapshot(state: dict[str, Any], context: RuntimeContext) -> d
         "last_layout_strategy": state.get("last_layout_strategy"),
         "latest_real2sim_run_id": state.get("latest_real2sim_run_id"),
         "latest_scene_generation_run_id": state.get("latest_scene_generation_run_id"),
+        "latest_scene_robot_run_id": state.get("latest_scene_robot_run_id"),
         "history": history,
         "current_run": current_run,
+        "job_audit": state.get("job_audit") if isinstance(state.get("job_audit"), dict) else {},
     }
+
+
+def _record_job_audit(
+    state: dict[str, Any],
+    job_id: str,
+    *,
+    kind: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    """Append/update a per-job audit entry so history can read final state.
+
+    Long-running jobs (real2sim, scene_robot) finish AFTER the plan that
+    started them is already archived. Without this audit, history-view
+    rendering can't tell whether an old plan's job ultimately succeeded
+    or failed — the live cache only tracks the latest job per kind.
+    """
+    if not job_id:
+        return
+    audit = state.setdefault("job_audit", {})
+    if not isinstance(audit, dict):
+        audit = {}
+        state["job_audit"] = audit
+    entry = audit.get(job_id) or {}
+    entry["kind"] = kind
+    entry["status"] = status
+    entry["updated_at"] = _utcnow_iso()
+    entry.setdefault("first_seen_at", entry.get("first_seen_at") or _utcnow_iso())
+    if status in {"succeeded", "failed"}:
+        entry.setdefault("finished_at", _utcnow_iso())
+        entry["finished_at"] = _utcnow_iso()
+    if error:
+        entry["error"] = error
+    elif "error" in entry and status != "failed":
+        entry.pop("error", None)
+    audit[job_id] = entry
+    while len(audit) > MAX_JOB_AUDIT_ENTRIES:
+        oldest = next(iter(audit))
+        del audit[oldest]
 
 
 def _record_real2sim_state(
@@ -778,6 +857,87 @@ def _record_real2sim_state(
     return real2sim_state
 
 
+def _record_scene_robot_state(
+    state: dict[str, Any],
+    context: RuntimeContext,
+    *,
+    status: str,
+    job_id: str | None = None,
+    artifacts: dict[str, Any] | None = None,
+    error: str | None = None,
+    log_path: str | None = None,
+    log_start_offset: int | None = None,
+    robot: str | None = None,
+    target: str | None = None,
+    num_episodes: int | None = None,
+) -> dict[str, Any]:
+    run_state = _ensure_run_state(state, context)
+    scene_robot_state = run_state.get("scene_robot")
+    if not isinstance(scene_robot_state, dict):
+        scene_robot_state = {}
+    scene_robot_state.update(
+        {
+            "status": status,
+            "job_id": job_id or scene_robot_state.get("job_id"),
+            "updated_at": _utcnow_iso(),
+        }
+    )
+    if robot is not None:
+        scene_robot_state["robot"] = robot
+    if target is not None:
+        scene_robot_state["target"] = target
+    if num_episodes is not None:
+        scene_robot_state["num_episodes"] = int(num_episodes)
+    if artifacts is not None:
+        scene_robot_state["artifacts"] = artifacts
+    if error is not None:
+        scene_robot_state["error"] = error
+    elif "error" in scene_robot_state and status != STATE_FAILED:
+        scene_robot_state.pop("error", None)
+    if log_path is not None:
+        scene_robot_state["log_path"] = log_path
+    if log_start_offset is not None:
+        scene_robot_state["log_start_offset"] = int(log_start_offset)
+    run_state["scene_robot"] = scene_robot_state
+    state["latest_scene_robot_run_id"] = context.run_id
+    return scene_robot_state
+
+
+def _scene_graph_iter_objects(scene_graph: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(scene_graph, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    objects = scene_graph.get("objects")
+    if isinstance(objects, list):
+        for obj in objects:
+            if isinstance(obj, dict):
+                rows.append(obj)
+    obj_map = scene_graph.get("obj")
+    if isinstance(obj_map, dict):
+        for path, obj in obj_map.items():
+            if isinstance(obj, dict):
+                merged = dict(obj)
+                merged.setdefault("path", path)
+                rows.append(merged)
+    return rows
+
+
+def _pick_default_scene_robot_target(scene_graph: dict[str, Any] | None) -> str | None:
+    rows = _scene_graph_iter_objects(scene_graph)
+    real2sim_first: str | None = None
+    any_first: str | None = None
+    for obj in rows:
+        path = obj.get("path") or obj.get("id")
+        if not isinstance(path, str) or not path:
+            continue
+        if any_first is None:
+            any_first = path
+        if real2sim_first is None and str(obj.get("source") or "").strip().lower() == "real2sim":
+            real2sim_first = path
+            break
+    return real2sim_first or any_first
+
+
 def _record_scene_generation_state(
     state: dict[str, Any],
     context: RuntimeContext,
@@ -802,11 +962,17 @@ def _record_scene_generation_state(
 def sync_real2sim_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(job, dict):
         return None
-    payload = job.get("payload")
-    if not isinstance(payload, dict):
-        return None
-    session_id = payload.get("session_id")
-    run_id = payload.get("run_id")
+    # `pipeline_service.get_real2sim_job_status` pops `payload` before
+    # returning, but copies `session_id` / `run_id` to top-level. Read
+    # from there with a payload fallback for any caller that still
+    # forwards the raw stored job dict.
+    session_id = job.get("session_id")
+    run_id = job.get("run_id")
+    if not isinstance(session_id, str) or not isinstance(run_id, str):
+        payload = job.get("payload")
+        if isinstance(payload, dict):
+            session_id = payload.get("session_id")
+            run_id = payload.get("run_id")
     if not isinstance(session_id, str) or not isinstance(run_id, str):
         return None
 
@@ -839,6 +1005,13 @@ def sync_real2sim_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] |
         log_path=str(job.get("log_path") or context.real2sim_log_path),
         log_start_offset=int(job.get("log_start_offset") or 0),
     )
+    _record_job_audit(
+        state,
+        str(job.get("job_id") or ""),
+        kind="real2sim",
+        status=status,
+        error=str(job.get("error")) if job.get("error") else None,
+    )
     previous_status = str(previous_real2sim.get("status") or "")
     if status == "succeeded" and previous_status != "succeeded":
         _append_agent_history(state, "assistant", "Real2Sim completed and saved the current run artifacts.")
@@ -866,6 +1039,81 @@ def sync_real2sim_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] |
     return _session_state_snapshot(state, context)
 
 
+def clear_job_audit(*, session_id: str | None, run_id: str | None) -> dict[str, Any]:
+    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    if context is None:
+        return {"status": "ok", "session_state": None}
+    state = _load_agent_state(context)
+    state["job_audit"] = {}
+    _save_agent_state(context, state)
+    return {
+        "status": "ok",
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "session_state": _session_state_snapshot(state, context),
+    }
+
+
+def sync_scene_robot_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(job, dict):
+        return None
+    session_id = job.get("session_id")
+    run_id = job.get("run_id")
+    if not isinstance(session_id, str) or not isinstance(run_id, str):
+        return None
+
+    try:
+        context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    except ValueError:
+        return None
+    if context is None:
+        return None
+
+    state = _load_agent_state(context)
+    run_state = _ensure_run_state(state, context)
+    previous = dict(run_state.get("scene_robot") or {}) if isinstance(run_state.get("scene_robot"), dict) else {}
+    artifacts = job.get("artifacts") if isinstance(job.get("artifacts"), dict) else {}
+    status = str(job.get("status") or "unknown")
+    _record_scene_robot_state(
+        state,
+        context,
+        status=status,
+        job_id=str(job.get("job_id") or ""),
+        artifacts=dict(artifacts) if artifacts else None,
+        error=str(job.get("error")) if job.get("error") else None,
+        log_path=str(job.get("log_path") or context.scene_robot_log_path),
+        log_start_offset=int(job.get("log_start_offset") or 0),
+    )
+    _record_job_audit(
+        state,
+        str(job.get("job_id") or ""),
+        kind="scene_robot",
+        status=status,
+        error=str(job.get("error")) if job.get("error") else None,
+    )
+    previous_status = str(previous.get("status") or "")
+    if status == "succeeded" and previous_status != "succeeded":
+        _append_agent_history(state, "assistant", "scene_robot collect completed for the current run.")
+        _set_current_state(
+            state,
+            STATE_COMPLETED,
+            last_intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+            last_completed_state=STATE_RUN_SCENE_ROBOT_COLLECT,
+            last_decision=state.get("last_decision") if isinstance(state.get("last_decision"), dict) else None,
+        )
+    if status == "failed" and previous_status != "failed":
+        failure_message = str(job.get("error") or "scene_robot collect failed.")
+        _append_agent_history(state, "assistant", f"scene_robot collect failed: {failure_message}")
+        _set_current_state(
+            state,
+            STATE_FAILED,
+            last_intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+            last_decision=state.get("last_decision") if isinstance(state.get("last_decision"), dict) else None,
+        )
+    _save_agent_state(context, state)
+    return _session_state_snapshot(state, context)
+
+
 def _agent_paths_payload(context: RuntimeContext) -> dict[str, str]:
     return {
         "scene_graph_path": str(context.scene_graph_path),
@@ -876,6 +1124,7 @@ def _agent_paths_payload(context: RuntimeContext) -> dict[str, str]:
         "real2sim_manifest_path": str(context.real2sim_manifest_path),
         "real2sim_log_path": str(context.real2sim_log_path),
         "scene_usd_path": str(context.scene_service_usd_path),
+        "scene_robot_log_path": str(context.scene_robot_log_path),
     }
 
 
@@ -886,6 +1135,7 @@ def _agent_summary_from_state(state: dict[str, Any], context: RuntimeContext) ->
     current_run = _ensure_run_state(state, context)
     real2sim_state = current_run.get("real2sim") if isinstance(current_run.get("real2sim"), dict) else {}
     scene_state = current_run.get("scene_generation") if isinstance(current_run.get("scene_generation"), dict) else {}
+    scene_robot_state = current_run.get("scene_robot") if isinstance(current_run.get("scene_robot"), dict) else {}
     last_completed_state = str(state.get("last_completed_state") or "") or None
     intent = str(state.get("last_intent") or current_state or STATE_UNDERSTAND_REQUEST)
 
@@ -912,6 +1162,16 @@ def _agent_summary_from_state(state: dict[str, Any], context: RuntimeContext) ->
             outcome = "failed"
         elif status == "succeeded":
             message = "Real2Sim completed for the current run."
+    elif current_state == STATE_RUN_SCENE_ROBOT_COLLECT:
+        status = str(scene_robot_state.get("status") or "running")
+        if status in {"queued", "running"}:
+            message = "scene_robot collect is running for the current run."
+            outcome = "started_job"
+        elif status == "failed":
+            message = str(scene_robot_state.get("error") or "scene_robot collect failed for the current run.")
+            outcome = "failed"
+        elif status == "succeeded":
+            message = "scene_robot collect completed for the current run."
     elif current_state == STATE_COMPLETED:
         if last_completed_state == STATE_CREATE_SCENE_GRAPH:
             message = "Created a new scene graph for the current run."
@@ -919,6 +1179,8 @@ def _agent_summary_from_state(state: dict[str, Any], context: RuntimeContext) ->
             message = "Updated the current scene graph."
         elif last_completed_state == STATE_RUN_REAL2SIM:
             message = "Real2Sim completed for the current run."
+        elif last_completed_state == STATE_RUN_SCENE_ROBOT_COLLECT:
+            message = "scene_robot collect completed for the current run."
         elif last_completed_state == STATE_GENERATE_SCENE:
             if isinstance(scene_state.get("outputs"), dict):
                 strategy = scene_state.get("resample_mode") or state.get("last_layout_strategy") or "joint"
@@ -975,6 +1237,15 @@ def get_agent_state_response(*, session_id: str | None, run_id: str | None) -> d
             "log_start_offset": int(real2sim_state.get("log_start_offset") or 0),
         }
 
+    scene_robot_state = current_run.get("scene_robot") if isinstance(current_run.get("scene_robot"), dict) else {}
+    scene_robot_job = None
+    if str(scene_robot_state.get("status") or "") in {"queued", "running"} and scene_robot_state.get("job_id"):
+        scene_robot_job = {
+            "job_id": str(scene_robot_state.get("job_id")),
+            "log_path": str(scene_robot_state.get("log_path") or context.scene_robot_log_path),
+            "log_start_offset": int(scene_robot_state.get("log_start_offset") or 0),
+        }
+
     return _build_agent_response(
         context,
         state=agent_summary["state"],
@@ -992,6 +1263,7 @@ def get_agent_state_response(*, session_id: str | None, run_id: str | None) -> d
         scene_result=scene_result_payload,
         error_info=error_info,
         real2sim_job=real2sim_job,
+        scene_robot_job=scene_robot_job,
     )
 
 
@@ -1549,6 +1821,130 @@ def handle_agent_message(
             outcome="started_job",
             session_state=_session_state_snapshot(state, context),
             real2sim_job=job,
+        )
+
+    if intent == STATE_RUN_SCENE_ROBOT_COLLECT:
+        if scene_graph is None:
+            question = (
+                "I need a scene graph before running scene_robot collect. "
+                "Should I create one from the current image first?"
+                if has_saved_image or has_uploaded_image
+                else "I need a scene graph before running scene_robot collect. Upload a reference image or describe the scene first."
+            )
+            options = _bootstrap_scene_graph_options(from_saved_image=has_saved_image or has_uploaded_image)
+            pending_question = _question_payload(
+                "scene_robot_bootstrap", question, options=options, run_id=context.run_id
+            )
+            state["pending_question"] = pending_question
+            _append_agent_history(state, "assistant", question)
+            clarification_decision = _decision_payload(
+                intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                state=STATE_NEEDS_CLARIFICATION,
+                reason="scene_robot collect requires an existing scene graph in the current run.",
+                requires_clarification=True,
+                question=question,
+                options=options,
+            )
+            _set_current_state(
+                state,
+                STATE_NEEDS_CLARIFICATION,
+                last_intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                last_decision=clarification_decision,
+            )
+            _save_agent_state(context, state)
+            return _clarification_response(
+                context,
+                state=STATE_NEEDS_CLARIFICATION,
+                intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                message="I need a scene graph before scene_robot collect.",
+                question=question,
+                reason=clarification_decision["reason"],
+                decision=clarification_decision,
+                pending_question=pending_question,
+                session_state=_session_state_snapshot(state, context),
+            )
+
+        target = _pick_default_scene_robot_target(scene_graph)
+        if not target:
+            question = "I could not find a target object in the current scene graph. Add an object before running scene_robot collect."
+            decision_no_target = _decision_payload(
+                intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                state=STATE_NEEDS_CLARIFICATION,
+                reason="scene_robot collect needs at least one object in the scene graph to use as the target.",
+                requires_clarification=True,
+                question=question,
+            )
+            pending_question = _question_payload(
+                "scene_robot_target", question, options=[], run_id=context.run_id
+            )
+            state["pending_question"] = pending_question
+            _append_agent_history(state, "assistant", question)
+            _set_current_state(
+                state,
+                STATE_NEEDS_CLARIFICATION,
+                last_intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                last_decision=decision_no_target,
+            )
+            _save_agent_state(context, state)
+            return _clarification_response(
+                context,
+                state=STATE_NEEDS_CLARIFICATION,
+                intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+                message=question,
+                question=question,
+                reason=decision_no_target["reason"],
+                decision=decision_no_target,
+                pending_question=pending_question,
+                session_state=_session_state_snapshot(state, context),
+            )
+
+        robot = DEFAULT_SCENE_ROBOT_ROBOT
+        num_episodes = DEFAULT_SCENE_ROBOT_NUM_EPISODES
+        payload = {
+            "session_id": context.session_id,
+            "run_id": context.run_id,
+            "log_path": str(context.scene_robot_log_path),
+            "robot": robot,
+            "target": target,
+            "num_episodes": num_episodes,
+            "headless": True,
+            "wait_for_run_request": False,
+        }
+        job = start_scene_robot_collect_job(payload)
+        _record_scene_robot_state(
+            state,
+            context,
+            status="running",
+            job_id=str(job.get("job_id") or ""),
+            log_path=str(job.get("log_path") or context.scene_robot_log_path),
+            log_start_offset=int(job.get("log_start_offset") or 0),
+            robot=robot,
+            target=target,
+            num_episodes=num_episodes,
+        )
+        state["pending_question"] = None
+        _append_agent_history(
+            state,
+            "assistant",
+            f"Started scene_robot collect job {job['job_id']} (robot={robot}, target={target}, episodes={num_episodes}).",
+        )
+        _set_current_state(
+            state,
+            STATE_RUN_SCENE_ROBOT_COLLECT,
+            last_intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+            last_decision=decision,
+        )
+        _save_agent_state(context, state)
+        return _build_agent_response(
+            context,
+            state=STATE_RUN_SCENE_ROBOT_COLLECT,
+            intent=STATE_RUN_SCENE_ROBOT_COLLECT,
+            message=f"Started scene_robot collect (robot={robot}, target={target}, episodes={num_episodes}).",
+            reason=decision["reason"],
+            decision=decision,
+            outcome="started_job",
+            session_state=_session_state_snapshot(state, context),
+            scene_robot_job=job,
         )
 
     if intent == STATE_GENERATE_SCENE:
