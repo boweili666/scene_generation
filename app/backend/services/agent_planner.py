@@ -60,7 +60,13 @@ MAX_PLAN_STEPS = int(os.getenv("AGENT_PLAN_MAX_STEPS", "10"))
 MAX_PLAN_HISTORY = int(os.getenv("AGENT_PLAN_MAX_HISTORY", "20"))
 
 
-LONG_RUNNING_TOOLS = {"run_real2sim", "run_scene_robot_collect"}
+LONG_RUNNING_TOOLS = {
+    "run_real2sim",
+    "run_scene_robot_collect",
+    "run_scene_robot_convert",
+    "run_scene_robot_train",
+    "run_scene_robot_eval",
+}
 TOOL_NAMES = sorted(TOOL_HANDLERS.keys())
 
 
@@ -401,20 +407,42 @@ def _job_status_from_state(state: dict[str, Any], context: RuntimeContext, kind:
 
 
 def _resume_check(plan: dict[str, Any], state: dict[str, Any], context: RuntimeContext) -> tuple[bool, str | None]:
-    """Return (can_resume, paused_status_text) for a plan paused on a long job."""
+    """Return (can_resume, paused_status_text) for a plan paused on a long job.
+
+    Strategy: look up the paused job_id in `state["job_audit"]` first
+    (covers all stages — collect, convert, train, eval, real2sim — once
+    any /status poll has updated the audit). Fall back to the legacy
+    per-kind `current_run` state slice for backward compat with plans
+    that paused before the audit existed.
+    """
     paused = plan.get("paused_for_job")
     if not isinstance(paused, dict):
         return True, None
+
+    job_id = paused.get("job_id")
+    if isinstance(job_id, str) and job_id:
+        audit = state.get("job_audit") if isinstance(state.get("job_audit"), dict) else {}
+        entry = audit.get(job_id) if isinstance(audit, dict) else None
+        if isinstance(entry, dict):
+            audit_status = str(entry.get("status") or "")
+            if audit_status == "succeeded":
+                return True, "succeeded"
+            if audit_status == "failed":
+                return True, "failed"
+            if audit_status:
+                return False, audit_status
+
     kind = paused.get("kind")
-    if kind not in {"real2sim", "scene_robot"}:
-        return True, None
-    state_key = "real2sim" if kind == "real2sim" else "scene_robot"
-    job_status = _job_status_from_state(state, context, state_key)
-    if job_status == "succeeded":
-        return True, "succeeded"
-    if job_status == "failed":
-        return True, "failed"
-    return False, job_status or "running"
+    if kind in {"real2sim", "scene_robot"}:
+        state_key = "real2sim" if kind == "real2sim" else "scene_robot"
+        job_status = _job_status_from_state(state, context, state_key)
+        if job_status == "succeeded":
+            return True, "succeeded"
+        if job_status == "failed":
+            return True, "failed"
+        if job_status:
+            return False, job_status
+    return False, "running"
 
 
 def _step_starts_long_job(step: dict[str, Any]) -> bool:

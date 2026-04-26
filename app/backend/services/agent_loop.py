@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -57,7 +58,18 @@ from .runtime_context import (
     create_session,
     resolve_runtime_context,
 )
-from .scene_robot_service import start_scene_robot_collect_job
+from .scene_robot_service import (
+    start_scene_robot_collect_job,
+    start_scene_robot_convert_job,
+    start_scene_robot_eval_job,
+    start_scene_robot_train_job,
+)
+from ..config import (
+    DATASETS_DIR,
+    LEROBOT_DATASETS_DIR,
+    OUTPUTS_EVAL_DIR,
+    OUTPUTS_TRAIN_DIR,
+)
 
 
 AGENT_LOOP_MODEL = os.getenv("AGENT_LOOP_MODEL", os.getenv("AGENT_ROUTER_MODEL", "gpt-5.4-mini"))
@@ -82,14 +94,23 @@ Available tools (in normal pipeline order):
 - run_scene_robot_collect: launch the scene_robot auto-grasp data
   collection job. Defaults: robot=agibot, num_episodes=5, target=first
   real2sim object in the scene graph. Returns immediately with a job id.
+- run_scene_robot_convert: convert the latest collect HDF5 into a
+  LeRobotDataset directory. Fast (seconds-to-minutes); fire-and-return.
+- run_scene_robot_train: launch `lerobot-train` on the dataset. LONG
+  (potentially hours). Returns immediately with a job id; checkpoint
+  lands in the train output dir under `checkpoints/last/pretrained_model`.
+- run_scene_robot_eval: closed-loop sim rollout of a trained checkpoint.
+  Long job (minutes-to-tens of minutes). Returns immediately with a
+  job id and a record directory for per-episode videos.
 
 Operating rules:
 1. Always call `inspect_state` first if you do not already know the
    current run's state from earlier tool results in this turn.
-2. `run_real2sim` and `run_scene_robot_collect` are LONG jobs (minutes).
-   Do NOT poll them inside this turn. Return to the user as soon as you
-   start them; the UI streams their progress and the user can come back
-   in a follow-up message.
+2. `run_real2sim`, `run_scene_robot_collect`, `run_scene_robot_train`,
+   and `run_scene_robot_eval` are LONG jobs. Do NOT poll them inside
+   this turn. Return to the user as soon as you start them; the UI
+   streams their progress and the user can come back in a follow-up
+   message.
 3. If the user asks for an end-to-end pipeline ("set up everything to
    train a pickup policy"), you may call create_scene_graph ->
    run_real2sim in one turn, then stop and tell the user you'll continue
@@ -331,12 +352,220 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
     }
 
 
+def _default_repo_id(context: RuntimeContext, robot: str | None, target: str | None) -> str:
+    """Derive a sensible default LeRobot repo_id from the current run."""
+    target_slug = "obj"
+    if isinstance(target, str) and target:
+        cleaned = target.strip().lstrip("/").replace("/", "_")
+        if cleaned:
+            target_slug = cleaned[:40]
+    robot_slug = (robot or "agibot").strip().lower() or "agibot"
+    return f"local/{context.session_id}_{context.run_id}_{robot_slug}_{target_slug}"
+
+
+def _default_dataset_root(repo_id: str) -> str:
+    return str(LEROBOT_DATASETS_DIR / repo_id.split("/", 1)[-1])
+
+
+def _latest_collect_hdf5(context: RuntimeContext) -> Path | None:
+    """Find the most recent HDF5 dataset produced by collect for this run.
+
+    scene_auto_grasp_collect.py writes to
+    `datasets/<session>_<run>_<robot>_<target>.hdf5` by default, so we glob
+    project-level `datasets/` for files matching this run.
+    """
+    pattern = f"{context.session_id}_{context.run_id}_*.hdf5"
+    candidates = sorted(DATASETS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _latest_train_output(repo_id: str | None = None) -> Path | None:
+    if not OUTPUTS_TRAIN_DIR.exists():
+        return None
+    candidates = [p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir()]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _tool_run_scene_robot_convert(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
+    context = lctx.runtime_context
+
+    hdf5_arg = args.get("hdf5")
+    if isinstance(hdf5_arg, str) and hdf5_arg.strip():
+        hdf5_path = Path(hdf5_arg.strip())
+        if not hdf5_path.is_absolute():
+            hdf5_path = (context.run_root / hdf5_path).resolve()
+    else:
+        candidate = _latest_collect_hdf5(context)
+        if candidate is None:
+            return {"ok": False, "error": "No HDF5 dataset found for this run; run scene_robot_collect first or pass hdf5 explicitly."}
+        hdf5_path = candidate
+    if not hdf5_path.exists():
+        return {"ok": False, "error": f"HDF5 file not found: {hdf5_path}"}
+
+    repo_id = (args.get("repo_id") or "").strip() if isinstance(args.get("repo_id"), str) else ""
+    if not repo_id:
+        repo_id = _default_repo_id(context, robot=None, target=None)
+
+    output_root = (args.get("output_root") or "").strip() if isinstance(args.get("output_root"), str) else ""
+    if not output_root:
+        output_root = _default_dataset_root(repo_id)
+
+    payload = {
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "log_path": str(context.scene_robot_convert_log_path),
+        "hdf5": str(hdf5_path),
+        "repo_id": repo_id,
+        "output_root": output_root,
+        "task": str(args.get("task") or "pick up the target object"),
+        "overwrite": bool(args.get("overwrite", True)),
+    }
+    job = start_scene_robot_convert_job(payload)
+    lctx.scene_robot_job = job
+    lctx.last_started_state = STATE_RUN_SCENE_ROBOT_COLLECT
+    return {
+        "ok": True,
+        "job_id": job.get("job_id"),
+        "status": "running",
+        "stage": "convert",
+        "hdf5": str(hdf5_path),
+        "repo_id": repo_id,
+        "output_root": output_root,
+        "note": "convert runs in background. Do not poll within this turn.",
+    }
+
+
+def _tool_run_scene_robot_train(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
+    context = lctx.runtime_context
+
+    repo_id = (args.get("repo_id") or "").strip() if isinstance(args.get("repo_id"), str) else ""
+    if not repo_id:
+        repo_id = _default_repo_id(context, robot=None, target=None)
+
+    dataset_root = (args.get("dataset_root") or "").strip() if isinstance(args.get("dataset_root"), str) else ""
+    if not dataset_root:
+        dataset_root = _default_dataset_root(repo_id)
+
+    output_dir = (args.get("output_dir") or "").strip() if isinstance(args.get("output_dir"), str) else ""
+    if not output_dir:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output_dir = str(OUTPUTS_TRAIN_DIR / f"{context.session_id}_{context.run_id}_{timestamp}")
+
+    payload = {
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "log_path": str(context.scene_robot_train_log_path),
+        "repo_id": repo_id,
+        "dataset_root": dataset_root,
+        "output_dir": output_dir,
+        "policy_type": str(args.get("policy_type") or "diffusion"),
+        "device": str(args.get("device") or "cuda"),
+    }
+    if args.get("steps") is not None:
+        payload["steps"] = int(args["steps"])
+    if args.get("batch_size") is not None:
+        payload["batch_size"] = int(args["batch_size"])
+    if args.get("save_freq") is not None:
+        payload["save_freq"] = int(args["save_freq"])
+
+    job = start_scene_robot_train_job(payload)
+    lctx.scene_robot_job = job
+    lctx.last_started_state = STATE_RUN_SCENE_ROBOT_COLLECT
+    return {
+        "ok": True,
+        "job_id": job.get("job_id"),
+        "status": "running",
+        "stage": "train",
+        "repo_id": repo_id,
+        "dataset_root": dataset_root,
+        "output_dir": output_dir,
+        "expected_checkpoint_dir": str(Path(output_dir) / "checkpoints" / "last" / "pretrained_model"),
+        "note": "train runs in background and may take hours. Do not poll within this turn.",
+    }
+
+
+def _tool_run_scene_robot_eval(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
+    context = lctx.runtime_context
+
+    target = (args.get("target") or "").strip() if isinstance(args.get("target"), str) else ""
+    if not target:
+        try:
+            scene_graph = json.loads(context.scene_graph_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, FileNotFoundError):
+            scene_graph = None
+        target = _pick_default_scene_robot_target(scene_graph) or ""
+    if not target:
+        return {"ok": False, "error": "No target available; pass target explicitly or ensure scene graph has objects."}
+
+    checkpoint = (args.get("checkpoint") or "").strip() if isinstance(args.get("checkpoint"), str) else ""
+    if not checkpoint:
+        latest = _latest_train_output()
+        if latest is None:
+            return {"ok": False, "error": "No checkpoint provided and no train outputs found; run train first or pass checkpoint."}
+        checkpoint = str(latest / "checkpoints" / "last" / "pretrained_model")
+
+    repo_id = (args.get("repo_id") or "").strip() if isinstance(args.get("repo_id"), str) else ""
+    if not repo_id:
+        repo_id = _default_repo_id(context, robot=None, target=target)
+
+    dataset_root = (args.get("dataset_root") or "").strip() if isinstance(args.get("dataset_root"), str) else ""
+    if not dataset_root:
+        dataset_root = _default_dataset_root(repo_id)
+
+    num_episodes_raw = args.get("num_episodes")
+    try:
+        num_episodes = int(num_episodes_raw) if num_episodes_raw is not None else 20
+    except (TypeError, ValueError):
+        num_episodes = 20
+    num_episodes = max(1, min(num_episodes, 500))
+
+    record_dir = (args.get("record_dir") or "").strip() if isinstance(args.get("record_dir"), str) else ""
+    if not record_dir:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        record_dir = str(OUTPUTS_EVAL_DIR / f"{context.session_id}_{context.run_id}_{timestamp}_runs")
+
+    payload = {
+        "session_id": context.session_id,
+        "run_id": context.run_id,
+        "log_path": str(context.scene_robot_eval_log_path),
+        "target": target,
+        "checkpoint": checkpoint,
+        "dataset_root": dataset_root,
+        "num_episodes": num_episodes,
+        "record_dir": record_dir,
+        "headless": True,
+    }
+    if args.get("robot"):
+        payload["robot"] = str(args["robot"])
+
+    job = start_scene_robot_eval_job(payload)
+    lctx.scene_robot_job = job
+    lctx.last_started_state = STATE_RUN_SCENE_ROBOT_COLLECT
+    return {
+        "ok": True,
+        "job_id": job.get("job_id"),
+        "status": "running",
+        "stage": "eval",
+        "target": target,
+        "checkpoint": checkpoint,
+        "num_episodes": num_episodes,
+        "record_dir": record_dir,
+        "note": "eval runs in background. Do not poll within this turn.",
+    }
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], "LoopContext"], dict[str, Any]]] = {
     "inspect_state": _tool_inspect_state,
     "create_scene_graph": _tool_create_scene_graph,
     "run_real2sim": _tool_run_real2sim,
     "generate_scene": _tool_generate_scene,
     "run_scene_robot_collect": _tool_run_scene_robot_collect,
+    "run_scene_robot_convert": _tool_run_scene_robot_convert,
+    "run_scene_robot_train": _tool_run_scene_robot_train,
+    "run_scene_robot_eval": _tool_run_scene_robot_eval,
 }
 
 
@@ -415,6 +644,74 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "USD prim path of the target object, e.g. /World/bolt_2. If omitted, the first real2sim object in the scene graph is used.",
                 },
                 "num_episodes": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "run_scene_robot_convert",
+        "description": "Convert the latest collect HDF5 dataset for this run into a LeRobotDataset directory. Defaults pick the most recently modified HDF5 matching this session/run plus a derived repo_id and output_root. Returns immediately with a job_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hdf5": {
+                    "type": "string",
+                    "description": "Optional path to a specific HDF5 file. Defaults to the most recent collect output for this run.",
+                },
+                "repo_id": {
+                    "type": "string",
+                    "description": "LeRobot repo id. Default: local/<session>_<run>_<robot>_<target>.",
+                },
+                "output_root": {
+                    "type": "string",
+                    "description": "Directory to write the dataset into. Default: datasets/lerobot/<repo_id>.",
+                },
+                "task": {"type": "string"},
+                "overwrite": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "run_scene_robot_train",
+        "description": "Launch lerobot-train on the LeRobotDataset. Long job (potentially hours). Returns immediately with a job_id; the train output dir contains the eventual checkpoint.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo_id": {"type": "string"},
+                "dataset_root": {"type": "string"},
+                "output_dir": {
+                    "type": "string",
+                    "description": "Training output directory. Default: outputs/train/<session>_<run>_<timestamp>.",
+                },
+                "policy_type": {"type": "string", "enum": ["diffusion", "act", "tdmpc", "vqbet"]},
+                "device": {"type": "string"},
+                "steps": {"type": "integer", "minimum": 100, "maximum": 1000000},
+                "batch_size": {"type": "integer", "minimum": 1, "maximum": 256},
+                "save_freq": {"type": "integer", "minimum": 100, "maximum": 100000},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "run_scene_robot_eval",
+        "description": "Launch closed-loop sim eval (scene_eval_policy.py) on a trained checkpoint. Returns immediately with a job_id. Defaults to the most recent train output's `pretrained_model` checkpoint when checkpoint is omitted.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "checkpoint": {
+                    "type": "string",
+                    "description": "Path to the LeRobot policy `pretrained_model` directory. Defaults to the latest train output.",
+                },
+                "repo_id": {"type": "string"},
+                "dataset_root": {"type": "string"},
+                "robot": {"type": "string", "enum": ["agibot", "kinova", "r1lite"]},
+                "num_episodes": {"type": "integer", "minimum": 1, "maximum": 500},
+                "record_dir": {"type": "string"},
             },
             "additionalProperties": False,
         },
