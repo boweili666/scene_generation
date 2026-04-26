@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from flask import jsonify, request, send_file, send_from_directory
@@ -16,6 +17,7 @@ from ..config import (
     REAL2SIM_SCENE_RESULTS_DIR,
     RUNTIME_DIR,
     SCENE_GRAPH_PATH,
+    SCENE_ROBOT_LOG_PATH,
     WEB_DIR,
 )
 from ..services.openai_service import (
@@ -26,13 +28,34 @@ from ..services.openai_service import (
     read_json_file,
     write_json_file,
 )
-from ..services.agent_service import get_agent_state_response, handle_agent_message, sync_real2sim_job_to_session
+from ..services.agent_service import (
+    clear_job_audit as clear_agent_job_audit,
+    get_agent_state_response,
+    handle_agent_message,
+    sync_real2sim_job_to_session,
+    sync_scene_robot_job_to_session,
+)
+from ..services.agent_loop import handle_agent_loop_message
+from ..services.agent_planner import (
+    accept_follow_up_plan as accept_agent_follow_up_plan,
+    cancel_plan as cancel_agent_plan,
+    execute_plan as execute_agent_plan,
+    get_plan_history as get_agent_plan_history,
+    propose_plan as propose_agent_plan,
+    update_follow_up_plan as update_agent_follow_up_plan,
+    update_plan as update_agent_plan,
+)
 from ..services.instruction_service import apply_instruction as apply_scene_instruction
 from ..services.instruction_service import save_scene_graph_state
 from ..services.pipeline_service import (
     get_real2sim_job_status as get_real2sim_job_status_raw,
     read_real2sim_log,
     start_real2sim_job,
+)
+from ..services.scene_robot_service import (
+    get_scene_robot_job_status,
+    read_scene_robot_log,
+    start_scene_robot_collect_job,
 )
 from ..services.real2sim_review_service import load_assignment_review, save_assignment_review
 from ..services.runtime_context import (
@@ -80,6 +103,7 @@ def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
             "real2sim_reuse_mesh_dir": Path(REAL2SIM_REUSE_MESH_DIR),
             "real2sim_scene_results_dir": Path(REAL2SIM_SCENE_RESULTS_DIR),
             "real2sim_log_path": Path(LOG_PATH),
+            "scene_robot_log_path": Path(SCENE_ROBOT_LOG_PATH),
         }
 
     return {
@@ -95,6 +119,7 @@ def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
         "real2sim_reuse_mesh_dir": context.real2sim_meshes_dir,
         "real2sim_scene_results_dir": context.real2sim_scene_results_dir,
         "real2sim_log_path": context.real2sim_log_path,
+        "scene_robot_log_path": context.scene_robot_log_path,
     }
 
 
@@ -198,6 +223,17 @@ def _get_real2sim_job_status(job_id: str) -> dict | None:
     session_state = sync_real2sim_job_to_session(raw_job)
     job = dict(raw_job)
     job["artifacts"] = _to_artifact_urls(job.get("artifacts") or {})
+    if session_state is not None:
+        job["session_state"] = session_state
+    return job
+
+
+def _get_scene_robot_job_status(job_id: str) -> dict | None:
+    raw_job = get_scene_robot_job_status(job_id)
+    if raw_job is None:
+        return None
+    session_state = sync_scene_robot_job_to_session(raw_job)
+    job = dict(raw_job)
     if session_state is not None:
         job["session_state"] = session_state
     return job
@@ -432,6 +468,7 @@ def register_routes(app):
         action = None
         resample_mode = None
         scene_endpoint = None
+        mode = None
 
         if payload is not None:
             text = (payload.get("text") or payload.get("instruction") or "").strip()
@@ -439,33 +476,159 @@ def register_routes(app):
             action = payload.get("action")
             resample_mode = payload.get("resample_mode")
             scene_endpoint = payload.get("scene_endpoint")
+            mode = payload.get("mode")
         else:
             text = (request.form.get("text") or request.form.get("instruction") or "").strip()
             class_names_raw = request.form.get("class_names", "") or ""
             action = request.form.get("action")
             resample_mode = request.form.get("resample_mode")
             scene_endpoint = request.form.get("scene_endpoint")
+            mode = request.form.get("mode")
             file = request.files.get("image")
             if file:
                 image_bytes = file.read()
 
+        effective_mode = (mode or os.environ.get("AGENT_LOOP_MODE") or "single").strip().lower()
         try:
             context = _resolve_request_runtime_context(create=True)
-            result = handle_agent_message(
-                session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
-                text=text,
-                image_bytes=image_bytes,
-                class_names_raw=class_names_raw,
-                action=action,
-                resample_mode=resample_mode,
-                scene_endpoint=scene_endpoint,
-            )
+            if effective_mode == "plan":
+                result = propose_agent_plan(
+                    session_id=context.session_id if context is not None else None,
+                    run_id=context.run_id if context is not None else None,
+                    text=text,
+                    image_bytes=image_bytes,
+                )
+            elif effective_mode == "loop":
+                result = handle_agent_loop_message(
+                    session_id=context.session_id if context is not None else None,
+                    run_id=context.run_id if context is not None else None,
+                    text=text,
+                    image_bytes=image_bytes,
+                )
+            else:
+                result = handle_agent_message(
+                    session_id=context.session_id if context is not None else None,
+                    run_id=context.run_id if context is not None else None,
+                    text=text,
+                    image_bytes=image_bytes,
+                    class_names_raw=class_names_raw,
+                    action=action,
+                    resample_mode=resample_mode,
+                    scene_endpoint=scene_endpoint,
+                )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 502
 
+        return jsonify(result)
+
+    @app.route("/agent/plan/execute", methods=["POST"])
+    def agent_plan_execute():
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = execute_agent_plan(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        return jsonify(result)
+
+    @app.route("/agent/plan/update", methods=["POST"])
+    def agent_plan_update():
+        payload = request.get_json(silent=True) or {}
+        steps = payload.get("steps")
+        if not isinstance(steps, list):
+            return jsonify({"error": "steps must be a list"}), 400
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = update_agent_plan(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+                steps=steps,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        return jsonify(result)
+
+    @app.route("/agent/plan/follow_up/update", methods=["POST"])
+    def agent_plan_follow_up_update():
+        payload = request.get_json(silent=True) or {}
+        steps = payload.get("steps")
+        if not isinstance(steps, list):
+            return jsonify({"error": "steps must be a list"}), 400
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = update_agent_follow_up_plan(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+                steps=steps,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        return jsonify(result)
+
+    @app.route("/agent/plan/accept_follow_up", methods=["POST"])
+    def agent_plan_accept_follow_up():
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = accept_agent_follow_up_plan(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        return jsonify(result)
+
+    @app.route("/agent/plan/history", methods=["GET"])
+    def agent_plan_history():
+        try:
+            limit_arg = request.args.get("limit")
+            limit_value = int(limit_arg) if limit_arg is not None else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "limit must be an integer"}), 400
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = get_agent_plan_history(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+                limit=limit_value,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify(result)
+
+    @app.route("/agent/job/audit/clear", methods=["POST"])
+    def agent_job_audit_clear():
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = clear_agent_job_audit(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify(result)
+
+    @app.route("/agent/plan/cancel", methods=["POST"])
+    def agent_plan_cancel():
+        try:
+            context = _resolve_request_runtime_context(create=True)
+            result = cancel_agent_plan(
+                session_id=context.session_id if context is not None else None,
+                run_id=context.run_id if context is not None else None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         return jsonify(result)
 
     @app.route("/agent/state", methods=["GET"])
@@ -548,6 +711,51 @@ def register_routes(app):
 
         log_path = str(paths["real2sim_log_path"])
         data = read_real2sim_log(offset=offset, limit=limit, log_path=log_path)
+        return jsonify({"status": "ok", **data, "path": log_path})
+
+    @app.route("/scene_robot/collect/start", methods=["POST"])
+    def scene_robot_collect_start():
+        paths = _request_runtime_paths(create=True)
+        payload = dict(request.json or {})
+        payload.setdefault("log_path", str(paths["scene_robot_log_path"]))
+        context = paths.get("context")
+        if context is not None:
+            payload.setdefault("session_id", context.session_id)
+            payload.setdefault("run_id", context.run_id)
+        job_info = start_scene_robot_collect_job(payload)
+        job_id = str(job_info["job_id"])
+        response = {
+            "status": "ok",
+            "job_id": job_id,
+            "log_start_offset": int(job_info.get("log_start_offset", 0) or 0),
+            "log_path": str(job_info.get("log_path") or paths["scene_robot_log_path"]),
+        }
+        if context is not None:
+            response["session_id"] = context.session_id
+            response["run_id"] = context.run_id
+        return jsonify(response)
+
+    @app.route("/scene_robot/status/<job_id>")
+    def scene_robot_status(job_id):
+        job = _get_scene_robot_job_status(job_id)
+        if not job:
+            return jsonify({"status": "error", "msg": "job not found"}), 404
+        return jsonify({"status": "ok", "job": job})
+
+    @app.route("/scene_robot/log")
+    def scene_robot_log():
+        paths = _request_runtime_paths()
+        try:
+            offset = int(request.args.get("offset", 0))
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "msg": "offset must be an integer"}), 400
+        try:
+            limit = int(request.args.get("limit", 65536))
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "msg": "limit must be an integer"}), 400
+
+        log_path = str(paths["scene_robot_log_path"])
+        data = read_scene_robot_log(offset=offset, limit=limit, log_path=log_path)
         return jsonify({"status": "ok", **data, "path": log_path})
 
     @app.route("/real2sim/assignment", methods=["GET", "POST"])

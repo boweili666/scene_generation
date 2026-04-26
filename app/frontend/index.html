@@ -80,6 +80,90 @@
 
           <div class="btns">
             <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Apply Instruction</button>
+            <button class="toolbtn" id="repeatPlanPromptBtn" onclick="repeatLastPlanPrompt()" disabled
+                    title="No saved plan prompt yet — propose a plan first.">↻ Repeat</button>
+            <button class="toolbtn" id="savePlanTemplateBtn" onclick="saveCurrentAsTemplate()"
+                    title="Save the current prompt as a named template.">💾 Save Template</button>
+            <span class="hint" style="margin-left:12px; display:inline-flex; align-items:center; gap:10px;">
+              <label style="display:inline-flex; align-items:center; gap:4px;">
+                <input type="radio" name="agentMode" id="agentModeSingle" value="single" checked />
+                Single
+              </label>
+              <label style="display:inline-flex; align-items:center; gap:4px;">
+                <input type="radio" name="agentMode" id="agentModeLoop" value="loop" />
+                Tool-use loop
+              </label>
+              <label style="display:inline-flex; align-items:center; gap:4px;">
+                <input type="radio" name="agentMode" id="agentModePlan" value="plan" />
+                Plan + review
+              </label>
+            </span>
+          </div>
+
+          <div id="savePlanTemplateForm" style="display:none; margin-top:6px; padding:8px; background:#f5f8fc; border:1px dashed #b6c4d6; border-radius:4px;">
+            <div style="display:flex; gap:6px; align-items:center;">
+              <span class="hint" id="savePlanTemplateModeLabel">Save as new template</span>
+              <input type="text" id="savePlanTemplateNameInput" placeholder="Template name" style="padding:4px 8px; min-width:200px;" />
+              <button class="btn-primary" onclick="confirmSaveTemplate()">Save</button>
+              <button class="toolbtn" onclick="cancelSaveTemplate()">Cancel</button>
+            </div>
+            <textarea id="savePlanTemplatePromptInput" placeholder="Prompt" rows="3"
+                      style="display:none; margin-top:6px; width:100%; padding:4px 8px; font-family:inherit; box-sizing:border-box;"></textarea>
+          </div>
+
+          <div id="planTemplatesRow" style="margin-top:8px; padding:6px 0;">
+            <span class="hint" style="margin-right:6px;">Templates:</span>
+            <span id="planTemplatesChips"></span>
+          </div>
+
+          <div class="plan-panel" id="planPanel" style="display:none; margin-top:12px; padding:10px; border:1px solid #e0e0e0; border-radius:6px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+              <div>
+                <div class="label" style="margin:0;">Proposed Plan <span class="hint" id="planStatusBadge">Idle</span></div>
+                <div class="hint" id="planGoalText" style="margin-top:2px;">No goal yet.</div>
+              </div>
+              <div class="btns" style="gap:6px;">
+                <button class="toolbtn" id="planEditBtn" onclick="enterPlanEditMode()">Edit Plan</button>
+                <button class="btn-primary" id="planRunBtn" onclick="executeAgentPlan()">Run Plan</button>
+                <button class="toolbtn" id="planCancelBtn" onclick="cancelAgentPlan()">Cancel</button>
+                <button class="toolbtn" id="planHistoryBtn" onclick="togglePlanHistory()">History &amp; Jobs</button>
+              </div>
+            </div>
+            <ol class="plan-steps" id="planStepsList" style="margin:8px 0 0; padding-left:20px;"></ol>
+            <div class="plan-edit-controls" id="planEditControls" style="display:none; margin-top:8px; gap:6px;">
+              <button class="toolbtn" onclick="addPlanStep()">+ Add Step</button>
+              <button class="btn-primary" onclick="savePlanEdits()">Save Edits</button>
+              <button class="toolbtn" onclick="discardPlanEdits()">Discard</button>
+            </div>
+            <div class="codebox" id="planReflectionBox" style="margin-top:8px; display:none;"></div>
+            <div id="planFollowUpBox" style="display:none; margin-top:8px; padding:8px; border:1px dashed #b6c4d6; border-radius:4px;">
+              <div class="label" style="margin:0;">Reflector Suggested Follow-Up <span class="hint" id="planFollowUpCount"></span></div>
+              <ol id="planFollowUpList" style="margin:6px 0 0; padding-left:20px;"></ol>
+              <div class="btns" id="planFollowUpControls" style="gap:6px; margin-top:6px;">
+                <button class="toolbtn" id="planFollowUpEditBtn" onclick="enterPlanEditMode('follow_up')">Edit</button>
+                <button class="toolbtn" id="planFollowUpClearBtn" onclick="clearPlanFollowUp()">Clear</button>
+                <button class="btn-primary" id="planAcceptFollowUpBtn" onclick="acceptPlanFollowUp()">Accept as New Plan</button>
+              </div>
+              <div class="btns" id="planFollowUpEditControls" style="display:none; gap:6px; margin-top:6px;">
+                <button class="toolbtn" onclick="addPlanStep()">+ Add Step</button>
+                <button class="btn-primary" onclick="savePlanEdits()">Save Edits</button>
+                <button class="toolbtn" onclick="discardPlanEdits()">Discard</button>
+              </div>
+            </div>
+            <div id="planHistoryBox" style="display:none; margin-top:8px; padding:8px; border:1px solid #d6dee8; border-radius:4px; background:#fafbfc;">
+              <div style="margin-bottom:12px;">
+                <div class="label" style="display:flex; align-items:center; gap:6px; margin:0;">
+                  <span>Jobs</span>
+                  <span class="hint" id="planJobAuditCount">(0)</span>
+                  <button class="toolbtn" style="margin-left:auto;" id="planJobAuditClearBtn" onclick="clearJobAudit()">Clear</button>
+                </div>
+                <div id="planJobAuditList" style="margin-top:6px; max-height:200px; overflow-y:auto;"></div>
+              </div>
+              <div>
+                <div class="label" style="margin:0;">Plans <span class="hint" id="planHistoryCount">(0)</span></div>
+                <div id="planHistoryList" style="margin-top:6px; max-height:300px; overflow-y:auto;"></div>
+              </div>
+            </div>
           </div>
 
           <div class="agent-panel" id="agentPanel">
@@ -134,6 +218,15 @@
                 <div class="action-note">Shortcut: draft a prompt to extract observed objects from the latest input image.</div>
               </div>
               <button class="toolbtn good toolbtn-wide" id="real2simBtn" onclick="runReal2Sim()">Draft Real2Sim Prompt</button>
+            </div>
+
+            <div class="action-card action-card-real2sim">
+              <div class="action-copy">
+                <span class="action-badge good">Robot Pipeline</span>
+                <div class="action-title">scene_robot Collect</div>
+                <div class="action-note">Shortcut: draft a prompt to run auto-grasp data collection on the current scene.</div>
+              </div>
+              <button class="toolbtn good toolbtn-wide" id="sceneRobotBtn" onclick="runRobotCollect()">Draft Robot Collect Prompt</button>
             </div>
 
             <div class="action-card action-card-scene">
@@ -297,6 +390,14 @@
             <div>
               <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
               <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-grid">
+            <div>
+              <div class="label">scene_robot Log <span class="hint" id="sceneRobotLogStatus">Idle</span></div>
+              <div class="codebox" id="sceneRobotLog">Waiting for scene_robot logs...</div>
             </div>
           </div>
         </div>

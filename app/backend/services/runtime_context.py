@@ -73,6 +73,7 @@ class RuntimeContext:
     scene_service_usd_path: Path
     scene_service_room_usd_path: Path
     robot_placement_dir: Path
+    scene_robot_log_path: Path
 
     def ensure(self) -> "RuntimeContext":
         directories = (
@@ -171,6 +172,7 @@ def build_runtime_context(session_id: str, run_id: str) -> RuntimeContext:
         scene_service_usd_path=run_root / "scene_service" / "usd" / "scene_latest.usd",
         scene_service_room_usd_path=run_root / "scene_service" / "usd" / "generated_room.scene_service.usd",
         robot_placement_dir=run_root / "robot_placement",
+        scene_robot_log_path=run_root / "logs" / "scene_robot.log",
     )
 
 

@@ -41,6 +41,18 @@ DEFAULT_RENDER_PATH = (RENDERS_DIR / "render.png").resolve()
 LATEST_INPUT_IMAGE = (UPLOADS_DIR / "latest_input.jpg").resolve()
 LOG_PATH = str((LOGS_DIR / "real2sim.log").resolve())
 SCENE_SERVICE_LOG_PATH = str((LOGS_DIR / "scene_service.log").resolve())
+SCENE_ROBOT_LOG_PATH = str((LOGS_DIR / "scene_robot.log").resolve())
+
+# scene_robot
+ENV_ISAACLAB_PYTHON = os.environ.get(
+    "ENV_ISAACLAB_PYTHON",
+    "/home/lbw/miniconda3/envs/env_isaaclab/bin/python",
+)
+SCENE_ROBOT_ROOT = (PROJECT_ROOT / "scene_robot").resolve()
+SCENE_ROBOT_AUTO_GRASP_COLLECT_SCRIPT = str(
+    SCENE_ROBOT_ROOT / "scripts" / "collect" / "scene_auto_grasp_collect.py"
+)
+DATASETS_DIR = (PROJECT_ROOT / "datasets").resolve()
 
 # Real2Sim
 REAL2SIM_ROOT_DIR = PROJECT_ROOT.resolve()

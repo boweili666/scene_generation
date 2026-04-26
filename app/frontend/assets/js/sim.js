@@ -93,6 +93,8 @@
           if (Array.isArray(job?.session_state?.history)) {
             renderAgentTranscript(job.session_state.history);
           }
+          refreshSessionStateCache(job?.session_state);
+          rerenderActivePlanIfShown();
           setAgentErrorInfo(job.error_info || null);
 
           const livePreview = await hydrateReal2SimLivePreview(
@@ -195,6 +197,104 @@
       prefillAgentShortcut(
         "Please run Real2Sim on the current scene graph and reference image, then show me the numbered mask assignment for review."
       );
+    }
+
+    /* ===== scene_robot collect ===== */
+    function runRobotCollect() {
+      prefillAgentShortcut(
+        "Please run scene_robot data collection on the current scene using auto-grasp on the default target."
+      );
+    }
+
+    async function monitorSceneRobotJob(jobInfo = {}) {
+      const jobId = jobInfo.job_id;
+      if (!jobId) {
+        throw new Error("Missing scene_robot job id.");
+      }
+      if (sceneRobotMonitorState.activeJobId === jobId && sceneRobotMonitorState.activePromise) {
+        return sceneRobotMonitorState.activePromise;
+      }
+      const monitorToken = sceneRobotMonitorState.token;
+
+      const monitorPromise = (async () => {
+        const logStartOffset = Number(jobInfo.log_start_offset || 0);
+        const logPath = jobInfo.log_path || "scene_robot.log";
+
+        resetSceneRobotLog(logStartOffset, logPath);
+        document.getElementById("sceneRobotLogStatus").textContent = `Job ${jobId.slice(0, 8)} running`;
+
+        let done = false;
+        let finalJobStatus = null;
+        let finalJob = null;
+        while (!done) {
+          if (monitorToken !== sceneRobotMonitorState.token) {
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          if (monitorToken !== sceneRobotMonitorState.token) {
+            return;
+          }
+          try {
+            await refreshSceneRobotLog();
+          } catch (logErr) {
+            console.warn("scene_robot log refresh failed:", logErr);
+            document.getElementById("sceneRobotLogStatus").textContent = "Log retrying...";
+          }
+
+          const pollRes = await fetch(withRuntimeQuery(`/scene_robot/status/${jobId}`));
+          const pollData = await pollRes.json();
+          if (monitorToken !== sceneRobotMonitorState.token) {
+            return;
+          }
+          if (!pollRes.ok || !pollData?.job) {
+            throw new Error((pollData && (pollData.msg || pollData.error)) || "Failed to poll scene_robot job status");
+          }
+
+          const job = pollData.job;
+          finalJob = job;
+          if (Array.isArray(job?.session_state?.history)) {
+            renderAgentTranscript(job.session_state.history);
+          }
+          refreshSessionStateCache(job?.session_state);
+          rerenderActivePlanIfShown();
+
+          if (job.status === "succeeded") {
+            done = true;
+            finalJobStatus = job.status;
+            document.getElementById("sceneRobotLogStatus").textContent = "Completed";
+            toast("ok", "scene_robot done", "Collect job finished.");
+          } else if (job.status === "failed") {
+            done = true;
+            finalJobStatus = job.status;
+            document.getElementById("sceneRobotLogStatus").textContent = "Failed";
+            const failureMessage = job.error || "Unknown error";
+            toast("err", "scene_robot failed", failureMessage);
+          }
+        }
+
+        try {
+          await refreshSceneRobotLog();
+        } catch (logErr) {
+          console.warn("Final scene_robot log refresh failed:", logErr);
+        }
+        if (finalJobStatus === "succeeded") {
+          document.getElementById("sceneRobotLogStatus").textContent = "Completed";
+        } else if (finalJobStatus === "failed") {
+          document.getElementById("sceneRobotLogStatus").textContent = "Failed";
+        }
+        return finalJob;
+      })();
+
+      sceneRobotMonitorState.activeJobId = jobId;
+      sceneRobotMonitorState.activePromise = monitorPromise;
+      try {
+        return await monitorPromise;
+      } finally {
+        if (sceneRobotMonitorState.activeJobId === jobId && monitorToken === sceneRobotMonitorState.token) {
+          sceneRobotMonitorState.activeJobId = "";
+          sceneRobotMonitorState.activePromise = null;
+        }
+      }
     }
 
     /* ===== Isaac Scene Service ===== */
