@@ -17,7 +17,10 @@ from ..config import (
     REAL2SIM_SCENE_RESULTS_DIR,
     RUNTIME_DIR,
     SCENE_GRAPH_PATH,
+    SCENE_ROBOT_CONVERT_LOG_PATH,
+    SCENE_ROBOT_EVAL_LOG_PATH,
     SCENE_ROBOT_LOG_PATH,
+    SCENE_ROBOT_TRAIN_LOG_PATH,
     WEB_DIR,
 )
 from ..services.openai_service import (
@@ -56,6 +59,9 @@ from ..services.scene_robot_service import (
     get_scene_robot_job_status,
     read_scene_robot_log,
     start_scene_robot_collect_job,
+    start_scene_robot_convert_job,
+    start_scene_robot_eval_job,
+    start_scene_robot_train_job,
 )
 from ..services.real2sim_review_service import load_assignment_review, save_assignment_review
 from ..services.runtime_context import (
@@ -104,6 +110,9 @@ def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
             "real2sim_scene_results_dir": Path(REAL2SIM_SCENE_RESULTS_DIR),
             "real2sim_log_path": Path(LOG_PATH),
             "scene_robot_log_path": Path(SCENE_ROBOT_LOG_PATH),
+            "scene_robot_convert_log_path": Path(SCENE_ROBOT_CONVERT_LOG_PATH),
+            "scene_robot_train_log_path": Path(SCENE_ROBOT_TRAIN_LOG_PATH),
+            "scene_robot_eval_log_path": Path(SCENE_ROBOT_EVAL_LOG_PATH),
         }
 
     return {
@@ -120,6 +129,9 @@ def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
         "real2sim_scene_results_dir": context.real2sim_scene_results_dir,
         "real2sim_log_path": context.real2sim_log_path,
         "scene_robot_log_path": context.scene_robot_log_path,
+        "scene_robot_convert_log_path": context.scene_robot_convert_log_path,
+        "scene_robot_train_log_path": context.scene_robot_train_log_path,
+        "scene_robot_eval_log_path": context.scene_robot_eval_log_path,
     }
 
 
@@ -742,6 +754,46 @@ def register_routes(app):
             return jsonify({"status": "error", "msg": "job not found"}), 404
         return jsonify({"status": "ok", "job": job})
 
+    def _scene_robot_stage_start(start_fn, default_log_path: Path):
+        paths = _request_runtime_paths(create=True)
+        payload = dict(request.json or {})
+        payload.setdefault("log_path", str(default_log_path))
+        context = paths.get("context")
+        if context is not None:
+            payload.setdefault("session_id", context.session_id)
+            payload.setdefault("run_id", context.run_id)
+        try:
+            job_info = start_fn(payload)
+        except KeyError as exc:
+            return jsonify({"status": "error", "msg": f"missing required field: {exc}"}), 400
+        job_id = str(job_info["job_id"])
+        response = {
+            "status": "ok",
+            "job_id": job_id,
+            "stage": str(job_info.get("stage") or ""),
+            "log_start_offset": int(job_info.get("log_start_offset", 0) or 0),
+            "log_path": str(job_info.get("log_path") or default_log_path),
+        }
+        if context is not None:
+            response["session_id"] = context.session_id
+            response["run_id"] = context.run_id
+        return jsonify(response)
+
+    @app.route("/scene_robot/convert/start", methods=["POST"])
+    def scene_robot_convert_start():
+        paths = _request_runtime_paths(create=True)
+        return _scene_robot_stage_start(start_scene_robot_convert_job, Path(paths["scene_robot_convert_log_path"]))
+
+    @app.route("/scene_robot/train/start", methods=["POST"])
+    def scene_robot_train_start():
+        paths = _request_runtime_paths(create=True)
+        return _scene_robot_stage_start(start_scene_robot_train_job, Path(paths["scene_robot_train_log_path"]))
+
+    @app.route("/scene_robot/eval/start", methods=["POST"])
+    def scene_robot_eval_start():
+        paths = _request_runtime_paths(create=True)
+        return _scene_robot_stage_start(start_scene_robot_eval_job, Path(paths["scene_robot_eval_log_path"]))
+
     @app.route("/scene_robot/log")
     def scene_robot_log():
         paths = _request_runtime_paths()
@@ -754,7 +806,27 @@ def register_routes(app):
         except (TypeError, ValueError):
             return jsonify({"status": "error", "msg": "limit must be an integer"}), 400
 
-        log_path = str(paths["scene_robot_log_path"])
+        # Allow caller to pick a specific stage's log file; fall back to the
+        # collect log for backward compat. Override path must resolve under
+        # the runtime root or logs root to avoid arbitrary file reads.
+        override = request.args.get("log_path")
+        if override:
+            try:
+                abs_override = Path(override).resolve()
+            except (OSError, ValueError):
+                return jsonify({"status": "error", "msg": "invalid log_path"}), 400
+            runtime_root = RUNTIME_DIR.resolve()
+            logs_root = Path(LOG_PATH).resolve().parent
+            if (
+                abs_override != runtime_root
+                and runtime_root not in abs_override.parents
+                and abs_override != logs_root
+                and logs_root not in abs_override.parents
+            ):
+                return jsonify({"status": "error", "msg": "log_path must be inside runtime or logs"}), 400
+            log_path = str(abs_override)
+        else:
+            log_path = str(paths["scene_robot_log_path"])
         data = read_scene_robot_log(offset=offset, limit=limit, log_path=log_path)
         return jsonify({"status": "ok", **data, "path": log_path})
 

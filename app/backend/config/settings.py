@@ -42,17 +42,36 @@ LATEST_INPUT_IMAGE = (UPLOADS_DIR / "latest_input.jpg").resolve()
 LOG_PATH = str((LOGS_DIR / "real2sim.log").resolve())
 SCENE_SERVICE_LOG_PATH = str((LOGS_DIR / "scene_service.log").resolve())
 SCENE_ROBOT_LOG_PATH = str((LOGS_DIR / "scene_robot.log").resolve())
+SCENE_ROBOT_CONVERT_LOG_PATH = str((LOGS_DIR / "scene_robot_convert.log").resolve())
+SCENE_ROBOT_TRAIN_LOG_PATH = str((LOGS_DIR / "scene_robot_train.log").resolve())
+SCENE_ROBOT_EVAL_LOG_PATH = str((LOGS_DIR / "scene_robot_eval.log").resolve())
 
 # scene_robot
 ENV_ISAACLAB_PYTHON = os.environ.get(
     "ENV_ISAACLAB_PYTHON",
     "/home/lbw/miniconda3/envs/env_isaaclab/bin/python",
 )
+LEROBOT_PYTHON = os.environ.get(
+    "LEROBOT_PYTHON",
+    "/home/lbw/miniconda3/envs/lerobot/bin/python",
+)
+LEROBOT_TRAIN_BIN = os.environ.get(
+    "LEROBOT_TRAIN_BIN",
+    "/home/lbw/miniconda3/envs/lerobot/bin/lerobot-train",
+)
 SCENE_ROBOT_ROOT = (PROJECT_ROOT / "scene_robot").resolve()
 SCENE_ROBOT_AUTO_GRASP_COLLECT_SCRIPT = str(
     SCENE_ROBOT_ROOT / "scripts" / "collect" / "scene_auto_grasp_collect.py"
 )
+SCENE_ROBOT_EVAL_SCRIPT = str(
+    SCENE_ROBOT_ROOT / "scripts" / "collect" / "scene_eval_policy.py"
+)
+CONVERT_HDF5_SCRIPT = str(PROJECT_ROOT / "tools" / "convert_hdf5_to_lerobot.py")
 DATASETS_DIR = (PROJECT_ROOT / "datasets").resolve()
+LEROBOT_DATASETS_DIR = (DATASETS_DIR / "lerobot").resolve()
+OUTPUTS_DIR = (PROJECT_ROOT / "outputs").resolve()
+OUTPUTS_TRAIN_DIR = (OUTPUTS_DIR / "train").resolve()
+OUTPUTS_EVAL_DIR = (OUTPUTS_DIR / "eval").resolve()
 
 # Real2Sim
 REAL2SIM_ROOT_DIR = PROJECT_ROOT.resolve()
