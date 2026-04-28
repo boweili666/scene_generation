@@ -34,7 +34,6 @@ from ..services.openai_service import (
 from ..services.agent_service import (
     clear_job_audit as clear_agent_job_audit,
     get_agent_state_response,
-    handle_agent_message,
     sync_real2sim_job_to_session,
     sync_scene_robot_job_to_session,
 )
@@ -475,32 +474,24 @@ def register_routes(app):
     def agent_message():
         payload = request.get_json(silent=True) if not (request.content_type or "").startswith("multipart/form-data") else None
         text = ""
-        class_names_raw = ""
         image_bytes = None
-        action = None
-        resample_mode = None
-        scene_endpoint = None
         mode = None
 
         if payload is not None:
             text = (payload.get("text") or payload.get("instruction") or "").strip()
-            class_names_raw = payload.get("class_names", "") or ""
-            action = payload.get("action")
-            resample_mode = payload.get("resample_mode")
-            scene_endpoint = payload.get("scene_endpoint")
             mode = payload.get("mode")
         else:
             text = (request.form.get("text") or request.form.get("instruction") or "").strip()
-            class_names_raw = request.form.get("class_names", "") or ""
-            action = request.form.get("action")
-            resample_mode = request.form.get("resample_mode")
-            scene_endpoint = request.form.get("scene_endpoint")
             mode = request.form.get("mode")
             file = request.files.get("image")
             if file:
                 image_bytes = file.read()
 
-        effective_mode = (mode or os.environ.get("AGENT_LOOP_MODE") or "single").strip().lower()
+        # Mode selection. `single` (the legacy single-shot router) is retired
+        # and silently redirected to `loop`. `plan` opens proposal phase only.
+        effective_mode = (mode or os.environ.get("AGENT_LOOP_MODE") or "loop").strip().lower()
+        if effective_mode not in {"loop", "plan"}:
+            effective_mode = "loop"
         try:
             context = _resolve_request_runtime_context(create=True)
             if effective_mode == "plan":
@@ -510,23 +501,12 @@ def register_routes(app):
                     text=text,
                     image_bytes=image_bytes,
                 )
-            elif effective_mode == "loop":
+            else:
                 result = handle_agent_loop_message(
                     session_id=context.session_id if context is not None else None,
                     run_id=context.run_id if context is not None else None,
                     text=text,
                     image_bytes=image_bytes,
-                )
-            else:
-                result = handle_agent_message(
-                    session_id=context.session_id if context is not None else None,
-                    run_id=context.run_id if context is not None else None,
-                    text=text,
-                    image_bytes=image_bytes,
-                    class_names_raw=class_names_raw,
-                    action=action,
-                    resample_mode=resample_mode,
-                    scene_endpoint=scene_endpoint,
                 )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
