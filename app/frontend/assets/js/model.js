@@ -858,10 +858,8 @@
       if (classNamesRaw) formData.append("class_names", classNamesRaw);
       if (imageFile) formData.append("image", imageFile);
       const selectedMode = document.querySelector('input[name="agentMode"]:checked');
-      const modeValue = selectedMode ? selectedMode.value : "single";
-      if (modeValue && modeValue !== "single") {
-        formData.append("mode", modeValue);
-      }
+      const modeValue = selectedMode ? selectedMode.value : "loop";
+      formData.append("mode", modeValue);
       appendRuntimeToFormData(formData);
 
       const userSummary = instruction || (action ? `[${action}]` : imageFile ? "[image]" : "");
