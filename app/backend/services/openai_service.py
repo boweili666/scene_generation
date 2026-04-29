@@ -713,9 +713,19 @@ def _build_image_scene_graph_prompt(text: str = "", class_names_raw: str = "") -
         prompt += (
             " The user also provided this text instruction: "
             f"{text} "
-            "Use both the image and the text together. "
-            "Objects clearly present in the uploaded image should usually use source=real2sim. "
-            "Objects explicitly requested in text but not present in the uploaded image should use source=retrieval."
+            "TEXT GOVERNS OBJECT MEMBERSHIP — IMAGE GROUNDS PROPERTIES. "
+            "If the text enumerates which objects the user wants (e.g. 'a red bowl and a box on the table', "
+            "'I want X, Y, Z'), the scene graph MUST contain ONLY those enumerated objects, plus the minimum "
+            "supporting parent surface they are placed on if the text references it (e.g. 'on the table' -> "
+            "include the table). Do NOT add any other object visible in the image (cups, drills, tools, "
+            "clutter, decorations, etc.) just because it appears in the photo. The image is for grounding "
+            "visual properties (color, material, geometry, relative position) of the requested objects only. "
+            "If the text instead asks an open-ended question (e.g. 'describe this scene', 'reconstruct what "
+            "you see', no specific object list), THEN you may include all clearly visible objects from the "
+            "image. "
+            "Source assignment for the included objects: use source=real2sim if the requested object is "
+            "clearly present in the uploaded image; use source=retrieval if the user requested it in text "
+            "but it is not visible in the image."
         )
     return prompt
 

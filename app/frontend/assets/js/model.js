@@ -884,9 +884,20 @@
         method: "POST",
         body: formData,
       });
-      const data = await response.json();
+      const rawText = await response.text();
+      let data;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (parseErr) {
+        const snippet = (rawText || "(empty body)").slice(0, 800);
+        throw new Error(
+          `HTTP ${response.status} ${response.statusText} — non-JSON response from /agent/message:\n${snippet}`
+        );
+      }
       if (!response.ok) {
-        throw new Error(data?.error || "Agent request failed");
+        throw new Error(
+          data?.error || `HTTP ${response.status} ${response.statusText}`
+        );
       }
 
       if (data?.session_id || data?.run_id) {

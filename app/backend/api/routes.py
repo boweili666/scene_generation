@@ -512,6 +512,12 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 502
+        except Exception as e:  # noqa: BLE001 - surface real exception to the UI
+            import traceback as _tb
+            return jsonify({
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": _tb.format_exc(),
+            }), 500
 
         return jsonify(result)
 
@@ -852,6 +858,12 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 500
+        except Exception as e:  # noqa: BLE001 - return JSON instead of HTML 500
+            import traceback as _tb
+            return jsonify({
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": _tb.format_exc(),
+            }), 500
 
         response = {
             "status": "ok",

@@ -120,11 +120,61 @@ def classify_real2sim_failure(error: Exception) -> dict[str, Any]:
             category="input",
         )
 
+    # Network/connection errors are checked BEFORE business-layer keyword
+    # matches, because the streaming client logs "[PRE] VLM mask assignment: ..."
+    # success lines well before it tries to reach the remote SAM3D server. A
+    # later Connection-refused must not be mis-classified as mask_assignment.
     if (
-        "vlm mask assignment" in lowered
-        or "mask assignment" in lowered
-        or "unmatched_scene_paths" in lowered
-        or "unmatched_mask_labels" in lowered
+        "connectionerror" in lowered
+        or "failed to establish a new connection" in lowered
+        or "connection refused" in lowered
+        or "max retries exceeded" in lowered
+        or "name or service not known" in lowered
+        or "nodename nor servname provided" in lowered
+    ):
+        return _payload(
+            "remote_server_unavailable",
+            "The remote SAM3D service is unreachable. Check whether the remote server is running and the URL is correct.",
+            retryable=True,
+            category="remote",
+        )
+
+    if isinstance(error, subprocess.TimeoutExpired):
+        if step == "remote_predict":
+            return _payload(
+                "remote_request_timeout",
+                "The remote SAM3D service timed out while generating the Real2Sim assets.",
+                retryable=True,
+                category="remote",
+            )
+        return _payload(
+            "subprocess_timeout",
+            "A Real2Sim subprocess timed out before completing.",
+            retryable=True,
+            category="runtime",
+        )
+
+    if (
+        "readtimeout" in lowered
+        or "read timed out" in lowered
+        or "timed out" in lowered and step == "remote_predict"
+    ):
+        return _payload(
+            "remote_request_timeout",
+            "The remote SAM3D service timed out while generating the Real2Sim assets.",
+            retryable=True,
+            category="remote",
+        )
+
+    # Tightened: require an explicit failure marker near the mask-assignment
+    # keyword. The streaming client prints `[PRE] VLM mask assignment: ...`
+    # as a success summary, which previously matched here unconditionally.
+    if (
+        "vlm mask assignment failed" in lowered
+        or "vlm mask assignment error" in lowered
+        or "mask assignment failed" in lowered
+        or "mask assignment error" in lowered
+        or "generate_vlm_mask_assignment" in lowered
     ):
         return _payload(
             "mask_assignment_failed",
@@ -158,48 +208,6 @@ def classify_real2sim_failure(error: Exception) -> dict[str, Any]:
             "Loading the SAM3 model or processor timed out before mask generation could start.",
             retryable=True,
             category="segmentation",
-        )
-
-    if isinstance(error, subprocess.TimeoutExpired):
-        if step == "remote_predict":
-            return _payload(
-                "remote_request_timeout",
-                "The remote SAM3D service timed out while generating the Real2Sim assets.",
-                retryable=True,
-                category="remote",
-            )
-        return _payload(
-            "subprocess_timeout",
-            "A Real2Sim subprocess timed out before completing.",
-            retryable=True,
-            category="runtime",
-        )
-
-    if (
-        "readtimeout" in lowered
-        or "read timed out" in lowered
-        or "timed out" in lowered and step == "remote_predict"
-    ):
-        return _payload(
-            "remote_request_timeout",
-            "The remote SAM3D service timed out while generating the Real2Sim assets.",
-            retryable=True,
-            category="remote",
-        )
-
-    if (
-        "connectionerror" in lowered
-        or "failed to establish a new connection" in lowered
-        or "connection refused" in lowered
-        or "max retries exceeded" in lowered
-        or "name or service not known" in lowered
-        or "nodename nor servname provided" in lowered
-    ):
-        return _payload(
-            "remote_server_unavailable",
-            "The remote SAM3D service is unreachable. Check whether the remote server is running and the URL is correct.",
-            retryable=True,
-            category="remote",
         )
 
     if (

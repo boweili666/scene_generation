@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,16 +50,19 @@ from .agent_service import (
     _scene_graph_iter_objects,
     _session_state_snapshot,
     _set_current_state,
+    sync_real2sim_job_to_session,
+    sync_scene_robot_job_to_session,
 )
 from .instruction_service import create_scene_graph_from_input
 from .openai_service import _get_openai_client
-from .pipeline_service import start_real2sim_job
+from .pipeline_service import get_real2sim_job_status, start_real2sim_job
 from .runtime_context import (
     RuntimeContext,
     create_session,
     resolve_runtime_context,
 )
 from .scene_robot_service import (
+    get_scene_robot_job_status,
     start_scene_robot_collect_job,
     start_scene_robot_convert_job,
     start_scene_robot_eval_job,
@@ -156,6 +160,39 @@ def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str,
                 }
             )
 
+    real2sim_block: dict[str, Any] = {
+        "status": str(real2sim_state.get("status") or "idle"),
+        "job_id": str(real2sim_state.get("job_id") or "") or None,
+    }
+    r2s_error_info = real2sim_state.get("error_info") if isinstance(real2sim_state.get("error_info"), dict) else None
+    if r2s_error_info:
+        real2sim_block["error_info"] = {
+            "code": r2s_error_info.get("code"),
+            "step": r2s_error_info.get("step"),
+            "retryable": r2s_error_info.get("retryable"),
+            "user_message": r2s_error_info.get("user_message"),
+            "technical_detail_tail": _tail_text(r2s_error_info.get("technical_detail")),
+        }
+    if real2sim_state.get("error"):
+        real2sim_block["last_error"] = str(real2sim_state.get("error"))
+    if str(real2sim_state.get("status") or "") == "failed":
+        digest = _extract_log_failure_digest(real2sim_state.get("log_path") or context.real2sim_log_path)
+        if digest:
+            real2sim_block["log_digest"] = digest
+
+    scene_robot_block: dict[str, Any] = {
+        "status": str(scene_robot_state.get("status") or "idle"),
+        "job_id": str(scene_robot_state.get("job_id") or "") or None,
+        "robot": scene_robot_state.get("robot"),
+        "target": scene_robot_state.get("target"),
+    }
+    if scene_robot_state.get("error"):
+        scene_robot_block["last_error"] = str(scene_robot_state.get("error"))
+    if str(scene_robot_state.get("status") or "") == "failed":
+        digest = _extract_log_failure_digest(scene_robot_state.get("log_path") or context.scene_robot_log_path)
+        if digest:
+            scene_robot_block["log_digest"] = digest
+
     return {
         "session_id": context.session_id,
         "run_id": context.run_id,
@@ -164,16 +201,8 @@ def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str,
         "has_uploaded_image_this_turn": lctx.has_uploaded_image,
         "has_saved_image": context.latest_input_image.exists(),
         "has_scene_usd": context.scene_service_usd_path.exists(),
-        "real2sim": {
-            "status": str(real2sim_state.get("status") or "idle"),
-            "job_id": str(real2sim_state.get("job_id") or "") or None,
-        },
-        "scene_robot": {
-            "status": str(scene_robot_state.get("status") or "idle"),
-            "job_id": str(scene_robot_state.get("job_id") or "") or None,
-            "robot": scene_robot_state.get("robot"),
-            "target": scene_robot_state.get("target"),
-        },
+        "real2sim": real2sim_block,
+        "scene_robot": scene_robot_block,
     }
 
 
@@ -812,6 +841,222 @@ def _execute_tool(name: str, args_json: str, lctx: LoopContext) -> dict[str, Any
 # --------- Public entry point ---------
 
 
+def _sync_inflight_jobs(state: dict[str, Any], context: RuntimeContext) -> list[dict[str, Any]]:
+    """Refresh real2sim/scene_robot job state from the in-process job tables.
+
+    Returns a list of "fresh failure" notes (one per job that just transitioned
+    to `failed`) so the caller can surface them to the LLM. Mutates and
+    re-saves `state` indirectly via the sync_*_to_session helpers.
+    """
+    notes: list[dict[str, Any]] = []
+    run_state = _ensure_run_state(state, context)
+
+    real2sim_state = run_state.get("real2sim") if isinstance(run_state.get("real2sim"), dict) else {}
+    real2sim_status = str(real2sim_state.get("status") or "")
+    real2sim_job_id = str(real2sim_state.get("job_id") or "")
+    if real2sim_job_id and real2sim_status in {"queued", "running"}:
+        try:
+            raw_job = get_real2sim_job_status(real2sim_job_id)
+        except Exception:  # noqa: BLE001 - best-effort sync; never break the loop
+            raw_job = None
+        if isinstance(raw_job, dict):
+            new_status = str(raw_job.get("status") or "")
+            sync_real2sim_job_to_session(raw_job)
+            if new_status == "failed" and real2sim_status != "failed":
+                err_info = raw_job.get("error_info") if isinstance(raw_job.get("error_info"), dict) else {}
+                log_path = raw_job.get("log_path") or real2sim_state.get("log_path") or context.real2sim_log_path
+                notes.append({
+                    "kind": "real2sim",
+                    "job_id": real2sim_job_id,
+                    "code": err_info.get("code"),
+                    "step": err_info.get("step"),
+                    "retryable": err_info.get("retryable"),
+                    "user_message": err_info.get("user_message") or raw_job.get("error"),
+                    "technical_detail_tail": _tail_text(err_info.get("technical_detail")),
+                    "log_digest": _extract_log_failure_digest(log_path),
+                })
+
+    scene_robot_state = run_state.get("scene_robot") if isinstance(run_state.get("scene_robot"), dict) else {}
+    scene_robot_status = str(scene_robot_state.get("status") or "")
+    scene_robot_job_id = str(scene_robot_state.get("job_id") or "")
+    if scene_robot_job_id and scene_robot_status in {"queued", "running"}:
+        try:
+            raw_job = get_scene_robot_job_status(scene_robot_job_id)
+        except Exception:  # noqa: BLE001
+            raw_job = None
+        if isinstance(raw_job, dict):
+            new_status = str(raw_job.get("status") or "")
+            sync_scene_robot_job_to_session(raw_job)
+            if new_status == "failed" and scene_robot_status != "failed":
+                log_path = raw_job.get("log_path") or scene_robot_state.get("log_path") or context.scene_robot_log_path
+                notes.append({
+                    "kind": "scene_robot",
+                    "job_id": scene_robot_job_id,
+                    "user_message": raw_job.get("error") or "scene_robot job failed.",
+                    "log_digest": _extract_log_failure_digest(log_path),
+                })
+
+    return notes
+
+
+def _tail_text(text: Any, max_chars: int = 600) -> str | None:
+    if not isinstance(text, str) or not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    return "...\n" + text[-max_chars:]
+
+
+_TQDM_NOISE = re.compile(r"\b(it/s|loading weights|materializing param|\d+\s*%\|)", re.IGNORECASE)
+_EXCEPTION_RE = re.compile(
+    r"((?:[A-Za-z_][\w.]*\.)*[A-Z][A-Za-z0-9_]*(?:Error|Exception|Timeout|Refused))\s*:\s*(.+)"
+)
+_EXIT_CODE_RE = re.compile(r"returned non-zero exit status\s+(\d+)")
+_CLASSIFIED_RE = re.compile(r"Classified failure:\s*code=(\S+)\s+retryable=(\S+)\s+step=(\S+)")
+_URL_RE = re.compile(r"https?://[\w.\-]+(?::\d+)?(?:/[^\s'\")]*)?")
+_HOSTPORT_RE = re.compile(r"host=['\"]([^'\"]+)['\"][^)]*?port=(\d+)")
+
+
+def _extract_log_failure_digest(log_path: Any, *, tail_kb: int = 256, max_lines: int = 400) -> dict[str, Any] | None:
+    """Read the tail of a job log and pull out the most likely failure signal.
+
+    Best-effort. Returns None if log is missing/unreadable. Skips tqdm-style
+    progress noise so we keep the meaningful ERROR/WARN/Traceback lines.
+    """
+    if not log_path:
+        return None
+    try:
+        path = Path(str(log_path))
+        if not path.exists() or not path.is_file():
+            return None
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            file_size = f.tell()
+            chunk = min(file_size, tail_kb * 1024)
+            f.seek(max(0, file_size - chunk))
+            tail_bytes = f.read()
+        tail_text = tail_bytes.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return None
+
+    raw_lines = tail_text.splitlines()
+    filtered: list[str] = [ln for ln in raw_lines if ln.strip() and not _TQDM_NOISE.search(ln)]
+    last_lines = filtered[-max_lines:]
+
+    digest: dict[str, Any] = {"log_path": str(log_path)}
+
+    # Final exception line (works for stacked "X.Y.Z: msg" forms).
+    for line in reversed(last_lines):
+        m = _EXCEPTION_RE.search(line)
+        if m:
+            cls = m.group(1)
+            msg = m.group(2).strip()
+            digest["last_exception"] = f"{cls}: {msg}"[:600]
+            break
+
+    # subprocess exit code.
+    for line in reversed(last_lines):
+        m = _EXIT_CODE_RE.search(line)
+        if m:
+            digest["exit_code"] = int(m.group(1))
+            break
+
+    # Classifier verdict (already-classified by pipeline_service).
+    for line in reversed(last_lines):
+        m = _CLASSIFIED_RE.search(line)
+        if m:
+            digest["classified"] = {
+                "code": m.group(1),
+                "retryable": m.group(2),
+                "step": m.group(3),
+            }
+            break
+
+    # URLs / host:port in errors.
+    urls: list[str] = []
+    for u in _URL_RE.findall(tail_text):
+        if u not in urls:
+            urls.append(u)
+        if len(urls) >= 5:
+            break
+    if urls:
+        digest["urls"] = urls
+
+    hostports: list[str] = []
+    for h, p in _HOSTPORT_RE.findall(tail_text):
+        hp = f"{h}:{p}"
+        if hp not in hostports:
+            hostports.append(hp)
+        if len(hostports) >= 5:
+            break
+    if hostports:
+        digest["hostports"] = hostports
+
+    # Last 12 ERROR/WARN/Traceback lines for narrative context.
+    important: list[str] = [
+        ln for ln in last_lines
+        if "[ERROR]" in ln or "[WARN]" in ln or ln.lstrip().startswith("Traceback") or ln.lstrip().startswith("raise ")
+    ]
+    if important:
+        digest["error_lines"] = important[-12:]
+
+    digest["tail_lines"] = last_lines[-15:]
+    return digest
+
+
+def _format_failure_note(notes: list[dict[str, Any]]) -> str:
+    if not notes:
+        return ""
+    lines = [
+        "SYSTEM: One or more background jobs from this run finished with status=failed. "
+        "Lead your reply by telling the user (in their language) what failed and why. "
+        "Use the structured fields below to give a SPECIFIC diagnosis: cite the actual "
+        "exception class, the host:port / URL that failed, the failing step, and a one- "
+        "line guess at the likely root cause (e.g. 'remote service on 127.0.0.1:8002 is "
+        "not running'). Then ask whether to retry or adjust. Do NOT silently restart "
+        "the failed job.",
+    ]
+    for note in notes:
+        kind = note.get("kind") or "job"
+        bits = [f"- {kind} (job_id={note.get('job_id')})"]
+        if note.get("code"):
+            bits.append(f"code={note['code']}")
+        if note.get("step"):
+            bits.append(f"step={note['step']}")
+        if note.get("retryable") is not None:
+            bits.append(f"retryable={note['retryable']}")
+        lines.append(" ".join(bits))
+        if note.get("user_message"):
+            lines.append(f"  user_message: {note['user_message']}")
+        tail = note.get("technical_detail_tail")
+        if tail:
+            lines.append(f"  technical_detail (tail): {tail}")
+        digest = note.get("log_digest")
+        if isinstance(digest, dict):
+            lines.append(f"  log_path: {digest.get('log_path')}")
+            if digest.get("last_exception"):
+                lines.append(f"  last_exception: {digest['last_exception']}")
+            if digest.get("exit_code") is not None:
+                lines.append(f"  exit_code: {digest['exit_code']}")
+            if digest.get("hostports"):
+                lines.append(f"  hostports_in_log: {', '.join(digest['hostports'])}")
+            if digest.get("urls"):
+                lines.append(f"  urls_in_log: {', '.join(digest['urls'])}")
+            if digest.get("classified") and not note.get("code"):
+                lines.append(f"  classified: {digest['classified']}")
+            err_lines = digest.get("error_lines")
+            if err_lines:
+                lines.append("  error_lines (last):")
+                for ln in err_lines:
+                    lines.append(f"    | {ln[:300]}")
+            tail_lines = digest.get("tail_lines")
+            if tail_lines and not err_lines:
+                lines.append("  tail_lines (last 15):")
+                for ln in tail_lines:
+                    lines.append(f"    | {ln[:300]}")
+    return "\n".join(lines)
+
+
 def handle_agent_loop_message(
     *,
     session_id: str | None,
@@ -830,6 +1075,12 @@ def handle_agent_loop_message(
     state["current_run_id"] = context.run_id
     _ensure_run_state(state, context)
 
+    failure_notes = _sync_inflight_jobs(state, context)
+    if failure_notes:
+        # sync_*_to_session writes to disk; reload so we see the latest state.
+        state = _load_agent_state(context)
+        _ensure_run_state(state, context)
+
     user_text = (text or "").strip()
     if not user_text and not has_uploaded_image:
         user_text = "(no text; the user clicked submit with no instruction.)"
@@ -843,9 +1094,11 @@ def handle_agent_loop_message(
         scene_service_url=scene_service_url or SCENE_SERVICE_URL,
     )
 
-    input_messages: list[dict[str, Any]] = [
-        {"role": "user", "content": user_text},
-    ]
+    input_messages: list[dict[str, Any]] = []
+    failure_note_text = _format_failure_note(failure_notes)
+    if failure_note_text:
+        input_messages.append({"role": "system", "content": failure_note_text})
+    input_messages.append({"role": "user", "content": user_text})
 
     client = _get_openai_client()
     final_text = ""

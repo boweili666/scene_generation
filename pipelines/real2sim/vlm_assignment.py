@@ -50,7 +50,16 @@ def _coerce_bbox(value: Any) -> tuple[int, int, int, int] | None:
 
 
 def _bbox_from_mask(mask_path: Path) -> tuple[int, int, int, int] | None:
-    mask_image = Image.open(mask_path).convert("RGBA")
+    # PIL `Image.open` is lazy; the actual decode happens inside `convert`.
+    # If the mask file is being written concurrently by the segmentation
+    # step (race during early polling), the decode raises OSError or
+    # struct.error. Treat any such unreadable-mask failure as "no bbox
+    # available yet" so the review still loads with whatever masks are
+    # already complete.
+    try:
+        mask_image = Image.open(mask_path).convert("RGBA")
+    except Exception:  # noqa: BLE001 - any read/decode failure means skip
+        return None
     alpha = mask_image.getchannel("A")
     bbox = alpha.getbbox()
     if bbox is None:

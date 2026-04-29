@@ -79,12 +79,21 @@
           }
 
           const pollRes = await fetch(withRuntimeQuery(`/real2sim/status/${jobId}`));
-          const pollData = await pollRes.json();
+          const pollRaw = await pollRes.text();
+          let pollData;
+          try {
+            pollData = pollRaw ? JSON.parse(pollRaw) : {};
+          } catch (parseErr) {
+            const snippet = (pollRaw || "(empty body)").slice(0, 800);
+            throw new Error(
+              `HTTP ${pollRes.status} ${pollRes.statusText} — non-JSON response from /real2sim/status:\n${snippet}`
+            );
+          }
           if (monitorToken !== real2simMonitorState.token) {
             return;
           }
           if (!pollRes.ok || !pollData?.job) {
-            throw new Error((pollData && (pollData.msg || pollData.error)) || "Failed to poll job status");
+            throw new Error((pollData && (pollData.msg || pollData.error)) || `HTTP ${pollRes.status} ${pollRes.statusText} — failed to poll real2sim job status`);
           }
 
           const job = pollData.job;
@@ -242,12 +251,21 @@
           }
 
           const pollRes = await fetch(withRuntimeQuery(`/scene_robot/status/${jobId}`));
-          const pollData = await pollRes.json();
+          const pollRaw = await pollRes.text();
+          let pollData;
+          try {
+            pollData = pollRaw ? JSON.parse(pollRaw) : {};
+          } catch (parseErr) {
+            const snippet = (pollRaw || "(empty body)").slice(0, 800);
+            throw new Error(
+              `HTTP ${pollRes.status} ${pollRes.statusText} — non-JSON response from /scene_robot/status:\n${snippet}`
+            );
+          }
           if (monitorToken !== sceneRobotMonitorState.token) {
             return;
           }
           if (!pollRes.ok || !pollData?.job) {
-            throw new Error((pollData && (pollData.msg || pollData.error)) || "Failed to poll scene_robot job status");
+            throw new Error((pollData && (pollData.msg || pollData.error)) || `HTTP ${pollRes.status} ${pollRes.statusText} — failed to poll scene_robot job status`);
           }
 
           const job = pollData.job;
