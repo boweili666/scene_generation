@@ -17,6 +17,7 @@
       setPill("model","", "Idle");
       setPill("graph","", "Idle");
       setPill("sim","", "Idle");
+      renderPipelineStrip();
       setResampleMode("joint");
       resetSimProgress();
       resetSceneDebug();

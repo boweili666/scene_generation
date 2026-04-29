@@ -38,6 +38,7 @@
         <div class="pill"><span class="dot" id="dotSim"></span><strong>Sim</strong> <span id="statusSim">Idle</span></div>
       </div>
     </div>
+    <div class="pipeline-strip" id="pipelineStrip" role="status" aria-label="Pipeline status"></div>
   </div>
 
   <div class="wrap">
@@ -285,45 +286,86 @@
         </div>
       </div>
 
-      <!-- Right Column: Simulation -->
+      <!-- Right Column: Simulation / Logs / Diagnostics (Step 4: tabbed) -->
       <div class="card card-preview col-right">
         <div class="card-header">
-          <h2>Simulation Preview</h2>
+          <h2 id="rightPanelTitle">Simulation Preview</h2>
           <div class="meta">
             <span class="kpi"><b id="sceneSvcStatus">Idle</b></span>
           </div>
         </div>
 
-        <div class="card-body">
-          <div class="imgbox">
-            <div id="threeViewport"></div>
-            <img id="renderImage" src="/render_image" alt="render"/>
-            <div class="empty" id="imagePlaceholder">
-              No render yet. Run <b>Real2Sim</b> or <b>Scene Service</b> to refresh the preview.
+        <div class="card-body right-tabbed">
+          <div class="right-tabs" role="tablist">
+            <button type="button" class="right-tab-btn" data-tab-target="sim"  data-active="true" role="tab" onclick="switchRightTab('sim')">Sim</button>
+            <button type="button" class="right-tab-btn" data-tab-target="logs"                    role="tab" onclick="switchRightTab('logs')">Logs</button>
+            <button type="button" class="right-tab-btn" data-tab-target="diag"                    role="tab" onclick="switchRightTab('diag')">Diagnostics</button>
+          </div>
+
+          <div class="right-tab-pane" data-tab="sim" data-active="true">
+            <div class="imgbox">
+              <div id="threeViewport"></div>
+              <img id="renderImage" src="/render_image" alt="render"/>
+              <div class="empty" id="imagePlaceholder">
+                No render yet. Run <b>Real2Sim</b> or <b>Scene Service</b> to refresh the preview.
+              </div>
+            </div>
+            <div class="progress-card" id="simProgressCard">
+              <div class="progress-head">
+                <span id="simProgressTitle">Generation Progress</span>
+                <b id="simProgressPct">0%</b>
+              </div>
+              <div class="progress-bar">
+                <div class="progress-fill" id="simProgressFill"></div>
+              </div>
+              <div class="progress-meta" id="simProgressMeta">Waiting...</div>
             </div>
           </div>
 
-          <div class="progress-card" id="simProgressCard">
-            <div class="progress-head">
-              <span id="simProgressTitle">Generation Progress</span>
-              <b id="simProgressPct">0%</b>
+          <div class="right-tab-pane" data-tab="logs">
+            <div class="right-tab-section">
+              <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
+              <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
             </div>
-            <div class="progress-bar">
-              <div class="progress-fill" id="simProgressFill"></div>
+            <div class="right-tab-section">
+              <div class="label">scene_robot Log <span class="hint" id="sceneRobotLogStatus">Idle</span></div>
+              <div class="codebox" id="sceneRobotLog">Waiting for scene_robot logs...</div>
             </div>
-            <div class="progress-meta" id="simProgressMeta">Waiting...</div>
+            <div class="right-tab-section">
+              <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
+              <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
+            </div>
+          </div>
+
+          <div class="right-tab-pane" data-tab="diag">
+            <div class="right-tab-section">
+              <div class="label">Error Reason <span class="hint" id="agentErrorMeta">No active errors</span></div>
+              <div class="codebox" id="agentErrorBox">No errors.</div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Scene State Preview <span class="hint">Graph + placements</span></div>
+              <div class="codebox" id="jsonPreview">Waiting for result...</div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Hints <span class="hint">Quality feedback</span></div>
+              <div class="codebox" id="feedbackBox">-</div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Scene Generation Debug <span class="hint" id="sceneDebugMeta">No scene run yet</span></div>
+              <div class="codebox" id="sceneDebugBox">Waiting for scene generation debug...</div>
+            </div>
           </div>
         </div>
       </div>
 
     </div>
 
-    <!-- Drawer: JSON + Diagnostics -->
+    <!-- Drawer: Mask review + artifacts (Step 4: slimmed; logs/diag moved to right-column tabs) -->
     <div class="drawer" id="drawer">
       <div class="drawer-head" onclick="toggleDrawer()">
         <div class="left">
           <div class="chev" id="chev">▾</div>
-          <h3>JSON, Diagnostics & Logs</h3>
+          <h3>Mask Review & Artifacts</h3>
         </div>
         <div class="right">
           <span id="jsonStatus">Idle</span>
@@ -332,34 +374,6 @@
         </div>
       </div>
       <div class="drawer-body">
-        <div class="drawer-grid">
-          <div>
-            <div class="label">Scene State Preview <span class="hint">Graph + placements</span></div>
-            <div class="codebox" id="jsonPreview">Waiting for result...</div>
-          </div>
-          <div>
-            <div class="label">Hints <span class="hint">Quality feedback</span></div>
-            <div class="codebox" id="feedbackBox">-</div>
-          </div>
-        </div>
-        <div class="drawer-section">
-          <div class="label">Scene Generation Debug <span class="hint" id="sceneDebugMeta">No scene run yet</span></div>
-          <div class="codebox" id="sceneDebugBox">Waiting for scene generation debug...</div>
-        </div>
-        <div class="drawer-section">
-          <div class="drawer-grid">
-            <div>
-              <div class="label">Artifact Links <span class="hint" id="artifactMeta">No outputs yet</span></div>
-              <div class="artifact-list" id="artifactList">
-                <div class="artifact-empty">Run Real2Sim or Scene Service to collect artifact links.</div>
-              </div>
-            </div>
-            <div>
-              <div class="label">Error Reason <span class="hint" id="agentErrorMeta">No active errors</span></div>
-              <div class="codebox" id="agentErrorBox">No errors.</div>
-            </div>
-          </div>
-        </div>
         <div class="drawer-section">
           <div class="drawer-grid">
             <div>
@@ -378,23 +392,9 @@
           </div>
         </div>
         <div class="drawer-section">
-          <div class="drawer-grid">
-            <div>
-              <div class="label">Scene Service Output <span class="hint" id="statusSimText">Idle</span></div>
-              <div class="codebox" id="sceneSvcResult">Waiting for response...</div>
-            </div>
-            <div>
-              <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
-              <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
-            </div>
-          </div>
-        </div>
-        <div class="drawer-section">
-          <div class="drawer-grid">
-            <div>
-              <div class="label">scene_robot Log <span class="hint" id="sceneRobotLogStatus">Idle</span></div>
-              <div class="codebox" id="sceneRobotLog">Waiting for scene_robot logs...</div>
-            </div>
+          <div class="label">Artifact Links <span class="hint" id="artifactMeta">No outputs yet</span></div>
+          <div class="artifact-list" id="artifactList">
+            <div class="artifact-empty">Run Real2Sim or Scene Service to collect artifact links.</div>
           </div>
         </div>
       </div>

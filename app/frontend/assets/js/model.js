@@ -734,6 +734,10 @@
       updateArtifactPanel(data);
       setAgentErrorInfo(data?.error_info || null);
 
+      // Surface fresh failures as a structured chat card with action buttons.
+      // Dedupes inside appendAgentFailureBubble; safe to call on every turn.
+      _maybeAppendFailureBubbleFromPayload(data);
+
       if (data?.active_plan || data?.reflection) {
         renderPlanPanel(data.active_plan, data.reflection);
       }
@@ -817,6 +821,14 @@
         if (agent.reason) transcriptMeta.push(`Reason: ${agent.reason}`);
         if (agent.question) transcriptMeta.push(`Question: ${agent.question}`);
         appendAgentTranscript("assistant", agent.message || "Agent request completed.", transcriptMeta.join("\n"));
+      }
+
+      // Step 3: surface tool calls used in this turn under the latest agent
+      // bubble (or the failure card if that's the most recent). Backend
+      // already records `tool_steps: [{tool, args, summary}]` in every
+      // /agent/message response.
+      if (typeof appendToolStepsToLatestAssistantBubble === "function" && Array.isArray(data?.tool_steps) && data.tool_steps.length) {
+        appendToolStepsToLatestAssistantBubble(data.tool_steps);
       }
 
       if (options.hadReferenceImage) {
@@ -1199,4 +1211,61 @@
 
     async function editJson(opts = {}) {
       return applyInstruction(opts);
+    }
+
+    // ---- Step 2: failure bubble + retry plumbing ---------------------------
+
+    function _composeFailureFromSessionState(sessionState, payloadFallback = {}) {
+      const r2s = sessionState?.current_run?.real2sim || {};
+      const sr  = sessionState?.current_run?.scene_robot || {};
+      const r2sFailed = String(r2s.status || "").toLowerCase() === "failed";
+      const srFailed  = String(sr.status  || "").toLowerCase() === "failed";
+      if (!r2sFailed && !srFailed) return null;
+      const kind = r2sFailed ? "real2sim" : "scene_robot";
+      const block = r2sFailed ? r2s : sr;
+      return {
+        kind,
+        job_id: block.job_id || "",
+        error_info: block.error_info || payloadFallback?.error_info || null,
+        log_digest:
+          block.log_digest ||
+          (block.error_info && block.error_info.log_digest) ||
+          (payloadFallback?.error_info && payloadFallback.error_info.log_digest) ||
+          null,
+        log_path: block.log_path || "",
+        user_message:
+          (block.error_info && block.error_info.user_message) ||
+          payloadFallback?.error_info?.user_message ||
+          block.error ||
+          "",
+      };
+    }
+
+    function _maybeAppendFailureBubbleFromPayload(payload) {
+      if (typeof appendAgentFailureBubble !== "function") return;
+      const sessionState = payload?.session_state || payload?.job?.session_state || null;
+      if (!sessionState) return;
+      const failure = _composeFailureFromSessionState(sessionState, payload);
+      if (failure) appendAgentFailureBubble(failure);
+    }
+
+    async function retryFailedStage(kind, failureContext = {}) {
+      const sceneInput = document.getElementById("sceneInput");
+      const friendly = kind === "scene_robot" ? "scene_robot" : "Real2Sim";
+      const code = failureContext?.error_info?.code;
+      // Compose a clear instruction the agent can pick up from inspect_state.
+      const reasonHint = code ? ` (last failure code: ${code})` : "";
+      const promptText =
+        `Please retry the previous failed ${friendly} job for the current run` +
+        `${reasonHint}. Inspect the current state first; if the underlying issue ` +
+        `is still present (e.g. remote service unreachable), tell me so before retrying.`;
+      if (sceneInput) {
+        sceneInput.value = promptText;
+        if (typeof updateInputMeta === "function") updateInputMeta();
+      }
+      try {
+        await applyInstruction({ instruction: promptText, action: "retry_" + (kind || "real2sim") });
+      } catch (err) {
+        toast("err", "Retry failed", String(err?.message || err));
+      }
     }

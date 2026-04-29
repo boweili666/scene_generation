@@ -258,6 +258,8 @@
       setPill("model", "", "Idle");
       setPill("graph", "", "Idle");
       setPill("sim", "", "Idle");
+      latestSessionState = null;
+      renderPipelineStrip();
 
       const button = document.getElementById("btnNewSession");
       if (button) {
@@ -418,7 +420,130 @@
       if (sessionState && typeof sessionState === "object" && sessionState.current_run) {
         latestSessionState = sessionState;
       }
+      renderPipelineStrip();
     }
+
+    // ---- Pipeline progress strip (Step 1 of UI redesign) ---------------------
+    // Renders a horizontal "Scene Graph -> Real2Sim -> Scene USD -> Robot" strip
+    // under the top status pills. Pure read of `latestSessionState` plus a
+    // couple of cytoscape/scene flags; no API calls of its own. Safe to call
+    // anywhere — short-circuits when the strip element is absent.
+
+    const PIPELINE_STAGES = [
+      { id: "graph",    label: "Scene Graph" },
+      { id: "real2sim", label: "Real2Sim"    },
+      { id: "scene",    label: "Scene USD"   },
+      { id: "robot",    label: "Robot"       },
+    ];
+
+    function _mapJobStatus(raw) {
+      const s = String(raw || "").toLowerCase();
+      if (s === "queued" || s === "running") return "running";
+      if (s === "succeeded") return "ok";
+      if (s === "failed") return "err";
+      return "idle";
+    }
+
+    function _statusIcon(status) {
+      switch (status) {
+        case "running": return "⏳";
+        case "ok":      return "✓";
+        case "err":     return "✗";
+        default:        return "·";
+      }
+    }
+
+    function _computePipelineStages(sessionState) {
+      const cs   = String(sessionState?.current_state || "").toLowerCase();
+      const lcs  = String(sessionState?.last_completed_state || "").toLowerCase();
+      const r2s  = (sessionState?.current_run?.real2sim) || {};
+      const sr   = (sessionState?.current_run?.scene_robot) || {};
+      const r2sStatusRaw = String(r2s.status || "").toLowerCase();
+      const srStatusRaw  = String(sr.status  || "").toLowerCase();
+
+      // Scene graph: any past-graph signal counts. We don't have an explicit
+      // `has_scene_graph` field in session_state, so we infer it from any
+      // downstream activity or completion markers.
+      const graphTouched =
+        lcs === "create_scene_graph" ||
+        cs  === "run_real2sim" ||
+        cs  === "run_scene_robot_collect" ||
+        cs  === "completed" ||
+        !!r2sStatusRaw ||
+        !!srStatusRaw ||
+        !!sessionState?.latest_scene_generation_run_id;
+      let graphStatus = "idle";
+      let graphDetail = "";
+      if (cs === "create_scene_graph") {
+        graphStatus = "running";
+      } else if (graphTouched || lcs === "create_scene_graph") {
+        graphStatus = "ok";
+        graphDetail = "ready";
+      }
+
+      // Real2Sim: direct map.
+      const real2simStatus = _mapJobStatus(r2sStatusRaw);
+      let real2simDetail = r2sStatusRaw || "";
+      if (real2simStatus === "err" && r2s.error_info?.code) {
+        real2simDetail = String(r2s.error_info.code);
+      }
+
+      // Scene USD: completion is signalled by `latest_scene_generation_run_id`.
+      // We don't track per-run scene_service status, so this stays best-effort.
+      let sceneStatus = "idle";
+      let sceneDetail = "";
+      if (cs === "generate_scene") {
+        sceneStatus = "running";
+      } else if (sessionState?.latest_scene_generation_run_id) {
+        sceneStatus = "ok";
+        sceneDetail = "ready";
+      } else if (lcs === "generate_scene") {
+        sceneStatus = "ok";
+        sceneDetail = "ready";
+      }
+
+      // Robot: scene_robot block covers collect/convert/train/eval as one cell
+      // for now; subsequent UI iterations can split them.
+      const robotStatus = _mapJobStatus(srStatusRaw);
+      const robotDetail = srStatusRaw
+        ? (sr.robot ? `${sr.robot} • ${srStatusRaw}` : srStatusRaw)
+        : "";
+
+      return [
+        { id: "graph",    label: "Scene Graph", status: graphStatus,    detail: graphDetail },
+        { id: "real2sim", label: "Real2Sim",    status: real2simStatus, detail: real2simDetail },
+        { id: "scene",    label: "Scene USD",   status: sceneStatus,    detail: sceneDetail },
+        { id: "robot",    label: "Robot",       status: robotStatus,    detail: robotDetail },
+      ];
+    }
+
+    function renderPipelineStrip() {
+      const root = document.getElementById("pipelineStrip");
+      if (!root) return;
+      const stages = _computePipelineStages(latestSessionState || {});
+      const parts = [];
+      stages.forEach((stage, idx) => {
+        if (idx > 0) parts.push('<span class="pipeline-arrow">→</span>');
+        const detail = stage.detail
+          ? `<span class="pipeline-detail">(${escapeHtml(stage.detail)})</span>`
+          : "";
+        parts.push(
+          `<div class="pipeline-stage" data-stage="${escapeAttr(stage.id)}" data-status="${escapeAttr(stage.status)}">` +
+            `<span class="pipeline-icon">${_statusIcon(stage.status)}</span>` +
+            `<span class="pipeline-label">${escapeHtml(stage.label)}</span>` +
+            detail +
+          `</div>`
+        );
+      });
+      root.innerHTML = parts.join("");
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
 
     function planStepLiveStatus(step) {
       if (!step?.result?.job_id || !latestSessionState) return null;

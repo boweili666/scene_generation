@@ -264,6 +264,158 @@
       color: #64748b;
       white-space: pre-wrap;
     }
+    /* Failure bubble (Step 2): structured chat card with retry / log actions. */
+    .agent-chat-msg.agent-failure{
+      background: linear-gradient(180deg, #fff5f5 0%, #fef2f2 100%);
+      border-color: #fecaca;
+    }
+    .agent-failure-head{
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #991b1b;
+    }
+    .agent-failure-icon{
+      font-size: 14px;
+    }
+    .agent-failure-subhead{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 11px;
+    }
+    .agent-failure-tag{
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(239,68,68,0.10);
+      color: #b91c1c;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10.5px;
+      letter-spacing: 0.02em;
+    }
+    .agent-failure-tech{
+      margin-top: 4px;
+      font-size: 11px;
+    }
+    .agent-failure-tech > summary{
+      cursor: pointer;
+      color: #475569;
+      user-select: none;
+      padding: 2px 0;
+    }
+    .agent-failure-tech > summary:hover{ color: #0f172a; }
+    .agent-failure-tech-pre{
+      margin: 4px 0 0 0;
+      padding: 8px 10px;
+      background: rgba(15,23,42,0.04);
+      border: 1px solid rgba(15,23,42,0.06);
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      color: #1e293b;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .agent-failure-actions{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .agent-failure-btn{
+      appearance: none;
+      cursor: pointer;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(15,23,42,0.12);
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+    }
+    .agent-failure-btn:hover{
+      background: #f8fafc;
+      border-color: rgba(15,23,42,0.22);
+    }
+    .agent-failure-btn:active{ transform: translateY(1px); }
+    .agent-failure-btn.primary{
+      background: #b91c1c;
+      border-color: #b91c1c;
+      color: #ffffff;
+    }
+    .agent-failure-btn.primary:hover{ background: #991b1b; border-color: #991b1b; }
+    .agent-failure-btn[disabled]{
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    /* Tool-steps block (Step 3): collapsible "what tools the agent ran". */
+    .agent-tool-steps{
+      margin-top: 6px;
+      font-size: 11px;
+    }
+    .agent-tool-steps > summary{
+      cursor: pointer;
+      color: #475569;
+      user-select: none;
+      padding: 2px 0;
+      list-style: revert;
+    }
+    .agent-tool-steps > summary:hover{ color: #0f172a; }
+    .agent-tool-steps[open] > summary{ color: #0f172a; }
+    .agent-tool-steps-list{
+      margin: 4px 0 0 0;
+      padding: 8px 10px;
+      background: rgba(15,23,42,0.03);
+      border: 1px solid rgba(15,23,42,0.06);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .tool-step{
+      display: grid;
+      grid-template-columns: 14px minmax(0, auto) 1fr auto;
+      align-items: baseline;
+      column-gap: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .tool-step-icon{
+      text-align: center;
+      color: var(--muted);
+    }
+    .tool-step[data-status="ok"]      .tool-step-icon{ color: var(--green); }
+    .tool-step[data-status="running"] .tool-step-icon{ color: var(--amber); }
+    .tool-step[data-status="err"]     .tool-step-icon{ color: var(--red); }
+    .tool-step-name{
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .tool-step-summary{
+      color: #475569;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .tool-step-summary[data-status="err"]{ color: #b91c1c; }
+    .tool-step-args{
+      grid-column: 2 / -1;
+      margin-top: 2px;
+      color: #64748b;
+      font-size: 10.5px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 64px;
+      overflow: auto;
+    }
     .artifact-list{
       display:flex;
       flex-direction:column;

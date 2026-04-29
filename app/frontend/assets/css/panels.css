@@ -30,6 +30,72 @@
       pointer-events:none;
     }
 
+    /* ===== Right-column tab panel (Step 4) ===== */
+    .card-body.right-tabbed{
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
+    .right-tabs{
+      display: flex;
+      gap: 2px;
+      padding: 8px 12px 0 12px;
+      border-bottom: 1px solid rgba(15,23,42,0.06);
+      background: linear-gradient(180deg, rgba(248,250,255,1), rgba(255,255,255,1));
+      flex: 0 0 auto;
+    }
+    .right-tab-btn{
+      appearance: none;
+      cursor: pointer;
+      padding: 8px 14px;
+      border: 1px solid transparent;
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    }
+    .right-tab-btn:hover{
+      color: var(--text);
+      background: rgba(15,23,42,0.03);
+    }
+    .right-tab-btn[data-active="true"]{
+      color: var(--text);
+      background: var(--card);
+      border-color: rgba(15,23,42,0.08);
+      position: relative;
+    }
+    .right-tab-btn[data-active="true"]::after{
+      content: "";
+      position: absolute;
+      left: 0; right: 0; bottom: -1px;
+      height: 1px;
+      background: var(--card);
+    }
+    .right-tab-pane{
+      display: none;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .right-tab-pane[data-active="true"]{ display: flex; }
+    .right-tab-section{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .right-tab-section .codebox{
+      max-height: 280px;
+    }
+
     /* ===== Simulation ===== */
     .imgbox{
       flex: 1;

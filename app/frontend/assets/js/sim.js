@@ -141,6 +141,19 @@
             const failureMessage = job?.error_info?.user_message || job.error || "Unknown error";
             setAgentErrorInfo(job.error_info || null, job.error || failureMessage);
             toast("err","Real2Sim failed", failureMessage);
+            if (typeof appendAgentFailureBubble === "function") {
+              appendAgentFailureBubble({
+                kind: "real2sim",
+                job_id: String(job.job_id || jobId || ""),
+                error_info: job.error_info || null,
+                log_digest:
+                  (job.error_info && job.error_info.log_digest) ||
+                  job?.session_state?.current_run?.real2sim?.log_digest ||
+                  null,
+                log_path: job.log_path || "",
+                user_message: failureMessage,
+              });
+            }
           }
         }
 
@@ -285,8 +298,21 @@
             done = true;
             finalJobStatus = job.status;
             document.getElementById("sceneRobotLogStatus").textContent = "Failed";
-            const failureMessage = job.error || "Unknown error";
+            const failureMessage = job?.error_info?.user_message || job.error || "Unknown error";
             toast("err", "scene_robot failed", failureMessage);
+            if (typeof appendAgentFailureBubble === "function") {
+              appendAgentFailureBubble({
+                kind: "scene_robot",
+                job_id: String(job.job_id || jobId || ""),
+                error_info: job.error_info || null,
+                log_digest:
+                  (job.error_info && job.error_info.log_digest) ||
+                  job?.session_state?.current_run?.scene_robot?.log_digest ||
+                  null,
+                log_path: job.log_path || "",
+                user_message: failureMessage,
+              });
+            }
           }
         }
 

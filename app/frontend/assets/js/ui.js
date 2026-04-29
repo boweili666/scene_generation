@@ -27,6 +27,28 @@
       label.textContent = text || "Idle";
     }
 
+    // Right-column tab switcher (Step 4). Tabs: sim / logs / diag.
+    function switchRightTab(name) {
+      const want = String(name || "sim").toLowerCase();
+      const buttons = document.querySelectorAll(".right-tab-btn");
+      buttons.forEach((btn) => {
+        const target = String(btn.getAttribute("data-tab-target") || "");
+        btn.dataset.active = target === want ? "true" : "false";
+      });
+      const panes = document.querySelectorAll(".right-tab-pane");
+      panes.forEach((p) => {
+        const tab = String(p.getAttribute("data-tab") || "");
+        p.dataset.active = tab === want ? "true" : "false";
+      });
+      const title = document.getElementById("rightPanelTitle");
+      if (title) {
+        title.textContent =
+          want === "logs" ? "Logs"
+          : want === "diag" ? "Diagnostics"
+          : "Simulation Preview";
+      }
+    }
+
     function toggleDrawer(){
       const d = document.getElementById("drawer");
       const chev = document.getElementById("chev");
@@ -147,6 +169,317 @@
       }
 
       root.appendChild(item);
+      root.scrollTop = root.scrollHeight;
+    }
+
+    // ---- Failure bubble (Step 2 of UI redesign) ----------------------------
+    // Renders a richer chat card for job failures: stage tag chips, collapsed
+    // technical detail, and action buttons (Retry / Copy log path / View log).
+    // Dedupes by (kind, job_id, code, user_message) so multiple poll-tick
+    // detections of the same failure don't stack.
+
+    let _lastFailureCardKey = "";
+
+    function _failureCardKey(failure) {
+      return [
+        failure?.kind || "",
+        failure?.job_id || "",
+        failure?.error_info?.code || "",
+        failure?.error_info?.user_message || failure?.user_message || "",
+      ].join("|");
+    }
+
+    function resetFailureCardDedupe() {
+      _lastFailureCardKey = "";
+    }
+
+    function appendAgentFailureBubble(failure, opts = {}) {
+      const root = document.getElementById("agentTranscript");
+      if (!root || !failure || !failure.kind) return;
+      const key = _failureCardKey(failure);
+      if (!opts.force && key && key === _lastFailureCardKey) return;
+      _lastFailureCardKey = key;
+
+      const empty = root.querySelector(".agent-transcript-empty");
+      if (empty) empty.remove();
+
+      const card = document.createElement("div");
+      card.className = "agent-chat-msg assistant agent-failure";
+      card.dataset.kind = failure.kind;
+
+      const role = document.createElement("div");
+      role.className = "agent-chat-role";
+      role.textContent = "Agent";
+      card.appendChild(role);
+
+      const head = document.createElement("div");
+      head.className = "agent-failure-head";
+      const stageLabel = failure.kind === "scene_robot" ? "scene_robot" : "Real2Sim";
+      head.innerHTML = `<span class="agent-failure-icon">⚠</span> ${escapeHtml(stageLabel)} failed`;
+      card.appendChild(head);
+
+      const ei = failure.error_info || {};
+      const tags = [];
+      if (ei.code) tags.push(escapeHtml(String(ei.code)));
+      if (ei.step) tags.push("step=" + escapeHtml(String(ei.step)));
+      if (ei.retryable === true) tags.push("retryable");
+      if (ei.retryable === false) tags.push("not retryable");
+      if (tags.length) {
+        const subhead = document.createElement("div");
+        subhead.className = "agent-failure-subhead";
+        subhead.innerHTML = tags.map((t) => `<span class="agent-failure-tag">${t}</span>`).join("");
+        card.appendChild(subhead);
+      }
+
+      const body = document.createElement("div");
+      body.className = "agent-chat-body";
+      body.textContent =
+        ei.user_message || failure.user_message || `${stageLabel} job failed.`;
+      card.appendChild(body);
+
+      const tech = _buildFailureTechBlock(failure);
+      if (tech) card.appendChild(tech);
+
+      card.appendChild(_buildFailureActions(failure));
+
+      root.appendChild(card);
+      root.scrollTop = root.scrollHeight;
+
+      // Step 4: a fresh failure switches the right panel to Logs so the user
+      // sees the relevant log without a manual click. Avoid yanking the view
+      // when the bubble is being re-rendered (dedupe handled above already).
+      if (typeof switchRightTab === "function") switchRightTab("logs");
+    }
+
+    function _buildFailureTechBlock(failure) {
+      const ei = failure.error_info || {};
+      const dig = failure.log_digest || ei.log_digest || {};
+      const lines = [];
+      if (dig.last_exception) lines.push(`last_exception: ${dig.last_exception}`);
+      if (typeof dig.exit_code === "number") lines.push(`exit_code: ${dig.exit_code}`);
+      if (Array.isArray(dig.hostports) && dig.hostports.length) {
+        lines.push(`hostports: ${dig.hostports.join(", ")}`);
+      }
+      if (Array.isArray(dig.urls) && dig.urls.length) {
+        lines.push(`urls: ${dig.urls.join(", ")}`);
+      }
+      const logPath = failure.log_path || dig.log_path;
+      if (logPath) lines.push(`log: ${logPath}`);
+      if (!lines.length && ei.technical_detail) {
+        lines.push(`technical_detail: ${String(ei.technical_detail).slice(0, 600)}`);
+      }
+      if (Array.isArray(dig.error_lines) && dig.error_lines.length) {
+        lines.push("error_lines (last):");
+        for (const ln of dig.error_lines.slice(-6)) {
+          lines.push(`  | ${String(ln).slice(0, 300)}`);
+        }
+      }
+      if (!lines.length) return null;
+
+      const wrap = document.createElement("details");
+      wrap.className = "agent-failure-tech";
+      const summary = document.createElement("summary");
+      summary.textContent = "Technical detail";
+      wrap.appendChild(summary);
+      const pre = document.createElement("pre");
+      pre.className = "agent-failure-tech-pre";
+      pre.textContent = lines.join("\n");
+      wrap.appendChild(pre);
+      return wrap;
+    }
+
+    function _buildFailureActions(failure) {
+      const actions = document.createElement("div");
+      actions.className = "agent-failure-actions";
+      const ei = failure.error_info || {};
+
+      if (ei.retryable !== false && typeof retryFailedStage === "function") {
+        const retryBtn = document.createElement("button");
+        retryBtn.type = "button";
+        retryBtn.className = "agent-failure-btn primary";
+        retryBtn.textContent = "↻ Retry";
+        retryBtn.addEventListener("click", async () => {
+          retryBtn.disabled = true;
+          try {
+            await retryFailedStage(failure.kind, failure);
+          } catch (err) {
+            toast("err", "Retry failed", String(err?.message || err));
+          } finally {
+            retryBtn.disabled = false;
+          }
+        });
+        actions.appendChild(retryBtn);
+      }
+
+      const dig = failure.log_digest || ei.log_digest || {};
+      const logPath = failure.log_path || dig.log_path;
+      if (logPath) {
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "agent-failure-btn";
+        copyBtn.textContent = "📋 Copy log path";
+        copyBtn.addEventListener("click", () => _copyFailureLogPath(logPath));
+        actions.appendChild(copyBtn);
+      }
+
+      const viewBtn = document.createElement("button");
+      viewBtn.type = "button";
+      viewBtn.className = "agent-failure-btn";
+      viewBtn.textContent = "📂 View log";
+      viewBtn.addEventListener("click", () => _viewFailureLog(failure));
+      actions.appendChild(viewBtn);
+
+      return actions;
+    }
+
+    async function _copyFailureLogPath(path) {
+      try {
+        await navigator.clipboard.writeText(String(path));
+        toast("ok", "Log path copied", String(path));
+      } catch (err) {
+        // Fallback: select-and-copy via a hidden textarea
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = String(path);
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+          toast("ok", "Log path copied", String(path));
+        } catch (err2) {
+          toast("err", "Copy failed", String(err2?.message || err2));
+        }
+      }
+    }
+
+    function _viewFailureLog(failure) {
+      // Step 4: logs live in the right column's Logs tab now.
+      if (typeof switchRightTab === "function") switchRightTab("logs");
+      const targetId = failure.kind === "scene_robot" ? "sceneRobotLog" : "real2simLog";
+      const el = document.getElementById(targetId);
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+
+    // ---- Tool steps (Step 3): collapsible "what tools the agent ran" ------
+    // The backend records `tool_steps: [{tool, args, summary}]` in every
+    // /agent/message response. We render them as a <details> block attached
+    // to the latest assistant chat bubble, so the user can see *what*
+    // actually ran without leaving the chat. Args are truncated to keep the
+    // UI compact; full args fit in the scroll-y area when expanded.
+
+    function _toolStepStatus(summary) {
+      const s = String(summary || "");
+      if (s.startsWith("error")) return "err";
+      if (s.startsWith("started job")) return "running";
+      return "ok";
+    }
+
+    function _toolStepIcon(status) {
+      switch (status) {
+        case "running": return "⏳";
+        case "err":     return "✗";
+        default:        return "✓";
+      }
+    }
+
+    function _formatToolArgs(args) {
+      if (args == null) return "";
+      let text;
+      if (typeof args === "string") {
+        const trimmed = args.trim();
+        if (!trimmed || trimmed === "{}") return "";
+        // Pretty-print JSON when we can; otherwise show the raw string.
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Object.keys(parsed).length === 0) {
+            return "";
+          }
+          text = JSON.stringify(parsed, null, 2);
+        } catch (e) {
+          text = trimmed;
+        }
+      } else if (typeof args === "object") {
+        if (Array.isArray(args) ? args.length === 0 : Object.keys(args).length === 0) return "";
+        try { text = JSON.stringify(args, null, 2); } catch (e) { text = String(args); }
+      } else {
+        text = String(args);
+      }
+      // Cap at ~600 chars; users rarely need more than this in a glance.
+      if (text.length > 600) text = text.slice(0, 600) + "\n…";
+      return text;
+    }
+
+    function _buildToolStepsBlock(steps) {
+      if (!Array.isArray(steps) || !steps.length) return null;
+      const wrap = document.createElement("details");
+      wrap.className = "agent-tool-steps";
+      const summary = document.createElement("summary");
+      summary.textContent = `Tools used (${steps.length})`;
+      wrap.appendChild(summary);
+
+      const list = document.createElement("div");
+      list.className = "agent-tool-steps-list";
+
+      for (const step of steps) {
+        if (!step || typeof step !== "object") continue;
+        const status = _toolStepStatus(step.summary);
+        const row = document.createElement("div");
+        row.className = "tool-step";
+        row.dataset.status = status;
+
+        const icon = document.createElement("span");
+        icon.className = "tool-step-icon";
+        icon.textContent = _toolStepIcon(status);
+        row.appendChild(icon);
+
+        const name = document.createElement("span");
+        name.className = "tool-step-name";
+        name.textContent = String(step.tool || "(unknown)");
+        row.appendChild(name);
+
+        const summ = document.createElement("span");
+        summ.className = "tool-step-summary";
+        summ.dataset.status = status;
+        summ.textContent = String(step.summary || "");
+        summ.title = String(step.summary || "");
+        row.appendChild(summ);
+
+        // Reserve the right-hand grid column even when empty so rows align.
+        const spacer = document.createElement("span");
+        row.appendChild(spacer);
+
+        const argsText = _formatToolArgs(step.args);
+        if (argsText) {
+          const argsEl = document.createElement("pre");
+          argsEl.className = "tool-step-args";
+          argsEl.textContent = argsText;
+          row.appendChild(argsEl);
+        }
+
+        list.appendChild(row);
+      }
+      wrap.appendChild(list);
+      return wrap;
+    }
+
+    function appendToolStepsToLatestAssistantBubble(steps) {
+      const root = document.getElementById("agentTranscript");
+      if (!root) return;
+      if (!Array.isArray(steps) || !steps.length) return;
+      // Pick the latest assistant message; that's what these tools belong to.
+      const candidates = root.querySelectorAll(".agent-chat-msg.assistant");
+      const target = candidates[candidates.length - 1];
+      if (!target) return;
+      // Replace any previously-attached tool-steps block (re-render on update).
+      const existing = target.querySelector(":scope > .agent-tool-steps");
+      if (existing) existing.remove();
+      const block = _buildToolStepsBlock(steps);
+      if (!block) return;
+      target.appendChild(block);
       root.scrollTop = root.scrollHeight;
     }
 

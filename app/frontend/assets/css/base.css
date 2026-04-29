@@ -131,6 +131,71 @@
     .dot.err{ background: var(--red); }
     .pill strong{ color: var(--text); font-weight: 700; }
 
+    /* ===== Pipeline strip (top of topbar, under brand + pills) ===== */
+    .pipeline-strip{
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      padding: 8px 12px;
+      background: rgba(248, 250, 252, 0.7);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .pipeline-strip:empty{ display: none; }
+    .pipeline-stage{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #ffffff;
+      border: 1px solid var(--border);
+      cursor: default;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .pipeline-stage[data-status="running"]{
+      background: #fffbeb;
+      border-color: #fde68a;
+    }
+    .pipeline-stage[data-status="ok"]{
+      background: #ecfdf5;
+      border-color: #a7f3d0;
+    }
+    .pipeline-stage[data-status="err"]{
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .pipeline-stage .pipeline-icon{
+      font-size: 12px;
+      line-height: 1;
+      width: 14px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .pipeline-stage[data-status="running"] .pipeline-icon{ color: var(--amber); }
+    .pipeline-stage[data-status="ok"] .pipeline-icon{ color: var(--green); }
+    .pipeline-stage[data-status="err"] .pipeline-icon{ color: var(--red); }
+    .pipeline-stage .pipeline-label{
+      color: var(--text);
+      font-weight: 600;
+    }
+    .pipeline-stage .pipeline-detail{
+      color: var(--muted);
+      font-weight: 400;
+      font-size: 11px;
+    }
+    .pipeline-stage .pipeline-detail:empty{ display: none; }
+    .pipeline-arrow{
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+    }
+
     /* ===== Layout ===== */
     .wrap{
       width: min(var(--content-max), calc(100vw - 24px));
