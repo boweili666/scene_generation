@@ -27,9 +27,21 @@
       label.textContent = text || "Idle";
     }
 
-    // Right-column tab switcher (Step 4). Tabs: sim / logs / diag.
-    function switchRightTab(name) {
-      const want = String(name || "sim").toLowerCase();
+    // Right-column tab switcher (Step 4 + 8).
+    // Tabs: graph / sim / logs / masks / diag.
+    // `opts.manual` records when the user clicked a tab so subsequent
+    // event-driven auto-switches can hold off for `MANUAL_TAB_HOLD_MS`.
+    let _lastManualTabAt = 0;
+    const MANUAL_TAB_HOLD_MS = 5000;
+
+    function switchRightTab(name, opts = {}) {
+      const want = String(name || "graph").toLowerCase();
+      if (opts.auto && Date.now() - _lastManualTabAt < MANUAL_TAB_HOLD_MS) {
+        return;
+      }
+      if (opts.manual) {
+        _lastManualTabAt = Date.now();
+      }
       const buttons = document.querySelectorAll(".right-tab-btn");
       buttons.forEach((btn) => {
         const target = String(btn.getAttribute("data-tab-target") || "");
@@ -43,17 +55,193 @@
       const title = document.getElementById("rightPanelTitle");
       if (title) {
         title.textContent =
-          want === "logs" ? "Logs"
-          : want === "diag" ? "Diagnostics"
-          : "Simulation Preview";
+          want === "graph" ? "Scene Graph"
+          : want === "sim" ? "Simulation Preview"
+          : want === "robot" ? "Robot Pipeline"
+          : want === "logs" ? "Logs"
+          : want === "masks" ? "Mask Review"
+          : "Diagnostics";
+      }
+      if (want === "robot" && typeof refreshRobotDashboard === "function") {
+        // Kick a refresh on tab show; the polling loop also restarts via
+        // ensureRobotDashboardPolling.
+        refreshRobotDashboard();
+        if (typeof ensureRobotDashboardPolling === "function") ensureRobotDashboardPolling();
+      }
+      // Cytoscape and Three.js can't measure their container while it's
+      // hidden (display:none on the inactive tab pane), so when one becomes
+      // visible we have to tell the renderer to recompute its size on the
+      // next frame — otherwise the canvas keeps its pre-show pixel buffer
+      // and the browser stretches a low-res bitmap into the panel (blurry).
+      if (want === "graph" && typeof cy !== "undefined" && cy && typeof cy.resize === "function") {
+        requestAnimationFrame(() => {
+          try { cy.resize(); cy.fit(undefined, 24); } catch (e) { /* harmless */ }
+        });
+      }
+      if (want === "sim" && typeof viewerState !== "undefined" && viewerState && typeof viewerState.resize === "function") {
+        requestAnimationFrame(() => {
+          try { viewerState.resize(); } catch (e) { /* harmless */ }
+        });
       }
     }
 
+    // The bottom drawer was removed in Step 8. Keep a no-op shim so any
+    // lingering `toggleDrawer()` call sites (and the once-only listener
+    // inside the composer templates menu) don't throw on a missing element.
     function toggleDrawer(){
       const d = document.getElementById("drawer");
+      if (!d) return; // drawer no longer exists
       const chev = document.getElementById("chev");
       const open = d.classList.toggle("open");
-      chev.textContent = open ? "▴" : "▾";
+      if (chev) chev.textContent = open ? "▴" : "▾";
+    }
+
+    /* ===== Resizable chat / preview splitter ===== */
+    // Drag handle between the chat card and the preview card. Drives the
+    // grid's --chat-col-px CSS variable (pixels), which sets the chat
+    // column's exact width. Pixel-based sizing keeps the column rock-solid
+    // across font-size changes and long words. Right column takes the rest.
+    const SPLIT_KEY = "chat.colPx";
+    const SPLIT_MIN = 360;
+    const SPLIT_MAX_MARGIN = 480;   // right column min width
+    const DEFAULT_RATIO = 0.5;      // first-time default: 50/50
+
+    function clampSplitPx(px, gridWidth, splitterW){
+      const max = gridWidth - splitterW - SPLIT_MAX_MARGIN;
+      return Math.max(SPLIT_MIN, Math.min(Math.max(SPLIT_MIN, max), px));
+    }
+    function applySplitPx(px){
+      const grid = document.getElementById("splitGrid");
+      if (!grid) return;
+      grid.style.setProperty("--chat-col-px", `${Math.round(px)}px`);
+      // Cytoscape and Three.js both need to know the right column changed
+      // size — otherwise their canvas internal resolution stays at the old
+      // width and the browser stretches the bitmap (which is blurry).
+      requestAnimationFrame(() => {
+        if (typeof cy !== "undefined" && cy && typeof cy.resize === "function") {
+          try { cy.resize(); cy.fit(undefined, 24); } catch (e) { /* harmless */ }
+        }
+        if (typeof viewerState !== "undefined" && viewerState && typeof viewerState.resize === "function") {
+          try { viewerState.resize(); } catch (e) { /* harmless */ }
+        }
+      });
+    }
+    function initSplitter(){
+      const grid = document.getElementById("splitGrid");
+      const splitter = document.getElementById("gridSplitter");
+      if (!grid || !splitter) return;
+
+      const initialWidth = () => {
+        const rect = grid.getBoundingClientRect();
+        const splitterW = splitter.getBoundingClientRect().width || 20;
+        const stored = Number(localStorage.getItem(SPLIT_KEY));
+        if (Number.isFinite(stored) && stored > 0) {
+          return clampSplitPx(stored, rect.width, splitterW);
+        }
+        const target = (rect.width - splitterW) * DEFAULT_RATIO;
+        return clampSplitPx(target, rect.width, splitterW);
+      };
+      // Apply once the grid has measurable width.
+      requestAnimationFrame(() => applySplitPx(initialWidth()));
+
+      let dragging = false;
+      let activePointerId = null;
+      const onMove = (evt) => {
+        if (!dragging) return;
+        const rect = grid.getBoundingClientRect();
+        const splitterW = splitter.getBoundingClientRect().width || 20;
+        const splitterCenter = evt.clientX - rect.left;
+        const leftPx = clampSplitPx(splitterCenter - splitterW / 2, rect.width, splitterW);
+        applySplitPx(leftPx);
+        evt.preventDefault();
+      };
+      const onUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        splitter.classList.remove("is-dragging");
+        document.body.classList.remove("is-resizing-grid");
+        if (activePointerId !== null) {
+          try { splitter.releasePointerCapture(activePointerId); } catch (e) { /* ignore */ }
+          activePointerId = null;
+        }
+        const px = parseFloat(grid.style.getPropertyValue("--chat-col-px"));
+        if (Number.isFinite(px)) localStorage.setItem(SPLIT_KEY, String(Math.round(px)));
+      };
+      splitter.addEventListener("pointerdown", (evt) => {
+        if (evt.button !== 0 && evt.pointerType === "mouse") return;
+        dragging = true;
+        activePointerId = evt.pointerId;
+        try { splitter.setPointerCapture(evt.pointerId); } catch (e) { /* ignore */ }
+        splitter.classList.add("is-dragging");
+        document.body.classList.add("is-resizing-grid");
+        evt.preventDefault();
+      });
+      splitter.addEventListener("pointermove", onMove);
+      splitter.addEventListener("pointerup", onUp);
+      splitter.addEventListener("pointercancel", onUp);
+      splitter.addEventListener("dblclick", () => {
+        const rect = grid.getBoundingClientRect();
+        const splitterW = splitter.getBoundingClientRect().width || 20;
+        const target = (rect.width - splitterW) * DEFAULT_RATIO;
+        const clamped = clampSplitPx(target, rect.width, splitterW);
+        applySplitPx(clamped);
+        localStorage.setItem(SPLIT_KEY, String(Math.round(clamped)));
+      });
+      splitter.addEventListener("keydown", (evt) => {
+        const rect = grid.getBoundingClientRect();
+        const splitterW = splitter.getBoundingClientRect().width || 20;
+        const cur = parseFloat(grid.style.getPropertyValue("--chat-col-px")) || initialWidth();
+        let next = cur;
+        if (evt.key === "ArrowLeft") next = cur - 24;
+        else if (evt.key === "ArrowRight") next = cur + 24;
+        else if (evt.key === "Home") next = (rect.width - splitterW) * DEFAULT_RATIO;
+        else return;
+        evt.preventDefault();
+        const clamped = clampSplitPx(next, rect.width, splitterW);
+        applySplitPx(clamped);
+        localStorage.setItem(SPLIT_KEY, String(Math.round(clamped)));
+      });
+    }
+
+    /* ===== Chat font size ===== */
+    // The chat card exposes --chat-font-size as a CSS variable; bubble bodies,
+    // failure cards, the empty-state banner and the composer textarea all read
+    // from it. A−/A+ buttons in the chat header step it within [12, 20]px and
+    // persist the choice in localStorage so it survives reload.
+    const CHAT_FONT_MIN = 12;
+    const CHAT_FONT_MAX = 20;
+    const CHAT_FONT_STEP = 1;
+    const CHAT_FONT_DEFAULT = 15;
+    const CHAT_FONT_KEY = "chat.fontSize";
+
+    function getChatCard(){
+      return document.querySelector(".card-prompt.chat-first");
+    }
+    function readChatFontSize(){
+      const raw = Number(localStorage.getItem(CHAT_FONT_KEY));
+      if (!Number.isFinite(raw)) return CHAT_FONT_DEFAULT;
+      return Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(raw)));
+    }
+    function applyChatFontSize(px){
+      const card = getChatCard();
+      if (!card) return;
+      card.style.setProperty("--chat-font-size", `${px}px`);
+      const dec = document.getElementById("chatFontDecBtn");
+      const inc = document.getElementById("chatFontIncBtn");
+      if (dec) dec.disabled = px <= CHAT_FONT_MIN;
+      if (inc) inc.disabled = px >= CHAT_FONT_MAX;
+    }
+    function bumpChatFontSize(delta){
+      const next = Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, readChatFontSize() + delta));
+      localStorage.setItem(CHAT_FONT_KEY, String(next));
+      applyChatFontSize(next);
+    }
+    function initChatFontSize(){
+      applyChatFontSize(readChatFontSize());
+      const dec = document.getElementById("chatFontDecBtn");
+      const inc = document.getElementById("chatFontIncBtn");
+      if (dec) dec.addEventListener("click", () => bumpChatFontSize(-CHAT_FONT_STEP));
+      if (inc) inc.addEventListener("click", () => bumpChatFontSize(+CHAT_FONT_STEP));
     }
 
     function updateInputMeta(){
@@ -120,6 +308,249 @@
       }
       clearReferenceImagePreview();
       updateInputMeta();
+      if (typeof composerSyncImageBadge === "function") composerSyncImageBadge();
+    }
+
+    // ---- Composer toolbar (Step 5) ---------------------------------------
+    // Compact quick-access buttons above the Apply Instruction button:
+    // 📎 Image (delegates to the existing #imageInput file picker), ⚡ mode
+    // (toggles between Tool-use loop / Plan + review by flipping the
+    // existing radios), 📋 Templates (dropdown that lists saved templates
+    // and runs them via the existing runNamedTemplate flow). The original
+    // form fields below are still functional; this is an additive shortcut.
+
+    function composerPickImage() {
+      const inp = document.getElementById("imageInput");
+      if (inp) inp.click();
+    }
+
+    function composerToggleMode() {
+      const loop = document.getElementById("agentModeLoop");
+      const plan = document.getElementById("agentModePlan");
+      if (!loop || !plan) return;
+      const wasPlan = !!plan.checked;
+      loop.checked = wasPlan;
+      plan.checked = !wasPlan;
+      // Mirror the user-clicked-radio code path so any listeners react too.
+      (wasPlan ? loop : plan).dispatchEvent(new Event("change", { bubbles: true }));
+      composerSyncModeButton();
+    }
+
+    function composerSyncModeButton() {
+      const planChecked = !!document.getElementById("agentModePlan")?.checked;
+      const lbl = document.getElementById("composerModeLabel");
+      const icon = document.getElementById("composerModeIcon");
+      const btn = document.getElementById("composerModeBtn");
+      if (lbl) lbl.textContent = planChecked ? "Plan + review" : "Tool-use loop";
+      if (icon) icon.textContent = planChecked ? "📋" : "⚡";
+      if (btn) {
+        btn.dataset.mode = planChecked ? "plan" : "loop";
+        btn.title = planChecked
+          ? "Mode: Plan + review (click to switch to Tool-use loop)"
+          : "Mode: Tool-use loop (click to switch to Plan + review)";
+      }
+    }
+
+    function composerSyncImageBadge() {
+      const inp = document.getElementById("imageInput");
+      const lbl = document.getElementById("composerImageLabel");
+      const btn = document.getElementById("composerImageBtn");
+      if (!inp || !lbl || !btn) return;
+      const has = inp.files && inp.files.length > 0;
+      if (has) {
+        const name = inp.files[0].name || "image";
+        lbl.textContent = name.length > 18 ? name.slice(0, 16) + "…" : name;
+        btn.dataset.attached = "true";
+        btn.title = `Attached: ${name} (click to change)`;
+      } else {
+        lbl.textContent = "Image";
+        btn.dataset.attached = "false";
+        btn.title = "Attach reference image";
+      }
+    }
+
+    function composerSyncTemplatesCount() {
+      const countEl = document.getElementById("composerTemplatesCount");
+      if (!countEl) return;
+      const n = (typeof getNamedTemplates === "function") ? getNamedTemplates().length : 0;
+      if (n > 0) {
+        countEl.textContent = String(n);
+        countEl.hidden = false;
+      } else {
+        countEl.hidden = true;
+      }
+    }
+
+    function composerToggleTemplates() {
+      const menu = document.getElementById("composerTemplatesMenu");
+      if (!menu) return;
+      if (menu.hidden) {
+        composerRenderTemplatesMenu();
+        menu.hidden = false;
+        // Defer the outside-click listener so this very click doesn't close it.
+        setTimeout(() => {
+          document.addEventListener("click", _composerCloseTemplatesOnOutside, { once: true });
+        }, 0);
+      } else {
+        menu.hidden = true;
+      }
+    }
+
+    function _composerCloseTemplatesOnOutside(evt) {
+      const menu = document.getElementById("composerTemplatesMenu");
+      const btn = document.getElementById("composerTemplatesBtn");
+      if (!menu || menu.hidden) return;
+      if (menu.contains(evt.target) || (btn && btn.contains(evt.target))) {
+        // Click was inside the menu / button: re-arm the listener.
+        document.addEventListener("click", _composerCloseTemplatesOnOutside, { once: true });
+        return;
+      }
+      menu.hidden = true;
+    }
+
+    function composerRenderTemplatesMenu() {
+      const menu = document.getElementById("composerTemplatesMenu");
+      if (!menu) return;
+      menu.innerHTML = "";
+      const templates = (typeof getNamedTemplates === "function") ? getNamedTemplates() : [];
+      if (!templates.length) {
+        const empty = document.createElement("div");
+        empty.className = "composer-templates-empty";
+        empty.textContent = "No saved templates yet. Type a prompt and use 💾 Save Template below.";
+        menu.appendChild(empty);
+        return;
+      }
+      templates.forEach((t) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "composer-templates-item";
+        item.title = t.prompt;
+
+        const name = document.createElement("span");
+        name.className = "composer-templates-name";
+        name.textContent = t.name;
+        item.appendChild(name);
+
+        const promptPreview = document.createElement("span");
+        promptPreview.className = "composer-templates-prompt";
+        const trimmed = String(t.prompt || "");
+        promptPreview.textContent = trimmed.length > 90 ? trimmed.slice(0, 90) + "…" : trimmed;
+        item.appendChild(promptPreview);
+
+        item.addEventListener("click", () => {
+          menu.hidden = true;
+          if (typeof runNamedTemplate === "function") runNamedTemplate(t.name);
+        });
+        menu.appendChild(item);
+      });
+    }
+
+    function initComposerTools() {
+      // Initial sync from existing state (radios, file input, localStorage).
+      composerSyncModeButton();
+      composerSyncImageBadge();
+      composerSyncTemplatesCount();
+      // Keep button in sync if the user clicks the underlying radios directly.
+      document.querySelectorAll('input[name="agentMode"]').forEach((r) => {
+        r.addEventListener("change", composerSyncModeButton);
+      });
+      // The existing imageInput change handler (in boot.js) updates other UI;
+      // we tag along to refresh the badge text + colour.
+      const inp = document.getElementById("imageInput");
+      if (inp) inp.addEventListener("change", composerSyncImageBadge);
+    }
+
+    // ---- Settings drawer (Step 7) ----------------------------------------
+    // Right-side slide-out for advanced options. All controls inside delegate
+    // to existing handlers; the underlying state lives in the original
+    // (now hidden) DOM elements (#agentMode* radios, #classDirPicker,
+    // #resampleModeSelect, #repeatPlanPromptBtn, #savePlanTemplateBtn etc.).
+
+    function toggleSettingsDrawer() {
+      const drawer = document.getElementById("settingsDrawer");
+      const back = document.getElementById("settingsBackdrop");
+      if (!drawer || !back) return;
+      const willOpen = drawer.hasAttribute("hidden");
+      if (willOpen) {
+        settingsSyncAll();
+        drawer.removeAttribute("hidden");
+        back.removeAttribute("hidden");
+        document.addEventListener("keydown", _settingsKeyHandler);
+      } else {
+        drawer.setAttribute("hidden", "");
+        back.setAttribute("hidden", "");
+        document.removeEventListener("keydown", _settingsKeyHandler);
+      }
+    }
+
+    function _settingsKeyHandler(evt) {
+      if (evt.key === "Escape") toggleSettingsDrawer();
+    }
+
+    function settingsSyncAll() {
+      settingsSyncSession();
+      settingsSyncMode();
+      settingsSyncClassDir();
+      settingsSyncResampleMode();
+      settingsSyncRepeatBtn();
+    }
+
+    function settingsSyncSession() {
+      const ses = document.getElementById("settingsSessionId");
+      const run = document.getElementById("settingsRunId");
+      if (!ses || !run) return;
+      const ss = (typeof latestSessionState !== "undefined" && latestSessionState) || null;
+      ses.textContent = ss?.session_id ? String(ss.session_id) : "—";
+      run.textContent = ss?.current_run_id ? String(ss.current_run_id) : "—";
+    }
+
+    function settingsSyncMode() {
+      const planChecked = !!document.getElementById("agentModePlan")?.checked;
+      const settingsLoop = document.getElementById("settingsAgentModeLoop");
+      const settingsPlan = document.getElementById("settingsAgentModePlan");
+      if (settingsLoop) settingsLoop.checked = !planChecked;
+      if (settingsPlan) settingsPlan.checked = planChecked;
+    }
+
+    function settingsApplyMode(mode) {
+      const loop = document.getElementById("agentModeLoop");
+      const plan = document.getElementById("agentModePlan");
+      if (!loop || !plan) return;
+      if (mode === "plan") { plan.checked = true; loop.checked = false; }
+      else                  { loop.checked = true; plan.checked = false; }
+      // Mirror the user-clicked-radio event so listeners (composer button etc.) react.
+      (mode === "plan" ? plan : loop).dispatchEvent(new Event("change", { bubbles: true }));
+      if (typeof composerSyncModeButton === "function") composerSyncModeButton();
+    }
+
+    function settingsPickClassDir() {
+      const picker = document.getElementById("classDirPicker");
+      if (picker) picker.click();
+    }
+
+    function settingsSyncClassDir() {
+      const status = document.getElementById("settingsClassDirStatus");
+      const picker = document.getElementById("classDirPicker");
+      if (!status || !picker) return;
+      const n = picker.files ? picker.files.length : 0;
+      status.textContent = n > 0 ? `${n} file${n === 1 ? "" : "s"} selected` : "No folder selected";
+    }
+
+    function settingsSyncResampleMode() {
+      const select = document.getElementById("resampleModeSelect");
+      const value = String(select?.value || "joint");
+      const joint = document.getElementById("settingsResampleJoint");
+      const lock  = document.getElementById("settingsResampleLock");
+      if (joint) joint.checked = value === "joint";
+      if (lock)  lock.checked  = value === "lock_real2sim";
+    }
+
+    function settingsSyncRepeatBtn() {
+      const original = document.getElementById("repeatPlanPromptBtn");
+      const proxy = document.getElementById("settingsRepeatBtn");
+      if (!original || !proxy) return;
+      proxy.disabled = !!original.disabled;
+      proxy.title = original.title || "";
     }
 
     function setFeedback(lines){
@@ -137,12 +568,40 @@
       root.appendChild(empty);
     }
 
+    // Sticky-bottom auto-scroll pattern. Only auto-scroll a chat-like
+    // container to the bottom on new content if the user was already
+    // near the bottom. If they've scrolled up to read history, leave
+    // them where they are — otherwise polling re-renders yank them
+    // around (the original bug: every poll rebuilt the transcript and
+    // forced scrollTop = scrollHeight, taking the user away from the
+    // message they were reading).
+    const _STICK_BOTTOM_PX = 64;
+    let _suppressTranscriptAutoScroll = false;
+    function _isNearBottom(root) {
+      if (!root) return true;
+      const distance = root.scrollHeight - (root.scrollTop + root.clientHeight);
+      return distance <= _STICK_BOTTOM_PX;
+    }
+    function _scrollToBottomIfSticky(root, wasNearBottom) {
+      if (!root) return;
+      // During a full transcript rebuild we suppress per-append scrolling
+      // because the wiped container is trivially "near bottom" and would
+      // cause each append to flicker to bottom; renderAgentTranscript
+      // handles the final scroll restoration itself.
+      if (_suppressTranscriptAutoScroll) return;
+      if (wasNearBottom) {
+        root.scrollTop = root.scrollHeight;
+      }
+    }
+
     function appendAgentTranscript(role, body, meta = "") {
       const root = document.getElementById("agentTranscript");
       if (!root) return;
       const content = String(body || "").trim();
       const metaText = String(meta || "").trim();
       if (!content && !metaText) return;
+
+      const wasNearBottom = _isNearBottom(root);
 
       const empty = root.querySelector(".agent-transcript-empty");
       if (empty) empty.remove();
@@ -169,7 +628,7 @@
       }
 
       root.appendChild(item);
-      root.scrollTop = root.scrollHeight;
+      _scrollToBottomIfSticky(root, wasNearBottom);
     }
 
     // ---- Failure bubble (Step 2 of UI redesign) ----------------------------
@@ -199,6 +658,8 @@
       const key = _failureCardKey(failure);
       if (!opts.force && key && key === _lastFailureCardKey) return;
       _lastFailureCardKey = key;
+
+      const wasNearBottom = _isNearBottom(root);
 
       const empty = root.querySelector(".agent-transcript-empty");
       if (empty) empty.remove();
@@ -243,12 +704,12 @@
       card.appendChild(_buildFailureActions(failure));
 
       root.appendChild(card);
-      root.scrollTop = root.scrollHeight;
+      _scrollToBottomIfSticky(root, wasNearBottom);
 
-      // Step 4: a fresh failure switches the right panel to Logs so the user
-      // sees the relevant log without a manual click. Avoid yanking the view
-      // when the bubble is being re-rendered (dedupe handled above already).
-      if (typeof switchRightTab === "function") switchRightTab("logs");
+      // Step 4 + 8: a fresh failure switches the right panel to Logs so the
+      // user sees the relevant log without a manual click. Marked as auto so
+      // it respects a recent manual tab pick (5 s window).
+      if (typeof switchRightTab === "function") switchRightTab("logs", { auto: true });
     }
 
     function _buildFailureTechBlock(failure) {
@@ -355,8 +816,9 @@
     }
 
     function _viewFailureLog(failure) {
-      // Step 4: logs live in the right column's Logs tab now.
-      if (typeof switchRightTab === "function") switchRightTab("logs");
+      // Step 4: logs live in the right column's Logs tab now. Treat the
+      // explicit click as a manual choice so subsequent autos don't yank back.
+      if (typeof switchRightTab === "function") switchRightTab("logs", { manual: true });
       const targetId = failure.kind === "scene_robot" ? "sceneRobotLog" : "real2simLog";
       const el = document.getElementById(targetId);
       if (el && typeof el.scrollIntoView === "function") {
@@ -474,26 +936,46 @@
       const candidates = root.querySelectorAll(".agent-chat-msg.assistant");
       const target = candidates[candidates.length - 1];
       if (!target) return;
+      const wasNearBottom = _isNearBottom(root);
       // Replace any previously-attached tool-steps block (re-render on update).
       const existing = target.querySelector(":scope > .agent-tool-steps");
       if (existing) existing.remove();
       const block = _buildToolStepsBlock(steps);
       if (!block) return;
       target.appendChild(block);
-      root.scrollTop = root.scrollHeight;
+      _scrollToBottomIfSticky(root, wasNearBottom);
     }
 
     function renderAgentTranscript(history) {
       const root = document.getElementById("agentTranscript");
       if (!root) return;
+      // Capture scroll state BEFORE the wipe — once we clear innerHTML
+      // scrollTop becomes 0 and we lose the information about where the
+      // user was reading. This rebuild fires on every poll while a job
+      // is running, so we must avoid yanking the viewport around.
+      const wasNearBottom = _isNearBottom(root);
+      const savedScrollTop = root.scrollTop;
+
       root.innerHTML = "";
       const turns = Array.isArray(history) ? history.filter((entry) => entry && (entry.content || entry.role)) : [];
       if (!turns.length) {
         clearAgentTranscript();
         return;
       }
-      for (const turn of turns) {
-        appendAgentTranscript(turn.role === "user" ? "user" : "assistant", turn.content || "");
+      _suppressTranscriptAutoScroll = true;
+      try {
+        for (const turn of turns) {
+          appendAgentTranscript(turn.role === "user" ? "user" : "assistant", turn.content || "");
+        }
+      } finally {
+        _suppressTranscriptAutoScroll = false;
+      }
+      if (wasNearBottom) {
+        root.scrollTop = root.scrollHeight;
+      } else {
+        // User was reading older messages — preserve their position so
+        // polling re-renders don't pull them away.
+        root.scrollTop = savedScrollTop;
       }
     }
 
@@ -1008,6 +1490,512 @@
       if (meta) meta.textContent = "No scene run yet";
     }
 
+    /* ===== Robot tab (collect / train / eval dashboard) ===== */
+    // Polls /scene_robot/dashboard while the Robot tab is active OR a
+    // scene_robot job is running. Renders three cards: Collect (with HDF5
+    // episode breakdown + Stop button), Train (latest checkpoint + parsed
+    // step/loss), Eval (per-episode mp4 grid).
+
+    const ROBOT_DASHBOARD_POLL_MS = 5000;
+    let _robotPollTimer = null;
+    let _robotPollInflight = false;
+    let _robotLastPayload = null;
+
+    function _fmtBytes(n) {
+      if (!Number.isFinite(n)) return "—";
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+      return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+    function _fmtElapsed(secs) {
+      if (!Number.isFinite(secs) || secs < 0) return "—";
+      if (secs < 60) return `${secs}s`;
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      if (m < 60) return `${m}m${String(s).padStart(2, "0")}s`;
+      const h = Math.floor(m / 60);
+      return `${h}h${String(m % 60).padStart(2, "0")}m`;
+    }
+    function _setStatusPill(el, status) {
+      if (!el) return;
+      const safe = String(status || "idle").toLowerCase();
+      el.textContent = safe;
+      el.className = "hint status-" + safe.replace(/\s+/g, "_");
+    }
+
+    function _renderCollect(collect) {
+      const body = document.getElementById("robotCollectBody");
+      const statusEl = document.getElementById("robotCollectStatus");
+      if (!body || !statusEl) return;
+      _setStatusPill(statusEl, collect?.status);
+      body.innerHTML = "";
+      if (!collect || (!collect.job_id && !collect.hdf5?.exists)) {
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = "No collect job for this run yet.";
+        body.appendChild(empty);
+        return;
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "robot-meta-row";
+      const parts = [];
+      if (collect.robot) parts.push(`<b>${collect.robot}</b>`);
+      if (collect.target) parts.push(`→ <code>${collect.target}</code>`);
+      if (Number.isFinite(collect.num_episodes)) parts.push(`${collect.num_episodes} target`);
+      if (Number.isFinite(collect.elapsed_seconds)) parts.push(`elapsed ${_fmtElapsed(collect.elapsed_seconds)}`);
+      if (collect.job_id) parts.push(`job <code>${String(collect.job_id).slice(0, 8)}</code>`);
+      meta.innerHTML = parts.join(" · ");
+      body.appendChild(meta);
+
+      // HDF5 line + progress
+      const hdf5 = collect.hdf5 || {};
+      if (hdf5.exists) {
+        const fileLine = document.createElement("div");
+        fileLine.className = "robot-meta-row";
+        fileLine.innerHTML = `<b>HDF5</b> · <code>${hdf5.path.split("/").slice(-1)[0]}</code> · ${_fmtBytes(hdf5.size_bytes)} · ${hdf5.num_demos ?? 0} demos`;
+        body.appendChild(fileLine);
+
+        if (Number.isFinite(collect.num_episodes) && collect.num_episodes > 0) {
+          const prog = document.createElement("div");
+          prog.className = "robot-progress";
+          const done = hdf5.num_demos ?? 0;
+          const total = collect.num_episodes;
+          prog.innerHTML = `<span>${done}/${total}</span>
+            <div class="robot-progress-bar"><div class="robot-progress-fill" style="width:${Math.min(100, (done/total)*100)}%"></div></div>`;
+          body.appendChild(prog);
+        }
+
+        if (Array.isArray(hdf5.episodes) && hdf5.episodes.length) {
+          const list = document.createElement("div");
+          list.className = "robot-episode-list";
+          for (const ep of hdf5.episodes) {
+            const row = document.createElement("div");
+            row.className = "robot-episode-row";
+            const success = ep.success;
+            const flagClass = success === true ? "ok" : success === false ? "fail" : "pending";
+            const flagChar = success === true ? "✓" : success === false ? "✗" : "·";
+            row.innerHTML = `
+              <span class="name">${ep.name || ""}</span>
+              <span class="flag ${flagClass}">${flagChar}</span>
+              <span class="steps">${Number.isFinite(ep.steps) ? ep.steps + " steps" : "—"}</span>
+            `;
+            list.appendChild(row);
+          }
+          body.appendChild(list);
+        }
+      } else if (hdf5.error) {
+        const err = document.createElement("div");
+        err.className = "robot-error";
+        err.textContent = hdf5.error;
+        body.appendChild(err);
+      }
+
+      if (collect.error) {
+        const err = document.createElement("div");
+        err.className = "robot-error";
+        err.textContent = collect.error;
+        body.appendChild(err);
+      }
+
+      // Actions
+      const actions = document.createElement("div");
+      actions.className = "robot-actions";
+      const isRunning = collect.status === "running" || collect.status === "queued";
+      if (isRunning && collect.job_id) {
+        const stop = document.createElement("button");
+        stop.type = "button";
+        stop.className = "robot-btn danger";
+        stop.textContent = "⏹ Stop collect";
+        stop.onclick = () => stopSceneRobotJob(collect.job_id);
+        actions.appendChild(stop);
+      }
+      if (hdf5.exists) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "robot-btn";
+        copy.textContent = "📋 Copy HDF5 path";
+        copy.onclick = () => navigator.clipboard?.writeText(hdf5.path);
+        actions.appendChild(copy);
+      }
+      if (actions.children.length) body.appendChild(actions);
+    }
+
+    function _renderGrasp(grasp) {
+      const body = document.getElementById("robotGraspBody");
+      const statusEl = document.getElementById("robotGraspStatus");
+      if (!body || !statusEl) return;
+      _setStatusPill(statusEl, grasp?.exists ? "ready" : "idle");
+      body.innerHTML = "";
+      if (!grasp || !grasp.exists) {
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = "No grasp plan yet — runs automatically before collect.";
+        body.appendChild(empty);
+        return;
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "robot-meta-row";
+      const parts = [];
+      if (grasp.robot) parts.push(`<b>${grasp.robot}</b>`);
+      if (grasp.target_prim) parts.push(`target <code>${grasp.target_prim}</code>`);
+      if (grasp.support_prim) parts.push(`on <code>${grasp.support_prim}</code>`);
+      if (grasp.chosen_side) parts.push(`from ${grasp.chosen_side} side`);
+      meta.innerHTML = parts.join(" · ");
+      body.appendChild(meta);
+
+      // Base pose
+      if (grasp.base_pose) {
+        const bp = grasp.base_pose;
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = `<b>Base pose</b> · x=<code>${bp.x.toFixed(3)}</code> y=<code>${bp.y.toFixed(3)}</code> z=<code>${bp.z.toFixed(3)}</code> yaw=<code>${bp.yaw_deg.toFixed(1)}°</code>`;
+        body.appendChild(row);
+      }
+      // Grasp position
+      if (grasp.grasp_position) {
+        const gp = grasp.grasp_position;
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = `<b>Grasp pos</b> · x=<code>${gp.x.toFixed(3)}</code> y=<code>${gp.y.toFixed(3)}</code> z=<code>${gp.z.toFixed(3)}</code>`;
+        body.appendChild(row);
+      }
+      // Approach axis
+      if (Array.isArray(grasp.approach_axis)) {
+        const a = grasp.approach_axis;
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = `<b>Approach</b> · <code>[${a.map((v) => Number(v).toFixed(2)).join(", ")}]</code>`;
+        body.appendChild(row);
+      }
+      // Scoring + counts
+      const scoreBits = [];
+      if (Number.isFinite(grasp.candidate_count)) scoreBits.push(`${grasp.candidate_count} base candidates`);
+      if (Number.isFinite(grasp.grasp_candidate_count)) scoreBits.push(`${grasp.grasp_candidate_count} grasp candidates`);
+      if (Number.isFinite(grasp.base_score)) scoreBits.push(`base score ${grasp.base_score.toFixed(2)}`);
+      if (Number.isFinite(grasp.grasp_score)) scoreBits.push(`grasp score ${grasp.grasp_score.toFixed(2)}`);
+      if (scoreBits.length) {
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = scoreBits.join(" · ");
+        body.appendChild(row);
+      }
+      if (grasp.selected_candidate_id) {
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = `<code>${grasp.selected_candidate_id}</code>`;
+        body.appendChild(row);
+      }
+    }
+
+    function _renderDataset(ds) {
+      const body = document.getElementById("robotDatasetBody");
+      const statusEl = document.getElementById("robotDatasetStatus");
+      if (!body || !statusEl) return;
+      _setStatusPill(statusEl, ds?.exists ? "ready" : "idle");
+
+      // Same as eval: skip rebuild when nothing logically changed, so the
+      // dataset preview videos don't restart every 5 seconds.
+      const key = JSON.stringify({
+        dir: ds?.dataset_dir || "",
+        eps: ds?.total_episodes,
+        frames: ds?.total_frames,
+        fps: ds?.fps,
+        cams: (ds?.cameras || []).join(","),
+        videos: (ds?.videos || []).map((v) => v.view).sort().join(","),
+      });
+      if (body.dataset.renderKey === key && body.children.length) return;
+      body.dataset.renderKey = key;
+
+      body.innerHTML = "";
+      if (!ds || !ds.exists) {
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = "No converted dataset yet — run scene_robot convert.";
+        body.appendChild(empty);
+        return;
+      }
+
+      const meta = document.createElement("div");
+      meta.className = "robot-meta-row";
+      const bits = [];
+      if (ds.repo_id) bits.push(`<b>${ds.repo_id}</b>`);
+      if (Number.isFinite(ds.total_episodes)) bits.push(`${ds.total_episodes} episodes`);
+      if (Number.isFinite(ds.total_frames)) bits.push(`${ds.total_frames} frames`);
+      if (Number.isFinite(ds.fps)) bits.push(`${ds.fps} fps`);
+      meta.innerHTML = bits.join(" · ");
+      body.appendChild(meta);
+
+      const shapes = [];
+      if (Array.isArray(ds.action_shape)) shapes.push(`action <code>[${ds.action_shape.join(", ")}]</code>`);
+      if (Array.isArray(ds.state_shape)) shapes.push(`state <code>[${ds.state_shape.join(", ")}]</code>`);
+      if (Array.isArray(ds.cameras) && ds.cameras.length) shapes.push(`cameras <code>${ds.cameras.join(", ")}</code>`);
+      if (shapes.length) {
+        const row = document.createElement("div");
+        row.className = "robot-meta-row";
+        row.innerHTML = shapes.join(" · ");
+        body.appendChild(row);
+      }
+
+      // Inline a video per camera. These are the *concatenated* dataset
+      // mp4s (chunk-000/file-000.mp4) — one per view, full dataset length.
+      if (Array.isArray(ds.videos) && ds.videos.length) {
+        const grid = document.createElement("div");
+        grid.className = "robot-video-grid";
+        for (const v of ds.videos) {
+          const card = document.createElement("div");
+          card.className = "robot-video-card";
+          const video = document.createElement("video");
+          video.controls = true;
+          video.playsInline = true;
+          video.preload = "metadata";
+          video.src = v.url;
+          card.appendChild(video);
+          const m = document.createElement("div");
+          m.className = "meta";
+          m.innerHTML = `<span>${v.view}</span><span>${_fmtBytes(v.size_bytes)}</span>`;
+          card.appendChild(m);
+          grid.appendChild(card);
+        }
+        body.appendChild(grid);
+      }
+    }
+
+    function _renderTrain(train) {
+      const body = document.getElementById("robotTrainBody");
+      const statusEl = document.getElementById("robotTrainStatus");
+      if (!body || !statusEl) return;
+      _setStatusPill(statusEl, train?.status);
+      body.innerHTML = "";
+      if (!train || !train.exists) {
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = "No train output yet — run scene_robot train to populate.";
+        body.appendChild(empty);
+        return;
+      }
+      const meta = document.createElement("div");
+      meta.className = "robot-meta-row";
+      const bits = [];
+      if (train.repo_id) bits.push(`<b>${train.repo_id}</b>`);
+      if (Number.isFinite(train.checkpoint_count)) bits.push(`${train.checkpoint_count} checkpoints`);
+      if (Number.isFinite(train.elapsed_seconds)) bits.push(`elapsed ${_fmtElapsed(train.elapsed_seconds)}`);
+      meta.innerHTML = bits.join(" · ");
+      body.appendChild(meta);
+
+      const dir = document.createElement("div");
+      dir.className = "robot-meta-row";
+      dir.innerHTML = `<code>${train.output_dir}</code>`;
+      body.appendChild(dir);
+
+      if (train.progress) {
+        const prog = document.createElement("div");
+        prog.className = "robot-progress";
+        const cur = train.progress.step;
+        const tot = train.progress.total_steps;
+        const lossPart = Number.isFinite(train.progress.loss) ? ` · loss ${train.progress.loss.toFixed(4)}` : "";
+        if (Number.isFinite(cur) && Number.isFinite(tot) && tot > 0) {
+          prog.innerHTML = `<span>step ${cur}/${tot}${lossPart}</span>
+            <div class="robot-progress-bar"><div class="robot-progress-fill" style="width:${Math.min(100, (cur/tot)*100)}%"></div></div>`;
+        } else if (Number.isFinite(cur)) {
+          prog.innerHTML = `<span>step ${cur}${lossPart}</span>`;
+        }
+        body.appendChild(prog);
+      }
+
+      if (train.latest_checkpoint) {
+        const ckpt = document.createElement("div");
+        ckpt.className = "robot-meta-row";
+        const lc = train.latest_checkpoint;
+        ckpt.innerHTML = `latest checkpoint <code>${lc.name}</code>${Number.isFinite(lc.step) ? ` · step ${lc.step}` : ""}`;
+        body.appendChild(ckpt);
+      }
+
+      if (train.error) {
+        const err = document.createElement("div");
+        err.className = "robot-error";
+        err.textContent = train.error;
+        body.appendChild(err);
+      }
+    }
+
+    function _renderEval(evald) {
+      const body = document.getElementById("robotEvalBody");
+      const statusEl = document.getElementById("robotEvalStatus");
+      if (!body || !statusEl) return;
+      _setStatusPill(statusEl, evald?.status);
+
+      // Skip the rebuild when the underlying eval result is logically the
+      // same — otherwise the 5-second poll wipes every <video> element and
+      // restarts playback from 0:00. Compare by episode identity (index +
+      // view names) and the comparison URL path; ignore ts= cache-busters.
+      const stripTs = (u) => (typeof u === "string" ? u.split("?")[0] : "");
+      const key = JSON.stringify({
+        rec: evald?.record_dir || "",
+        cmp: stripTs(evald?.comparison_all_url),
+        eps: (evald?.episodes || []).map((ep) => ({
+          i: ep.index,
+          v: Object.keys(ep.videos || {}).sort().join(","),
+        })),
+      });
+      if (body.dataset.renderKey === key && body.children.length) return;
+      body.dataset.renderKey = key;
+
+      body.innerHTML = "";
+      if (!evald || !evald.exists || !evald.episodes?.length) {
+        const empty = document.createElement("div");
+        empty.className = "artifact-empty";
+        empty.textContent = "No eval rollout videos yet — run scene_robot eval to populate.";
+        body.appendChild(empty);
+        return;
+      }
+      const meta = document.createElement("div");
+      meta.className = "robot-meta-row";
+      meta.innerHTML = `${evald.episode_count} episodes · <code>${evald.record_dir.split("/").slice(-2).join("/")}</code>`;
+      body.appendChild(meta);
+
+      // Optional comparison_all video at the top
+      if (evald.comparison_all_url) {
+        const wrap = document.createElement("div");
+        wrap.style.cssText = "max-width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid rgba(15,23,42,0.08); background: #0b1220;";
+        wrap.innerHTML = `<video controls playsinline style="width:100%; display:block; aspect-ratio: 16/9; background:#000;"><source src="${evald.comparison_all_url}" type="video/mp4"></video>
+          <div style="padding:4px 8px; font-size:11px; color:#cbd5e1; font-family:ui-monospace, monospace;">comparison_all.mp4</div>`;
+        body.appendChild(wrap);
+      }
+
+      const grid = document.createElement("div");
+      grid.className = "robot-video-grid";
+      for (const ep of evald.episodes) {
+        const card = document.createElement("div");
+        card.className = "robot-video-card";
+        const views = Object.keys(ep.videos || {});
+        if (!views.length) continue;
+        // Default to head when present, else first view
+        const defaultView = views.includes("head") ? "head" : views[0];
+        const video = document.createElement("video");
+        video.controls = true;
+        video.playsInline = true;
+        video.preload = "metadata";
+        video.src = ep.videos[defaultView];
+        card.appendChild(video);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const epIdx = `episode ${String(ep.index).padStart(2, "0")}`;
+        const tabs = document.createElement("div");
+        tabs.className = "robot-video-views";
+        for (const v of views) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "robot-video-tab";
+          btn.textContent = v;
+          btn.dataset.active = v === defaultView ? "true" : "false";
+          btn.onclick = () => {
+            video.src = ep.videos[v];
+            tabs.querySelectorAll(".robot-video-tab").forEach((t) => {
+              t.dataset.active = t === btn ? "true" : "false";
+            });
+            video.play().catch(() => {});
+          };
+          tabs.appendChild(btn);
+        }
+        meta.innerHTML = `<span>${epIdx}</span>`;
+        meta.appendChild(tabs);
+        card.appendChild(meta);
+        grid.appendChild(card);
+      }
+      body.appendChild(grid);
+
+      if (evald.error) {
+        const err = document.createElement("div");
+        err.className = "robot-error";
+        err.textContent = evald.error;
+        body.appendChild(err);
+      }
+    }
+
+    async function refreshRobotDashboard() {
+      if (_robotPollInflight) return;
+      _robotPollInflight = true;
+      try {
+        await ensureRuntimeContext();
+        const url = withRuntimeQuery("/scene_robot/dashboard");
+        const res = await fetch(url);
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        const payload = await res.json();
+        _robotLastPayload = payload;
+        _renderCollect(payload.collect);
+        _renderGrasp(payload.grasp);
+        _renderDataset(payload.dataset);
+        _renderTrain(payload.train);
+        _renderEval(payload.eval);
+      } catch (err) {
+        console.warn("robot dashboard refresh failed:", err);
+      } finally {
+        _robotPollInflight = false;
+      }
+    }
+
+    function _isRobotTabActive() {
+      const pane = document.querySelector('.right-tab-pane[data-tab="robot"]');
+      return pane && pane.dataset.active === "true";
+    }
+    function _hasActiveRobotJob() {
+      const c = _robotLastPayload?.collect || {};
+      const t = _robotLastPayload?.train || {};
+      const e = _robotLastPayload?.eval || {};
+      return [c.status, t.status, e.status].some((s) => s === "running" || s === "queued");
+    }
+
+    function ensureRobotDashboardPolling() {
+      if (_robotPollTimer) return;
+      const tick = async () => {
+        if (_isRobotTabActive() || _hasActiveRobotJob()) {
+          await refreshRobotDashboard();
+        }
+        // Stop polling once nothing is running AND tab is inactive.
+        if (!_isRobotTabActive() && !_hasActiveRobotJob()) {
+          if (_robotPollTimer) {
+            clearInterval(_robotPollTimer);
+            _robotPollTimer = null;
+          }
+          return;
+        }
+      };
+      // Fire once immediately, then on interval.
+      tick();
+      _robotPollTimer = setInterval(tick, ROBOT_DASHBOARD_POLL_MS);
+    }
+
+    async function stopSceneRobotJob(jobId) {
+      if (!jobId) return;
+      if (!confirm(`Stop scene_robot job ${String(jobId).slice(0, 8)}?`)) return;
+      try {
+        const res = await fetch("/scene_robot/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ job_id: jobId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.msg || data.error || `HTTP ${res.status}`);
+        if (typeof toast === "function") {
+          toast(data.killed ? "ok" : "warn", "Stop scene_robot",
+            data.killed ? "Job terminated." : "Stop request sent (best-effort).");
+        }
+      } catch (err) {
+        console.error(err);
+        if (typeof toast === "function") toast("err", "Stop failed", String(err));
+      } finally {
+        // Refresh shortly after so the UI shows the cancelled state.
+        setTimeout(refreshRobotDashboard, 800);
+      }
+    }
+
     function setSceneDebug(payload) {
       const box = document.getElementById("sceneDebugBox");
       const meta = document.getElementById("sceneDebugMeta");
@@ -1036,9 +2024,10 @@
     function appendReal2SimLog(text) {
       if (!text) return;
       const el = document.getElementById("real2simLog");
+      const wasNearBottom = _isNearBottom(el);
       const combined = el.textContent + text;
       el.textContent = combined.length > 120000 ? combined.slice(-120000) : combined;
-      el.scrollTop = el.scrollHeight;
+      _scrollToBottomIfSticky(el, wasNearBottom);
     }
 
     async function refreshReal2SimLog() {
@@ -1075,9 +2064,10 @@
     function appendSceneRobotLog(text) {
       if (!text) return;
       const el = document.getElementById("sceneRobotLog");
+      const wasNearBottom = _isNearBottom(el);
       const combined = el.textContent + text;
       el.textContent = combined.length > 120000 ? combined.slice(-120000) : combined;
-      el.scrollTop = el.scrollHeight;
+      _scrollToBottomIfSticky(el, wasNearBottom);
     }
 
     async function refreshSceneRobotLog() {

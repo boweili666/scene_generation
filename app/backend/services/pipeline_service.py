@@ -649,6 +649,10 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         str(ISAAC_PYTHON),
         "--asset-converter-script",
         str(ASSET_CONVERTER_SCRIPT),
+        "--connect-timeout",
+        "5",
+        "--retries",
+        "0",
     ]
     _run_step(
         step2_cmd,
@@ -747,6 +751,23 @@ def start_real2sim_job(payload: dict) -> dict[str, object]:
                 job["traceback"] = tb
 
     threading.Thread(target=_runner, daemon=True).start()
+
+    # Periodically post a status update into the chat history so the user
+    # gets a "still running, attempt N, masks X/Y" line even if they walk
+    # away from the page. Best-effort; skips if session/run not provided.
+    try:
+        from . import agent_heartbeat
+        agent_heartbeat.spawn(
+            kind="real2sim",
+            job_id=job_id,
+            session_id=payload.get("session_id") if isinstance(payload.get("session_id"), str) else None,
+            run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
+            log_path=log_path,
+            get_status=get_real2sim_job_status,
+        )
+    except Exception:  # noqa: BLE001 - heartbeat is best-effort
+        pass
+
     return {
         "job_id": job_id,
         "log_start_offset": log_start_offset,

@@ -95,6 +95,18 @@
     .right-tab-section .codebox{
       max-height: 280px;
     }
+    /* Graph tab (Step 8): cytoscape needs the pane to have explicit height so
+       it can fill the container. Override the default tab-pane padding so the
+       canvas reaches the panel edges. */
+    .right-tab-pane.right-tab-pane-graph{
+      padding: 12px;
+      gap: 0;
+    }
+    .right-tab-pane.right-tab-pane-graph[data-active="true"]{ display: flex; }
+    .right-tab-pane-graph .graph-wrap{
+      flex: 1 1 auto;
+      min-height: 480px;
+    }
 
     /* ===== Simulation ===== */
     .imgbox{
@@ -247,6 +259,18 @@
       grid-template-columns: 1fr 1fr;
       gap: 12px;
     }
+    /* Stacked variant: overlay image on top, mask review list below — used by
+       the Mask Review section so the overlay gets full width and the per-mask
+       cards have room for prompt text. */
+    .drawer-grid.drawer-grid-stack{
+      grid-template-columns: 1fr;
+    }
+    .drawer-grid.drawer-grid-stack .assignment-overlay-wrap img{
+      max-width: 100%;
+      max-height: 480px;
+      width: auto;
+      object-fit: contain;
+    }
     .drawer-section{
       margin-top: 12px;
     }
@@ -303,3 +327,193 @@
     }
     .toast .txt b{ font-size: 13px; color: var(--text); }
     .toast .txt span{ font-size: 12px; color: var(--muted); line-height: 1.35; }
+
+    /* ===== Robot tab cards (Step: Robot panel) ===== */
+    .robot-card{
+      border: 1px solid rgba(15,23,42,0.08);
+      background: linear-gradient(180deg, rgba(248,250,255,1), #ffffff);
+      border-radius: 14px;
+      padding: 12px 14px;
+      gap: 8px;
+    }
+    .robot-card .label .hint{
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #475569;
+      text-transform: lowercase;
+    }
+    .robot-card .label .hint.status-running,
+    .robot-card .label .hint.status-queued{
+      background: #fef3c7; color: #92400e;
+    }
+    .robot-card .label .hint.status-succeeded,
+    .robot-card .label .hint.status-trained,
+    .robot-card .label .hint.status-evaluated,
+    .robot-card .label .hint.status-completed{
+      background: #ecfdf5; color: #047857;
+    }
+    .robot-card .label .hint.status-failed,
+    .robot-card .label .hint.status-cancelled{
+      background: #fef2f2; color: #b91c1c;
+    }
+    .robot-card-body{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12.5px;
+      color: #1f2937;
+    }
+    .robot-meta-row{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      font-size: 12px;
+      color: #475569;
+    }
+    .robot-meta-row b{ color: #0f172a; font-weight: 600; }
+    .robot-meta-row code{
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11.5px;
+      color: #1e293b;
+      background: rgba(15,23,42,0.04);
+      border-radius: 6px;
+      padding: 1px 6px;
+    }
+    .robot-progress{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+    }
+    .robot-progress-bar{
+      flex: 1;
+      height: 8px;
+      border-radius: 999px;
+      background: #e5edf8;
+      overflow: hidden;
+      border: 1px solid rgba(37,99,235,0.12);
+    }
+    .robot-progress-fill{
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #2563eb, #10b981);
+      transition: width 240ms ease;
+    }
+    .robot-episode-list{
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-size: 12px;
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid rgba(15,23,42,0.06);
+      border-radius: 10px;
+      padding: 6px 8px;
+      background: rgba(255,255,255,0.6);
+    }
+    .robot-episode-row{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 2px 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .robot-episode-row .name{ flex: 0 0 78px; color: #334155; }
+    .robot-episode-row .steps{ flex: 0 0 70px; color: #64748b; }
+    .robot-episode-row .flag{
+      flex: 0 0 18px;
+      text-align: center;
+      font-weight: 700;
+    }
+    .robot-episode-row .flag.ok{ color: #10b981; }
+    .robot-episode-row .flag.fail{ color: #ef4444; }
+    .robot-episode-row .flag.pending{ color: #94a3b8; }
+    .robot-actions{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .robot-btn{
+      appearance: none;
+      cursor: pointer;
+      padding: 5px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(15,23,42,0.12);
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 600;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .robot-btn:hover{ background: #f1f5f9; border-color: rgba(15,23,42,0.22); }
+    .robot-btn:disabled{ opacity: 0.5; cursor: not-allowed; }
+    .robot-btn.danger{ background: #fee2e2; border-color: #fecaca; color: #991b1b; }
+    .robot-btn.danger:hover{ background: #fecaca; }
+
+    .robot-error{
+      font-size: 12px;
+      color: #b91c1c;
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: 6px 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 120px;
+      overflow: auto;
+    }
+
+    /* Eval video grid */
+    .robot-video-grid{
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 10px;
+    }
+    .robot-video-card{
+      border: 1px solid rgba(15,23,42,0.08);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #0b1220;
+      display: flex;
+      flex-direction: column;
+    }
+    .robot-video-card video{
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #000;
+      display: block;
+    }
+    .robot-video-card .meta{
+      padding: 4px 8px;
+      font-size: 11px;
+      color: #cbd5e1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #0b1220;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .robot-video-views{
+      display: flex;
+      gap: 4px;
+    }
+    .robot-video-tab{
+      appearance: none;
+      cursor: pointer;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: transparent;
+      color: #cbd5e1;
+      font-size: 10.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .robot-video-tab[data-active="true"]{
+      background: rgba(37,99,235,0.35);
+      border-color: rgba(37,99,235,0.6);
+      color: #ffffff;
+    }

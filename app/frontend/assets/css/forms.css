@@ -221,7 +221,7 @@
       padding-right: 4px;
     }
     .agent-transcript-empty{
-      font-size: 12px;
+      font-size: calc(var(--chat-font-size, 14px) - 1px);
       color: #64748b;
       border: 1px dashed rgba(15,23,42,0.12);
       border-radius: 12px;
@@ -237,14 +237,31 @@
       border: 1px solid rgba(15,23,42,0.08);
       background: rgba(255,255,255,0.86);
     }
+    /* Step 9: bubble alignment — user on the right, agent on the left.
+       Max-widths leave breathing room and make role obvious by position;
+       the small flat corner per side gives the speech-bubble feel. */
     .agent-chat-msg.user{
-      background: linear-gradient(180deg, rgba(239,246,255,0.96), rgba(224,242,254,0.92));
-      border-color: rgba(37,99,235,0.12);
+      align-self: flex-end;
+      max-width: 78%;
+      background: linear-gradient(180deg, #dbeafe, #bfdbfe);
+      border-color: rgba(37,99,235,0.18);
+      border-bottom-right-radius: 4px;
     }
     .agent-chat-msg.assistant{
+      align-self: flex-start;
+      max-width: 88%;
       background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.94));
+      border-bottom-left-radius: 4px;
     }
+    /* Failure cards have action buttons + tech-detail block; they need
+       slightly more horizontal room than a normal assistant bubble. */
+    .agent-chat-msg.agent-failure{
+      max-width: 96%;
+    }
+    /* Role badge becomes redundant once alignment carries the meaning;
+       keep it in DOM (other code may key off it) but hide visually. */
     .agent-chat-role{
+      display: none;
       font-size: 11px;
       font-weight: 800;
       letter-spacing: 0.03em;
@@ -252,15 +269,15 @@
       color: #475569;
     }
     .agent-chat-body{
-      font-size: 12px;
-      line-height: 1.55;
+      font-size: var(--chat-font-size, 14px);
+      line-height: 1.6;
       color: #0f172a;
       white-space: pre-wrap;
       word-break: break-word;
     }
     .agent-chat-meta{
-      font-size: 11px;
-      line-height: 1.45;
+      font-size: calc(var(--chat-font-size, 14px) - 2px);
+      line-height: 1.5;
       color: #64748b;
       white-space: pre-wrap;
     }
@@ -273,18 +290,18 @@
       display: flex;
       align-items: center;
       gap: 6px;
-      font-size: 13px;
+      font-size: calc(var(--chat-font-size, 14px) + 0.5px);
       font-weight: 700;
       color: #991b1b;
     }
     .agent-failure-icon{
-      font-size: 14px;
+      font-size: calc(var(--chat-font-size, 14px) + 1.5px);
     }
     .agent-failure-subhead{
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      font-size: 11px;
+      font-size: calc(var(--chat-font-size, 14px) - 2px);
     }
     .agent-failure-tag{
       display: inline-block;
@@ -293,12 +310,12 @@
       background: rgba(239,68,68,0.10);
       color: #b91c1c;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 10.5px;
+      font-size: calc(var(--chat-font-size, 14px) - 2.5px);
       letter-spacing: 0.02em;
     }
     .agent-failure-tech{
       margin-top: 4px;
-      font-size: 11px;
+      font-size: calc(var(--chat-font-size, 14px) - 2px);
     }
     .agent-failure-tech > summary{
       cursor: pointer;
@@ -336,7 +353,7 @@
       border: 1px solid rgba(15,23,42,0.12);
       background: #ffffff;
       color: #0f172a;
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 600;
       transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
     }
@@ -354,6 +371,627 @@
     .agent-failure-btn[disabled]{
       opacity: 0.55;
       cursor: not-allowed;
+    }
+    /* ===== Chat-first prompt card (Step 6) =====
+       Re-shapes .card-prompt into a chat surface: transcript fills the
+       middle, composer (toolbar + textarea + Send) sticks to the bottom.
+       All legacy form rows (.file, mode radios, Repeat/Save Template,
+       templates chip row, agent-panel metadata) are hidden in this mode
+       but kept in the DOM so existing JS getElementById hooks still find
+       them. Step 7 will move them into a settings drawer. */
+    .card-prompt.chat-first .card-body{
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      gap: 10px;
+    }
+    .card-prompt.chat-first .card-body > .file,
+    .card-prompt.chat-first .card-body > #planTemplatesRow,
+    .card-prompt.chat-first .card-body > #savePlanTemplateForm{
+      display: none !important;
+    }
+    .card-prompt.chat-first .card-body > .btns > #repeatPlanPromptBtn,
+    .card-prompt.chat-first .card-body > .btns > #savePlanTemplateBtn,
+    .card-prompt.chat-first .card-body > .btns > .hint{
+      display: none !important;
+    }
+    .card-prompt.chat-first .card-body > .btns{
+      display: flex;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .card-prompt.chat-first .card-body > .btns > #btnApplyInstruction{
+      flex: 1;
+      min-height: 38px;
+    }
+    /* Hide agent-panel metadata; keep transcript + (conditional) question. */
+    .card-prompt.chat-first #agentPanel > .agent-panel-head,
+    .card-prompt.chat-first #agentPanel > .agent-panel-copy{
+      display: none;
+    }
+    /* Agent panel becomes the chat container: takes available space, scrolls. */
+    .card-prompt.chat-first .card-body > #agentPanel{
+      flex: 1 1 auto;
+      min-height: 240px;
+      max-height: none;
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-prompt.chat-first #agentPanel .agent-transcript-wrap{
+      flex: 1 1 auto;
+      min-height: 0;
+      border-top: none;
+      padding-top: 0;
+      margin-top: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .card-prompt.chat-first #agentPanel .agent-transcript-wrap > .label{
+      display: none;
+    }
+    .card-prompt.chat-first #agentPanel .agent-transcript{
+      max-height: none;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    /* Pending question: still shown when not [hidden], visually distinct. */
+    .card-prompt.chat-first #agentPanel .agent-question-wrap{
+      flex: 0 0 auto;
+      padding: 8px 10px;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 12px;
+    }
+    /* Reorder children of card-body so chat is on top, composer at bottom. */
+    .card-prompt.chat-first .card-body > #agentPanel{ order: 1; }
+    .card-prompt.chat-first .card-body > #planPanel{ order: 2; }
+    .card-prompt.chat-first .card-body > .composer-tools{ order: 3; margin: 0; }
+    .card-prompt.chat-first .card-body > #sceneInputBlock{ order: 4; }
+    .card-prompt.chat-first .card-body > .btns{ order: 5; }
+    /* Composer textarea sizing in chat-first mode: compact by default,
+       resizable up to ~200px. The label above is muted so it doesn't
+       compete with the chat. */
+    .card-prompt.chat-first #sceneInputBlock > .label{
+      font-size: 10.5px;
+      color: #94a3b8;
+      margin-bottom: 4px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .card-prompt.chat-first #sceneInputBlock > .label > .hint{
+      display: none; /* the wordy "Use one instruction…" hint is too verbose for chat */
+    }
+    .card-prompt.chat-first #sceneInput{
+      min-height: 110px;
+      max-height: 260px;
+      font-size: var(--chat-font-size, 14px);
+      line-height: 1.55;
+      resize: vertical;
+    }
+    /* Card itself fills available vertical space so the chat panel can grow. */
+    .card-prompt.chat-first{
+      min-height: 480px;
+      --chat-font-size: 15px;
+    }
+
+    /* Header A−/A+ buttons that adjust --chat-font-size on the chat card. */
+    .chat-fontsize{
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      border: 1px solid rgba(15,23,42,0.08);
+    }
+    .chat-fontsize-btn{
+      appearance: none;
+      cursor: pointer;
+      min-width: 28px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: none;
+      background: transparent;
+      color: #475569;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      line-height: 1;
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .chat-fontsize-btn:hover{
+      background: #ffffff;
+      color: #0f172a;
+    }
+    .chat-fontsize-btn:disabled{
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ===== Composer shortcuts (Step 7): /command pills above the toolbar ===== */
+    .composer-shortcuts{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      margin-bottom: 0;
+    }
+    .composer-shortcuts-label{
+      font-size: 10.5px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-right: 2px;
+    }
+    .composer-chip{
+      appearance: none;
+      cursor: pointer;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(15,23,42,0.10);
+      background: #ffffff;
+      color: #475569;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 500;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .composer-chip:hover{
+      background: #f1f5f9;
+      border-color: rgba(15,23,42,0.22);
+      color: #0f172a;
+    }
+    /* Step 6 placement of the shortcuts row (just above .composer-tools) */
+    .card-prompt.chat-first .card-body > .composer-shortcuts{ order: 3; margin: 0; }
+    .card-prompt.chat-first .card-body > .composer-tools{ order: 4; }
+    .card-prompt.chat-first .card-body > #sceneInputBlock{ order: 5; }
+    .card-prompt.chat-first .card-body > .btns{ order: 6; }
+    .card-prompt.chat-first .card-body > #savePlanTemplateForm{ order: 7; }
+
+    /* Hide the legacy .card-actions deck in chat-first mode (Step 7).
+       Quick-prompt access lives in .composer-shortcuts; resample mode picker
+       moves into the settings drawer; the elements stay in DOM for any
+       remaining JS hooks (resampleModeSelect input is read by sim.js). */
+    .chat-first ~ .card-actions,
+    body:has(.chat-first) .card-actions{
+      display: none;
+    }
+
+    /* ===== Sessions dropdown (topbar) ===== */
+    .topbar-sessions-wrap{
+      position: relative;
+    }
+    .topbar-chev{
+      display: inline-block;
+      margin-left: 4px;
+      font-size: 10px;
+      color: #64748b;
+      transition: transform 140ms ease;
+    }
+    .topbar-session-btn[aria-expanded="true"] .topbar-chev{
+      transform: rotate(180deg);
+      color: #2563eb;
+    }
+    .sessions-dropdown{
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: min(420px, 92vw);
+      max-height: 70vh;
+      z-index: 80;
+      background: #ffffff;
+      border: 1px solid rgba(15,23,42,0.10);
+      border-radius: 14px;
+      box-shadow: 0 22px 56px rgba(2,6,23,0.18);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: sessions-dropdown-in 140ms ease-out;
+    }
+    .sessions-dropdown[hidden]{ display: none; }
+    @keyframes sessions-dropdown-in{
+      from{ opacity: 0; transform: translateY(-6px); }
+      to{ opacity: 1; transform: translateY(0); }
+    }
+    .sessions-dropdown-head{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(15,23,42,0.06);
+      background: linear-gradient(180deg, rgba(248,250,255,1), rgba(255,255,255,1));
+    }
+    .sessions-dropdown-title{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #475569;
+    }
+    .sessions-dropdown-action{
+      appearance: none;
+      cursor: pointer;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 8px;
+      border: 1px solid rgba(15,23,42,0.10);
+      background: #ffffff;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .sessions-dropdown-action:hover{
+      background: #f1f5f9;
+      color: #0f172a;
+      border-color: rgba(15,23,42,0.18);
+    }
+    .sessions-dropdown-action.is-spinning{
+      opacity: 0.5;
+      cursor: wait;
+    }
+    .sessions-dropdown-list{
+      overflow: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .sessions-dropdown-empty{
+      padding: 18px 14px;
+      font-size: 12px;
+      color: #64748b;
+      text-align: center;
+    }
+    .session-row{
+      appearance: none;
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .session-row:hover{
+      background: #f8fafc;
+      border-color: rgba(15,23,42,0.10);
+    }
+    .session-row.is-current{
+      background: rgba(37,99,235,0.08);
+      border-color: rgba(37,99,235,0.32);
+    }
+    .session-row.is-current::after{
+      content: "current";
+      align-self: flex-end;
+      margin-top: -18px;
+      margin-right: 0;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #1d4ed8;
+      background: rgba(37,99,235,0.10);
+      border-radius: 999px;
+      padding: 1px 7px;
+    }
+    .session-row-top{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .session-row-id{
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #1f2937;
+      font-weight: 600;
+    }
+    .session-row-time{
+      font-size: 10.5px;
+      color: #94a3b8;
+      flex: 0 0 auto;
+    }
+    .session-row-prompt{
+      font-size: 12px;
+      color: #334155;
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      word-break: break-word;
+    }
+    .session-row-prompt.is-empty{
+      font-style: italic;
+      color: #94a3b8;
+    }
+    .session-row-meta{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 10.5px;
+    }
+    .session-row-tag{
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #475569;
+      letter-spacing: 0.02em;
+    }
+    .session-row-tag.state-failed{ background: #fef2f2; color: #b91c1c; }
+    .session-row-tag.state-completed,
+    .session-row-tag.state-ready,
+    .session-row-tag.state-ok{ background: #ecfdf5; color: #047857; }
+    .session-row-tag.state-running,
+    .session-row-tag.state-in_progress{ background: #fef3c7; color: #92400e; }
+
+    /* ===== Settings drawer (Step 7): right slide-out for advanced options ===== */
+    .topbar-settings-btn{
+      min-width: 96px;
+      border-radius: 999px;
+      padding-inline: 14px;
+      white-space: nowrap;
+    }
+    .settings-backdrop{
+      position: fixed;
+      inset: 0;
+      z-index: 90;
+      background: rgba(15,23,42,0.36);
+      backdrop-filter: blur(2px);
+    }
+    .settings-drawer{
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(380px, 90vw);
+      z-index: 100;
+      background: #ffffff;
+      border-left: 1px solid rgba(15,23,42,0.08);
+      box-shadow: -22px 0 56px rgba(2,6,23,0.16);
+      display: flex;
+      flex-direction: column;
+      animation: settings-drawer-in 180ms ease-out;
+    }
+    /* `[hidden]` browser default and our `display: flex` above have the same
+       specificity (0,1,0); without these overrides the drawer would stay
+       open after toggleSettingsDrawer() puts the attribute back. */
+    .settings-drawer[hidden],
+    .settings-backdrop[hidden]{
+      display: none !important;
+    }
+    @keyframes settings-drawer-in{
+      from{ transform: translateX(20px); opacity: 0; }
+      to{ transform: translateX(0); opacity: 1; }
+    }
+    .settings-head{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(15,23,42,0.06);
+      background: linear-gradient(180deg, #fbfcff, #ffffff);
+    }
+    .settings-head h3{
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .settings-close{
+      appearance: none;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid rgba(15,23,42,0.10);
+      background: #ffffff;
+      color: #475569;
+      font-size: 16px;
+      line-height: 1;
+    }
+    .settings-close:hover{ background: #f1f5f9; }
+    .settings-body{
+      flex: 1 1 auto;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    .settings-section{
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .settings-section-title{
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+    .settings-section-hint{
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+      color: #94a3b8;
+      margin-left: 4px;
+    }
+    .settings-row{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .settings-row-stack{
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+    }
+    .settings-row.settings-hint,
+    .settings-hint{
+      font-size: 11px;
+      line-height: 1.5;
+      color: #64748b;
+    }
+    .settings-hint code{
+      background: rgba(15,23,42,0.06);
+      padding: 1px 5px;
+      border-radius: 6px;
+      font-size: 10.5px;
+    }
+    .settings-key{
+      font-size: 11px;
+      color: #64748b;
+      font-weight: 600;
+      margin-right: 4px;
+    }
+    .settings-val{
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      color: #0f172a;
+      word-break: break-all;
+    }
+    .settings-radio{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      color: #0f172a;
+    }
+
+    /* Composer toolbar (Step 5): quick-access buttons above Apply Instruction. */
+    .composer-tools{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+      margin-bottom: 6px;
+    }
+    .composer-btn{
+      appearance: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(15,23,42,0.12);
+      background: #ffffff;
+      color: #0f172a;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.2;
+      transition: background 120ms ease, border-color 120ms ease, transform 80ms ease;
+    }
+    .composer-btn:hover{
+      background: #f8fafc;
+      border-color: rgba(15,23,42,0.22);
+    }
+    .composer-btn:active{ transform: translateY(1px); }
+    .composer-btn[data-attached="true"]{
+      background: #ecfdf5;
+      border-color: #a7f3d0;
+      color: #065f46;
+    }
+    .composer-btn[data-mode="plan"]{
+      background: #eff6ff;
+      border-color: #bfdbfe;
+      color: #1e40af;
+    }
+    .composer-btn-icon{
+      font-size: 13px;
+      line-height: 1;
+    }
+    .composer-btn-label{
+      max-width: 160px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .composer-btn-count{
+      display: inline-block;
+      min-width: 16px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.06);
+      font-size: 10.5px;
+      font-weight: 700;
+      color: #475569;
+      text-align: center;
+    }
+    .composer-templates-wrap{
+      position: relative;
+    }
+    .composer-templates-menu{
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 30;
+      min-width: 280px;
+      max-width: 380px;
+      max-height: 320px;
+      overflow: auto;
+      padding: 6px;
+      background: #ffffff;
+      border: 1px solid rgba(15,23,42,0.12);
+      border-radius: 12px;
+      box-shadow: 0 18px 38px rgba(2,6,23,0.14);
+    }
+    .composer-templates-empty{
+      padding: 10px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .composer-templates-item{
+      appearance: none;
+      cursor: pointer;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: flex-start;
+      text-align: left;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: #0f172a;
+    }
+    .composer-templates-item:hover{
+      background: #f1f5f9;
+      border-color: rgba(15,23,42,0.06);
+    }
+    .composer-templates-name{
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .composer-templates-prompt{
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
     }
     /* Tool-steps block (Step 3): collapsible "what tools the agent ran". */
     .agent-tool-steps{

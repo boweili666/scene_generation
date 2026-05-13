@@ -751,6 +751,7 @@
       cy = cytoscape({
         container: document.getElementById("sceneGraph"),
         elements,
+        minZoom: 0.2,
         style: [
           {
             selector: 'node[kind = "object"]',
@@ -763,7 +764,8 @@
               "text-valign": "center",
               "shape": "round-rectangle",
               "padding": "11px",
-              "font-size": "11px",
+              "font-size": "12px",
+              "min-zoomed-font-size": 8,
               "font-weight": 700,
               "text-wrap": "wrap",
               "text-max-width": "130px",
@@ -799,6 +801,7 @@
               "target-arrow-shape": "triangle",
               "label": "data(label)",
               "font-size": "10px",
+              "min-zoomed-font-size": 7,
               "line-color": "rgba(78, 108, 173, 0.72)",
               "target-arrow-color": "rgba(78, 108, 173, 0.72)",
               "width": 2.1,
@@ -881,6 +884,19 @@
           numIter: 900
         }
       });
+
+      // Clamp the initial fit zoom so a few-node graph doesn't render labels
+      // 4× larger than the surrounding UI. After this, the user can zoom
+      // freely (no maxZoom cap on the cy instance).
+      const INITIAL_FIT_MAX_ZOOM = 1.4;
+      const clampInitialZoom = () => {
+        if (!cy) return;
+        if (cy.zoom() > INITIAL_FIT_MAX_ZOOM) {
+          cy.zoom({ level: INITIAL_FIT_MAX_ZOOM, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+          cy.center();
+        }
+      };
+      cy.ready(clampInitialZoom);
 
       resetGraphEditorSelection();
       bindSceneGraphInteractions();

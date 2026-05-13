@@ -68,6 +68,7 @@ from .scene_robot_service import (
     start_scene_robot_eval_job,
     start_scene_robot_train_job,
 )
+from . import scene_service_lifecycle
 from ..config import (
     DATASETS_DIR,
     LEROBOT_DATASETS_DIR,
@@ -85,8 +86,11 @@ You are the orchestrator agent for a 3D scene + robot pipeline. You decide,
 within one user message, which tools to call and in what order.
 
 Available tools (in normal pipeline order):
-- inspect_state: read what already exists in the current run (scene graph,
-  input image, scene USD, real2sim status, scene_robot status).
+- inspect_state: read what already exists in the current run. Returned
+  fields include `has_scene_graph`, `has_scene_usd`, `has_placements`,
+  `placements_object_count`, `scene_service_alive`, `scene_service_pid`,
+  `real2sim.status`, `scene_robot.status`. Use these flags to decide
+  which tools have unmet preconditions.
 - create_scene_graph: build a new scene graph from text and/or the
   current uploaded image. Replaces the existing scene graph for this run.
 - run_real2sim: launch the Real2Sim observed-object reconstruction job
@@ -106,6 +110,11 @@ Available tools (in normal pipeline order):
 - run_scene_robot_eval: closed-loop sim rollout of a trained checkpoint.
   Long job (minutes-to-tens of minutes). Returns immediately with a
   job id and a record directory for per-episode videos.
+- check_job_progress: peek at a previously-started long job (real2sim
+  or any scene_robot stage). Returns status, elapsed time, log tail,
+  and progress markers (mask N/M, episode N/M, step N/M). Use this
+  when the user asks "how's it going / is it done / what's it doing
+  now". Does NOT launch anything; safe to call any time.
 
 Operating rules:
 1. Always call `inspect_state` first if you do not already know the
@@ -122,14 +131,59 @@ Operating rules:
 4. Do NOT call generate_scene or run_scene_robot_collect while Real2Sim
    is still running or the scene graph contains real2sim objects without
    completed artifacts.
-5. If the user's request is ambiguous, ask a clarifying question instead
+5. PRECONDITION: Before calling `run_scene_robot_collect`, generate_scene
+   must have completed for the current run. Concretely, inspect_state
+   must show `has_scene_usd: true` AND `placements_object_count > 0`.
+   If either is missing, call `generate_scene` first, wait for it to
+   finish, and only then call `run_scene_robot_collect`. The robot
+   pipeline reads object world poses from placements; an empty
+   placements file makes the collect job fail with `ValueError: Unable
+   to resolve target ...`. The same precondition is enforced server-side
+   — calling out of order will return `{"ok": false, "next_step":
+   "generate_scene"}` and you should comply.
+6. SCENE SERVICE LIFECYCLE IS AUTO-MANAGED. The scene service and the
+   scene_robot collect script each spawn their own SimulationApp and
+   together they oversubscribe the GPU, so they cannot coexist:
+     - `generate_scene` will start the scene service if `inspect_state`
+       shows `scene_service_alive: false`. First start of the day takes
+       up to ~2 minutes (Isaac Sim cold-start) — that is normal; do not
+       retry.
+     - `run_scene_robot_collect` will stop the scene service if it is
+       alive, then launch the collect job. After collect, the scene
+       service stays DOWN until the next `generate_scene`.
+   Do NOT invoke any other lifecycle tool, run shell scripts, or tell
+   the user to start/stop the scene service manually unless `generate_scene`
+   itself returned `next_step: user_action_required` (which means the
+   automatic start failed for an environment reason, e.g. SCENE_PYTHON
+   is not set to an Isaac-capable interpreter).
+7. PROGRESS QUERIES: When the user asks how a previously-started long
+   job is going ("any update?", "is real2sim done?", "how many episodes
+   has collect run?", "what's it doing now?"), call `check_job_progress`
+   with the appropriate `kind`. Summarise the response in one or two
+   sentences — surface elapsed time, the most useful progress marker
+   (mask_selection, episode, step), and any error if the status is
+   "failed". Do NOT relaunch the job unless the user explicitly asks.
+8. If the user's request is ambiguous, ask a clarifying question instead
    of guessing. Tools you do not call are free; nothing happens.
-6. Final assistant text should be concise: state what you did and what
+9. Final assistant text should be concise: state what you did and what
    the user should do or wait for next.
 """.strip()
 
 
 # --------- Tool registry ---------
+
+
+def _count_placements(path: Path) -> int:
+    """Count entries in a placements_default.json file. Returns 0 if the file
+    is missing, unparseable, or contains an empty `{}` (which is the default
+    `RuntimeContext.ensure()` writes before generate_scene runs)."""
+    try:
+        if not path.exists():
+            return 0
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    return len(data) if isinstance(data, dict) else 0
 
 
 def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
@@ -193,6 +247,9 @@ def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str,
         if digest:
             scene_robot_block["log_digest"] = digest
 
+    placements_count = _count_placements(context.default_placements_path)
+    svc_status = scene_service_lifecycle.status()
+
     return {
         "session_id": context.session_id,
         "run_id": context.run_id,
@@ -201,6 +258,19 @@ def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str,
         "has_uploaded_image_this_turn": lctx.has_uploaded_image,
         "has_saved_image": context.latest_input_image.exists(),
         "has_scene_usd": context.scene_service_usd_path.exists(),
+        # has_placements + placements_object_count tell the agent whether
+        # generate_scene has already produced world-space poses for the
+        # scene-graph objects. If 0, run_scene_robot_collect MUST NOT be
+        # called yet — placements is what `resolve_target_prim` reads to
+        # find the target's world pose.
+        "has_placements": placements_count > 0,
+        "placements_object_count": placements_count,
+        # Scene service runtime state. Lifecycle is auto-managed by the
+        # generate_scene / run_scene_robot_collect tools; the agent should
+        # NOT call lifecycle helpers directly.
+        "scene_service_alive": svc_status.alive,
+        "scene_service_pid": svc_status.pid,
+        "scene_service_url": svc_status.url,
         "real2sim": real2sim_block,
         "scene_robot": scene_robot_block,
     }
@@ -286,6 +356,22 @@ def _tool_generate_scene(args: dict[str, Any], lctx: "LoopContext") -> dict[str,
     if scene_endpoint not in {"scene", "scene_new"}:
         scene_endpoint = "scene_new"
 
+    # Auto-managed lifecycle: scene_service must be running for generate_scene.
+    # If it's not alive, start it and block until /health is reachable. Cold
+    # start of Isaac Sim takes ~60-90s, so the first call after the GPU was
+    # released for a collect job will block for ~2 minutes max.
+    started_now = False
+    if not scene_service_lifecycle.is_alive():
+        try:
+            scene_service_lifecycle.start()
+            started_now = True
+        except RuntimeError as exc:
+            return {
+                "ok": False,
+                "error": f"Could not start scene service: {exc}",
+                "next_step": "user_action_required",
+            }
+
     try:
         scene_graph = json.loads(context.scene_graph_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
@@ -300,7 +386,7 @@ def _tool_generate_scene(args: dict[str, Any], lctx: "LoopContext") -> dict[str,
             scene_graph=scene_graph,
         )
     except RuntimeError as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": str(exc), "scene_service_started_this_call": started_now}
 
     normalized = _record_scene_generation_state(
         lctx.state,
@@ -316,13 +402,46 @@ def _tool_generate_scene(args: dict[str, Any], lctx: "LoopContext") -> dict[str,
         "resample_mode": normalized.get("resample_mode") or resample_mode,
         "warnings": repair_warnings,
         "scene_usd_present": context.scene_service_usd_path.exists(),
+        "scene_service_started_this_call": started_now,
+        "scene_service_alive": True,
     }
 
 
 def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
     context = lctx.runtime_context
     if not context.scene_graph_path.exists():
-        return {"ok": False, "error": "No scene graph in this run; create_scene_graph first."}
+        return {
+            "ok": False,
+            "error": "No scene graph in this run; create_scene_graph first.",
+            "next_step": "create_scene_graph",
+        }
+
+    # Hard precondition: scene_robot's `resolve_target_prim` reads the world
+    # pose of the target from placements_default.json. If placements is empty
+    # ({}, i.e. generate_scene hasn't run for this run) OR the scene USD is
+    # absent, the Isaac child will raise `ValueError: Unable to resolve
+    # target ...` and we waste a long startup. Reject up-front and tell the
+    # agent to call generate_scene first.
+    placements_count = _count_placements(context.default_placements_path)
+    has_scene_usd = context.scene_service_usd_path.exists()
+    if placements_count == 0 or not has_scene_usd:
+        missing = []
+        if placements_count == 0:
+            missing.append("placements is empty (generate_scene has not produced world poses)")
+        if not has_scene_usd:
+            missing.append("scene USD does not exist")
+        return {
+            "ok": False,
+            "error": (
+                "Scene preview is not ready for run_scene_robot_collect: "
+                + "; ".join(missing)
+                + ". Call generate_scene first, then retry run_scene_robot_collect."
+            ),
+            "next_step": "generate_scene",
+            "has_placements": placements_count > 0,
+            "placements_object_count": placements_count,
+            "has_scene_usd": has_scene_usd,
+        }
 
     try:
         scene_graph = json.loads(context.scene_graph_path.read_text(encoding="utf-8"))
@@ -334,6 +453,21 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
         target = _pick_default_scene_robot_target(scene_graph)
     if not target:
         return {"ok": False, "error": "No target available; the scene graph has no objects."}
+
+    # Auto-managed lifecycle: scene_service holds GPU memory + the Isaac
+    # daemon, so it must be down before scene_robot collect starts its own
+    # SimulationApp. Stop is idempotent (no-op if already dead) and includes
+    # a short GPU-release grace.
+    scene_service_was_alive = scene_service_lifecycle.is_alive()
+    if scene_service_was_alive:
+        try:
+            scene_service_lifecycle.stop()
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown
+            return {
+                "ok": False,
+                "error": f"Failed to stop scene service before collect: {exc}",
+                "next_step": "user_action_required",
+            }
 
     robot = (args.get("robot") or DEFAULT_SCENE_ROBOT_ROBOT).strip().lower()
     if robot not in {"agibot", "kinova", "r1lite"}:
@@ -377,6 +511,7 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
         "robot": robot,
         "target": target,
         "num_episodes": num_episodes,
+        "scene_service_stopped_this_call": scene_service_was_alive,
         "note": "scene_robot collect runs in background. Do not poll within this turn.",
     }
 
@@ -586,6 +721,178 @@ def _tool_run_scene_robot_eval(args: dict[str, Any], lctx: "LoopContext") -> dic
     }
 
 
+# --------- Progress polling helpers (used by check_job_progress) ---------
+
+# Lightweight progress markers across stages. We intentionally keep these
+# simple: they're advisory hints that the agent can summarise to the user,
+# not a contract. A missing pattern just means "no usable progress signal
+# yet" — the log tail is still returned.
+_PROGRESS_R2S_ATTEMPT = re.compile(r"\battempt=(\d+)\b")
+_PROGRESS_R2S_MASKS = re.compile(r"selected=(\d+)\s+total=(\d+)")
+_PROGRESS_EPISODE = re.compile(r"[Ee]pisode\s+(\d+)\s*/\s*(\d+)")
+_PROGRESS_STEP = re.compile(r"\bstep[:= ]\s*(\d+)\s*/\s*(\d+)\b")
+
+
+def _read_log_tail_str(log_path: Any, max_lines: int = 40, tail_kb: int = 64) -> str:
+    """Read the last `max_lines` non-noise lines from a log file as a single
+    newline-joined string. Returns "" on any error / missing file."""
+    if not log_path:
+        return ""
+    try:
+        path = Path(str(log_path))
+        if not path.exists() or not path.is_file():
+            return ""
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            f.seek(max(0, size - tail_kb * 1024))
+            blob = f.read().decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return ""
+    lines = blob.splitlines()
+    filtered = [ln for ln in lines if ln.strip() and not _TQDM_NOISE.search(ln)]
+    return "\n".join(filtered[-max_lines:])
+
+
+def _extract_progress_markers(log_tail: str, kind: str) -> dict[str, Any]:
+    """Pull simple progress hints out of a log tail by stage kind."""
+    out: dict[str, Any] = {}
+    if not log_tail:
+        return out
+    if kind == "real2sim":
+        attempts = _PROGRESS_R2S_ATTEMPT.findall(log_tail)
+        if attempts:
+            out["last_attempt"] = int(attempts[-1])
+        masks = _PROGRESS_R2S_MASKS.findall(log_tail)
+        if masks:
+            sel, tot = masks[-1]
+            out["mask_selection"] = {"selected": int(sel), "total": int(tot)}
+    elif kind in {"scene_robot_collect", "scene_robot_eval"}:
+        ep = _PROGRESS_EPISODE.findall(log_tail)
+        if ep:
+            cur, tot = ep[-1]
+            out["episode"] = {"current": int(cur), "total": int(tot)}
+    elif kind == "scene_robot_train":
+        step = _PROGRESS_STEP.findall(log_tail)
+        if step:
+            cur, tot = step[-1]
+            out["step"] = {"current": int(cur), "total": int(tot)}
+    return out
+
+
+def _resolve_job_log_path(kind: str, context: RuntimeContext) -> str:
+    """Map a kind to its per-run log file path."""
+    if kind == "real2sim":
+        return str(context.real2sim_log_path)
+    return {
+        "scene_robot_collect": str(context.scene_robot_log_path),
+        "scene_robot_convert": str(context.scene_robot_convert_log_path),
+        "scene_robot_train": str(context.scene_robot_train_log_path),
+        "scene_robot_eval": str(context.scene_robot_eval_log_path),
+    }.get(kind, "")
+
+
+def _tool_check_job_progress(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
+    """Peek at a long-running job's status + log tail without launching anything.
+
+    Designed for the user asking "what's running / how is it going".
+    Returns enough info for the agent to write a one-paragraph status:
+    status, elapsed time, last meaningful log lines, optional progress
+    markers (mask N/M, attempt=N, episode N/M, step N/M), and on failure
+    a structured digest with the last exception.
+    """
+    kind = (args.get("kind") or "").strip().lower()
+    valid_kinds = {
+        "real2sim",
+        "scene_robot_collect",
+        "scene_robot_convert",
+        "scene_robot_train",
+        "scene_robot_eval",
+    }
+    if kind not in valid_kinds:
+        return {
+            "ok": False,
+            "error": f"kind must be one of: {sorted(valid_kinds)}",
+        }
+
+    context = lctx.runtime_context
+    state = lctx.state
+    run_state = _ensure_run_state(state, context)
+
+    explicit_job_id = (args.get("job_id") or "").strip() if isinstance(args.get("job_id"), str) else ""
+    job_id = explicit_job_id or None
+
+    # Pull the latest job_id from session state if the caller didn't pass one.
+    # real2sim has its own slot; all scene_robot stages share one slot which
+    # is overwritten across stages — we still return the latest, but the
+    # agent can pass an explicit job_id to inspect a historical run.
+    if not job_id:
+        if kind == "real2sim":
+            r2s_state = run_state.get("real2sim") if isinstance(run_state.get("real2sim"), dict) else {}
+            job_id = (r2s_state or {}).get("job_id") or None
+        else:
+            sr_state = run_state.get("scene_robot") if isinstance(run_state.get("scene_robot"), dict) else {}
+            job_id = (sr_state or {}).get("job_id") or None
+
+    log_path = _resolve_job_log_path(kind, context)
+
+    # Live job dict (None if the web process restarted and the job entry
+    # is gone — the log file is still readable). We still return the log
+    # tail in that case so the agent isn't blind.
+    job_dict: dict[str, Any] | None = None
+    if job_id:
+        if kind == "real2sim":
+            job_dict = get_real2sim_job_status(job_id)
+        else:
+            job_dict = get_scene_robot_job_status(job_id)
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "kind": kind,
+        "job_id": job_id,
+        "log_path": log_path,
+    }
+
+    if job_dict:
+        out["status"] = str(job_dict.get("status") or "unknown")
+        out["created_at"] = job_dict.get("created_at")
+        out["updated_at"] = job_dict.get("updated_at")
+        if job_dict.get("status") == "running" and job_dict.get("created_at"):
+            try:
+                started = datetime.fromisoformat(str(job_dict["created_at"]).replace("Z", "+00:00"))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                out["elapsed_seconds"] = int(elapsed)
+            except Exception:  # noqa: BLE001
+                pass
+        if job_dict.get("error"):
+            out["error"] = _tail_text(str(job_dict.get("error")), max_chars=600) or str(job_dict.get("error"))[:600]
+    else:
+        out["status"] = "unknown"
+        if not job_id:
+            out["note"] = (
+                f"No {kind} job_id is tracked in session state. "
+                f"Has the job been started this session?"
+            )
+        else:
+            out["note"] = (
+                f"job_id {job_id} is not in the live job registry "
+                f"(web restart or expired). Log tail still available."
+            )
+
+    out["log_tail"] = _read_log_tail_str(log_path, max_lines=40)
+    progress = _extract_progress_markers(out["log_tail"], kind)
+    if progress:
+        out["progress"] = progress
+
+    if out.get("status") == "failed":
+        digest = _extract_log_failure_digest(log_path)
+        if digest:
+            out["failure_digest"] = digest
+
+    return out
+
+
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], "LoopContext"], dict[str, Any]]] = {
     "inspect_state": _tool_inspect_state,
     "create_scene_graph": _tool_create_scene_graph,
@@ -595,6 +902,7 @@ TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], "LoopContext"], dict[str, Any
     "run_scene_robot_convert": _tool_run_scene_robot_convert,
     "run_scene_robot_train": _tool_run_scene_robot_train,
     "run_scene_robot_eval": _tool_run_scene_robot_eval,
+    "check_job_progress": _tool_check_job_progress,
 }
 
 
@@ -742,6 +1050,42 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "num_episodes": {"type": "integer", "minimum": 1, "maximum": 500},
                 "record_dir": {"type": "string"},
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "check_job_progress",
+        "description": (
+            "Peek at a long-running job (real2sim or any scene_robot stage) "
+            "without launching anything new. Returns status, elapsed time, "
+            "the last meaningful log lines, and (when derivable) a progress "
+            "marker like `mask_selection`, `episode`, or `step`. Use this "
+            "when the user asks how a previously-started job is going. "
+            "Defaults to the latest job_id of that kind tracked in session "
+            "state; pass `job_id` explicitly to inspect a specific historical "
+            "run."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "real2sim",
+                        "scene_robot_collect",
+                        "scene_robot_convert",
+                        "scene_robot_train",
+                        "scene_robot_eval",
+                    ],
+                    "description": "Which pipeline stage to inspect.",
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "Optional explicit job id. If omitted, falls back to the latest job of `kind` from session state.",
+                },
+            },
+            "required": ["kind"],
             "additionalProperties": False,
         },
     },

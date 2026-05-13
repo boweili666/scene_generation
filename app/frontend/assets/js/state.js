@@ -39,7 +39,8 @@
       loadQueue: [],
       queueBusy: false,
       loadingMerged: false,
-      mergedUrl: null
+      mergedUrl: null,
+      mergedRoot: null
     };
 
     const real2simLogState = {
@@ -282,6 +283,268 @@
       }
     }
 
+    /* ===== Sessions dropdown: list, switch, restore ===== */
+    // Fetches GET /sessions and renders rows into #sessionsList. Clicking a row
+    // updates the runtime localStorage to that session, resets the in-memory UI
+    // state (without creating a new session), and calls restoreAgentState() so
+    // the chat / graph / preview reload from the chosen session's agent_state.
+
+    let _sessionsLoadInFlight = null;
+
+    function formatRelativeTime(tsSeconds) {
+      if (!tsSeconds || !Number.isFinite(tsSeconds)) return "";
+      const diff = Date.now() / 1000 - tsSeconds;
+      if (diff < 60) return "just now";
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+      if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+      const d = new Date(tsSeconds * 1000);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function shortenSessionId(sessionId) {
+      if (!sessionId) return "";
+      // Keep enough to be unique in practice; full id available via title attr.
+      return sessionId.length > 22 ? sessionId.slice(0, 22) + "…" : sessionId;
+    }
+
+    function renderSessionsList(sessions) {
+      const list = document.getElementById("sessionsList");
+      if (!list) return;
+      list.innerHTML = "";
+      if (!Array.isArray(sessions) || sessions.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "sessions-dropdown-empty";
+        empty.textContent = "No prior sessions yet.";
+        list.appendChild(empty);
+        return;
+      }
+
+      const currentSessionId = runtimeSessionState.sessionId
+        || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY)
+        || "";
+
+      sessions.forEach((s) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "session-row";
+        row.setAttribute("role", "option");
+        row.title = s.session_id;
+        if (s.session_id === currentSessionId) row.classList.add("is-current");
+        row.addEventListener("click", () => {
+          switchToSession(s.session_id, s.current_run_id || null).catch((err) => {
+            console.error(err);
+            toast("err", "Switch failed", String(err));
+          });
+        });
+
+        const top = document.createElement("div");
+        top.className = "session-row-top";
+        const idEl = document.createElement("span");
+        idEl.className = "session-row-id";
+        idEl.textContent = shortenSessionId(s.session_id);
+        const timeEl = document.createElement("span");
+        timeEl.className = "session-row-time";
+        timeEl.textContent = formatRelativeTime(s.updated_at_ts);
+        top.appendChild(idEl);
+        top.appendChild(timeEl);
+        row.appendChild(top);
+
+        const prompt = document.createElement("div");
+        prompt.className = "session-row-prompt";
+        if (s.last_prompt) {
+          prompt.textContent = s.last_prompt;
+        } else {
+          prompt.classList.add("is-empty");
+          prompt.textContent = "(no user prompt yet)";
+        }
+        row.appendChild(prompt);
+
+        const meta = document.createElement("div");
+        meta.className = "session-row-meta";
+        const runs = document.createElement("span");
+        runs.className = "session-row-tag";
+        runs.textContent = `${s.run_count || 0} run${s.run_count === 1 ? "" : "s"}`;
+        meta.appendChild(runs);
+        if (s.current_state) {
+          const state = document.createElement("span");
+          state.className = `session-row-tag state-${String(s.current_state).toLowerCase().replace(/\s+/g, "_")}`;
+          state.textContent = s.current_state;
+          meta.appendChild(state);
+        }
+        if (s.last_intent) {
+          const intent = document.createElement("span");
+          intent.className = "session-row-tag";
+          intent.textContent = s.last_intent;
+          meta.appendChild(intent);
+        }
+        row.appendChild(meta);
+
+        list.appendChild(row);
+      });
+    }
+
+    async function refreshSessionsList() {
+      const list = document.getElementById("sessionsList");
+      const refreshBtn = document.getElementById("sessionsRefreshBtn");
+      if (refreshBtn) refreshBtn.classList.add("is-spinning");
+      if (list) list.innerHTML = '<div class="sessions-dropdown-empty">Loading…</div>';
+      if (_sessionsLoadInFlight) {
+        try { await _sessionsLoadInFlight; } catch (e) { /* swallowed */ }
+      }
+      _sessionsLoadInFlight = (async () => {
+        const res = await fetch("/sessions");
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load sessions");
+        renderSessionsList(data.sessions || []);
+      })();
+      try {
+        await _sessionsLoadInFlight;
+      } catch (err) {
+        console.error(err);
+        if (list) {
+          list.innerHTML = "";
+          const empty = document.createElement("div");
+          empty.className = "sessions-dropdown-empty";
+          empty.textContent = String(err);
+          list.appendChild(empty);
+        }
+      } finally {
+        _sessionsLoadInFlight = null;
+        if (refreshBtn) refreshBtn.classList.remove("is-spinning");
+      }
+    }
+
+    function setSessionsDropdownOpen(open) {
+      const dd = document.getElementById("sessionsDropdown");
+      const btn = document.getElementById("btnSessions");
+      if (!dd || !btn) return;
+      dd.hidden = !open;
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    function toggleSessionsDropdown() {
+      const dd = document.getElementById("sessionsDropdown");
+      if (!dd) return;
+      const opening = dd.hidden;
+      setSessionsDropdownOpen(opening);
+      if (opening) {
+        refreshSessionsList();
+      }
+    }
+
+    // Click outside / Escape closes the dropdown.
+    document.addEventListener("click", (evt) => {
+      const dd = document.getElementById("sessionsDropdown");
+      if (!dd || dd.hidden) return;
+      const wrap = evt.target.closest(".topbar-sessions-wrap");
+      if (!wrap) setSessionsDropdownOpen(false);
+    });
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key !== "Escape") return;
+      const dd = document.getElementById("sessionsDropdown");
+      if (dd && !dd.hidden) setSessionsDropdownOpen(false);
+    });
+
+    async function switchToSession(sessionId, runId) {
+      if (!sessionId) return;
+      const currentSessionId = runtimeSessionState.sessionId
+        || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY)
+        || "";
+      // Clicking the active session is a no-op.
+      if (sessionId === currentSessionId) {
+        setSessionsDropdownOpen(false);
+        return;
+      }
+
+      // If the runId wasn't passed (or was empty), ask the server which run
+      // is current for this session. Falls back to whatever the session has.
+      let resolvedRunId = runId || "";
+      if (!resolvedRunId) {
+        try {
+          const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/runs`);
+          const data = await res.json();
+          if (res.ok) {
+            resolvedRunId = data.current_run_id
+              || (Array.isArray(data.runs) && data.runs[0] && data.runs[0].run_id)
+              || "";
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (!resolvedRunId) {
+        toast("err", "Switch failed", "Session has no runs to load.");
+        return;
+      }
+
+      // Reset transient UI state (mirrors startNewSession's reset block) but
+      // do NOT clear localStorage — we're about to write the new ids in.
+      invalidateReal2SimMonitor();
+      invalidateSceneRobotMonitor();
+      interactionState.startedAt = null;
+      interactionState.lastInstruction = "";
+      interactionState.lastJson = null;
+      interactionState.currentSceneGraph = null;
+      real2simLogState.offset = 0;
+      real2simLogState.path = "real2sim.log";
+
+      clearThreeViewer();
+      setPreviewMessage("Loading session…");
+      resetSimProgress();
+      resetSceneDebug();
+      resetAgentPanel();
+      setAgentErrorInfo(null);
+      const sceneSvc = document.getElementById("sceneSvcStatus");
+      if (sceneSvc) sceneSvc.textContent = "Idle";
+      const simText = document.getElementById("statusSimText");
+      if (simText) simText.textContent = "Idle";
+      const sceneSvcResult = document.getElementById("sceneSvcResult");
+      if (sceneSvcResult) sceneSvcResult.textContent = "Waiting for response...";
+      const jsonStatus = document.getElementById("jsonStatus");
+      if (jsonStatus) jsonStatus.textContent = "Idle";
+      const jsonPreview = document.getElementById("jsonPreview");
+      if (jsonPreview) jsonPreview.textContent = "Waiting for result...";
+      const fb = document.getElementById("feedbackBox");
+      if (fb) fb.textContent = "-";
+      const r2sLog = document.getElementById("real2simLog");
+      if (r2sLog) r2sLog.textContent = "Waiting for Real2Sim logs...";
+      const r2sStatus = document.getElementById("real2simLogStatus");
+      if (r2sStatus) r2sStatus.textContent = "Idle";
+      const sceneInputEl = document.getElementById("sceneInput");
+      if (sceneInputEl) sceneInputEl.value = "";
+      clearReferenceImageInput();
+      setResampleMode("joint");
+      updateInputMeta();
+      setMetrics({ objects: "-", edges: "-", score: "-" });
+      setPill("model", "", "Idle");
+      setPill("graph", "", "Loading...");
+      setPill("sim", "", "Idle");
+      latestSessionState = null;
+      renderPipelineStrip();
+
+      // Point runtime state at the chosen session/run, persist, and reload.
+      runtimeSessionState.sessionId = sessionId;
+      runtimeSessionState.runId = resolvedRunId;
+      runtimeSessionState.context = null;
+      runtimeSessionState.initializing = null;
+      persistRuntimeState();
+      setSessionsDropdownOpen(false);
+
+      try {
+        refreshRuntimeRenderImage();
+        const restored = await restoreAgentState();
+        if (!restored?.scene_graph) {
+          await loadSceneGraph();
+        }
+        toast("ok", "Session loaded", `Switched to ${shortenSessionId(sessionId)}`);
+      } catch (err) {
+        console.error(err);
+        toast("err", "Session load failed", String(err));
+        setPill("graph", "err", "Error");
+      }
+    }
+
     function getReal2SimStateFromPayload(payload = {}) {
       if (payload?.session_state?.current_run?.real2sim && typeof payload.session_state.current_run.real2sim === "object") {
         return payload.session_state.current_run.real2sim;
@@ -421,6 +684,7 @@
         latestSessionState = sessionState;
       }
       renderPipelineStrip();
+      if (typeof settingsSyncSession === "function") settingsSyncSession();
     }
 
     // ---- Pipeline progress strip (Step 1 of UI redesign) ---------------------
@@ -930,6 +1194,19 @@
         renderer.setSize(w, h, false);
       }
       window.addEventListener("resize", resize);
+      // Watch the viewport container for any layout-driven size change
+      // (tab switch making the pane visible, splitter drag, font-size A+/A−
+      // shifting the column, settings drawer opening). Without this, the
+      // canvas's internal pixel buffer stays at whatever it was when the
+      // viewer first initialized — typically the small/zero size of a hidden
+      // tab — and the browser stretches that low-res bitmap, looking blurry.
+      if (typeof ResizeObserver !== "undefined") {
+        try {
+          const ro = new ResizeObserver(() => resize());
+          ro.observe(container);
+          viewerState.containerResizeObserver = ro;
+        } catch (e) { /* harmless — fall back to window resize only */ }
+      }
       resize();
 
       function animate() {
@@ -1014,6 +1291,7 @@
       viewerState.queueBusy = false;
       viewerState.loadingMerged = false;
       viewerState.mergedUrl = null;
+      viewerState.mergedRoot = null;
       if (viewerState.controls) {
         viewerState.controls.target.set(0, 0, 0);
         viewerState.controls.update();
@@ -1320,15 +1598,46 @@
       return next;
     }
 
+    // Strip ?ts=… cache-bust query when comparing URLs. Otherwise every
+    // backend mtime tick produces a "new" URL and the merged glb gets loaded
+    // again and again, stacking duplicate geometry in the scene.
+    function _previewUrlKey(url) {
+      if (!url) return "";
+      const i = url.indexOf("?");
+      return i >= 0 ? url.slice(0, i) : url;
+    }
+    function _disposeMergedRoot() {
+      const old = viewerState.mergedRoot;
+      if (!old) return;
+      try {
+        viewerState.scene.remove(old);
+      } catch (e) { /* ignore */ }
+      old.traverse((node) => {
+        if (node.isMesh) {
+          if (node.geometry && typeof node.geometry.dispose === "function") {
+            node.geometry.dispose();
+          }
+          const mats = Array.isArray(node.material) ? node.material : (node.material ? [node.material] : []);
+          mats.forEach((m) => {
+            if (m && typeof m.dispose === "function") m.dispose();
+          });
+        }
+      });
+      viewerState.spinRoots = viewerState.spinRoots.filter((r) => r !== old);
+      viewerState.mergedRoot = null;
+    }
+
     async function addGlbToViewer(url, opts = {}) {
       await showThreeViewer();
       if (!url) return false;
+      const urlKey = _previewUrlKey(url);
       if (opts.isMerged) {
-        if (viewerState.mergedUrl === url || viewerState.loadingMerged) return false;
+        // Dedupe by path-only key: a fresh ?ts= must not bypass the guard.
+        if (_previewUrlKey(viewerState.mergedUrl) === urlKey || viewerState.loadingMerged) return false;
         viewerState.loadingMerged = true;
       } else {
-        if (viewerState.loadedUrls.has(url) || viewerState.loadingUrls.has(url)) return false;
-        viewerState.loadingUrls.add(url);
+        if (viewerState.loadedUrls.has(urlKey) || viewerState.loadingUrls.has(urlKey)) return false;
+        viewerState.loadingUrls.add(urlKey);
       }
       try {
         const gltf = await new Promise((resolve, reject) => {
@@ -1346,13 +1655,16 @@
           }
         });
         if (opts.isMerged) {
+          // Replace any previously-loaded merged scene rather than stacking it.
+          _disposeMergedRoot();
           root.userData.isMerged = true;
           layoutMergedSceneRoot(root, opts.manifest || null);
           viewerState.mergedUrl = url;
+          viewerState.mergedRoot = root;
         } else {
           root.userData.isMerged = false;
           fitRootToUnit(root);
-          viewerState.loadedUrls.add(url);
+          viewerState.loadedUrls.add(urlKey);
         }
         viewerState.spinRoots.push(root);
         viewerState.scene.add(root);
@@ -1365,7 +1677,7 @@
         if (opts.isMerged) {
           viewerState.loadingMerged = false;
         } else {
-          viewerState.loadingUrls.delete(url);
+          viewerState.loadingUrls.delete(urlKey);
         }
       }
     }
@@ -1373,20 +1685,23 @@
     function enqueueGlbLoad(url, opts = {}) {
       if (!url) return false;
       const isMerged = !!opts.isMerged;
+      const urlKey = _previewUrlKey(url);
       if (isMerged) {
-        if (viewerState.mergedUrl === url || viewerState.loadingMerged) return false;
+        // Same path-only dedupe as addGlbToViewer; prevents the queue from
+        // stacking duplicate merged loads when ?ts= changes between polls.
+        if (_previewUrlKey(viewerState.mergedUrl) === urlKey || viewerState.loadingMerged) return false;
       } else {
         if (
-          viewerState.loadedUrls.has(url) ||
-          viewerState.loadingUrls.has(url) ||
-          viewerState.queuedUrls.has(url)
+          viewerState.loadedUrls.has(urlKey) ||
+          viewerState.loadingUrls.has(urlKey) ||
+          viewerState.queuedUrls.has(urlKey)
         ) {
           return false;
         }
       }
       viewerState.loadQueue.push({ url, opts: { isMerged, manifest: opts.manifest || null } });
       if (!isMerged) {
-        viewerState.queuedUrls.add(url);
+        viewerState.queuedUrls.add(urlKey);
       }
       processGlbQueue();
       return true;
@@ -1400,13 +1715,14 @@
           const item = viewerState.loadQueue.shift();
           if (!item) continue;
           const { url, opts } = item;
+          const urlKey = _previewUrlKey(url);
           try {
             const added = await addGlbToViewer(url, opts);
             if (added && !opts?.isMerged) {
-              viewerState.queuedUrls.delete(url);
+              viewerState.queuedUrls.delete(urlKey);
             }
           } catch (e) {
-            viewerState.queuedUrls.delete(url);
+            viewerState.queuedUrls.delete(urlKey);
             console.error("GLB load failed:", url, e);
             setPreviewMessage("GLB load failed in browser. Open DevTools Console for details.");
           }

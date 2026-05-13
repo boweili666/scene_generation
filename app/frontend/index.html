@@ -27,8 +27,29 @@
       </div>
 
       <div class="topbar-actions">
+        <div class="topbar-sessions-wrap">
+          <button type="button" class="toolbtn toolbtn-quiet topbar-session-btn" id="btnSessions"
+                  onclick="toggleSessionsDropdown()" aria-haspopup="true" aria-expanded="false"
+                  title="Browse and load previous sessions">
+            Sessions <span class="topbar-chev" aria-hidden="true">▾</span>
+          </button>
+          <div class="sessions-dropdown" id="sessionsDropdown" hidden>
+            <div class="sessions-dropdown-head">
+              <span class="sessions-dropdown-title">Recent sessions</span>
+              <button type="button" class="sessions-dropdown-action" id="sessionsRefreshBtn"
+                      onclick="refreshSessionsList()" title="Reload list">↻</button>
+            </div>
+            <div class="sessions-dropdown-list" id="sessionsList" role="listbox">
+              <div class="sessions-dropdown-empty">Loading…</div>
+            </div>
+          </div>
+        </div>
         <button type="button" class="toolbtn toolbtn-quiet topbar-session-btn" id="btnNewSession" onclick="startNewSession()">
           New Session
+        </button>
+        <button type="button" class="toolbtn toolbtn-quiet topbar-settings-btn" id="btnSettings"
+                onclick="toggleSettingsDrawer()" title="Settings, advanced options">
+          ⚙ Settings
         </button>
       </div>
 
@@ -42,24 +63,28 @@
   </div>
 
   <div class="wrap">
-    <div class="grid">
+    <div class="grid" id="splitGrid">
 
-      <!-- Left Column: Prompt + Inputs -->
-      <div class="card card-prompt">
+      <!-- Left Column: Chat (Step 6) + legacy form rows kept hidden for back-compat -->
+      <div class="card card-prompt chat-first">
         <div class="card-header">
-          <h2>Prompt</h2>
+          <h2>Chat</h2>
           <div class="meta">
+            <div class="chat-fontsize" role="group" aria-label="Chat text size">
+              <button type="button" class="chat-fontsize-btn" id="chatFontDecBtn" title="Smaller text" aria-label="Smaller text">A−</button>
+              <button type="button" class="chat-fontsize-btn" id="chatFontIncBtn" title="Larger text" aria-label="Larger text">A+</button>
+            </div>
             <span class="kpi"><b id="metaChars">0</b> chars</span>
             <span class="kpi"><b id="metaTok">0</b> tok</span>
           </div>
         </div>
         <div class="card-body">
-          <div>
+          <div id="sceneInputBlock">
             <div class="label">
               Describe or edit the scene
               <span class="hint">Use one instruction for new graph, graph edits, or placement edits</span>
             </div>
-            <textarea id="sceneInput" placeholder='e.g. "A table in the center. A chair is to the left of the table. A lamp is near the wall."'></textarea>
+            <textarea id="sceneInput" placeholder="Type a message…  (Enter to send, Shift+Enter for newline)"></textarea>
           </div>
 
           <div class="file">
@@ -79,8 +104,45 @@
             <input id="classDirPicker" type="file" webkitdirectory multiple />
           </div>
 
+          <!-- Composer shortcuts (Step 7): pre-built prompts that fill the textarea.
+               Replaces the old standalone "Run" cards (Real2Sim / scene_robot / resample).
+               Each click invokes the same handler that the legacy buttons used. -->
+          <div class="composer-shortcuts" id="composerShortcuts">
+            <span class="composer-shortcuts-label">Quick:</span>
+            <button type="button" class="composer-chip" onclick="runReal2Sim()" title="Draft a Real2Sim prompt">/real2sim</button>
+            <button type="button" class="composer-chip" onclick="runRobotCollect()" title="Draft a scene_robot collect prompt">/robot collect</button>
+            <button type="button" class="composer-chip" onclick="runResample()" title="Draft a resample-from-scratch prompt (uses Sampling Mode in ⚙)">/resample</button>
+            <button type="button" class="composer-chip" onclick="callSceneService('scene')" title="Draft a keep-layout scene-service prompt">/keep layout</button>
+          </div>
+
+          <!-- Composer toolbar (Step 5): compact quick-access for image / mode / templates.
+               The full Reference Image, Class Names Folder, mode radios and Templates row
+               below remain functional; this toolbar is an additional shortcut, paving the
+               way for Step 6's chat-first input layout. -->
+          <div class="composer-tools" id="composerTools">
+            <button type="button" class="composer-btn" id="composerImageBtn"
+                    onclick="composerPickImage()" title="Attach reference image">
+              <span class="composer-btn-icon">📎</span>
+              <span class="composer-btn-label" id="composerImageLabel">Image</span>
+            </button>
+            <button type="button" class="composer-btn" id="composerModeBtn"
+                    onclick="composerToggleMode()" title="Switch agent mode">
+              <span class="composer-btn-icon" id="composerModeIcon">⚡</span>
+              <span class="composer-btn-label" id="composerModeLabel">Tool-use loop</span>
+            </button>
+            <div class="composer-templates-wrap">
+              <button type="button" class="composer-btn" id="composerTemplatesBtn"
+                      onclick="composerToggleTemplates()" title="Insert a saved template">
+                <span class="composer-btn-icon">📋</span>
+                <span class="composer-btn-label">Templates</span>
+                <span class="composer-btn-count" id="composerTemplatesCount" hidden>0</span>
+              </button>
+              <div class="composer-templates-menu" id="composerTemplatesMenu" hidden role="menu"></div>
+            </div>
+          </div>
+
           <div class="btns">
-            <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Apply Instruction</button>
+            <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Send</button>
             <button class="toolbtn" id="repeatPlanPromptBtn" onclick="repeatLastPlanPrompt()" disabled
                     title="No saved plan prompt yet — propose a plan first.">↻ Repeat</button>
             <button class="toolbtn" id="savePlanTemplateBtn" onclick="saveCurrentAsTemplate()"
@@ -270,39 +332,40 @@
         </div>
       </div>
 
-      <!-- Center Column: Graph -->
-      <div class="card card-graph">
-        <div class="card-header">
-          <h2>Scene Graph</h2>
-          <div class="meta">
-            <span class="kpi">Tip: <b>Double-click</b> to edit • <b>Shift-click 2 nodes</b> to link</span>
-          </div>
-        </div>
-        <div class="card-body" style="padding:14px;">
-          <div class="graph-wrap">
-            <div id="sceneGraph"></div>
-            <div class="graph-tip">Double-click background to add • Right-click or Delete to remove</div>
-          </div>
-        </div>
-      </div>
+      <!-- Drag handle to adjust the chat / preview width ratio. -->
+      <div class="grid-splitter" id="gridSplitter" role="separator" aria-orientation="vertical"
+           aria-label="Resize chat and preview columns" tabindex="0"
+           title="Drag to resize · double-click to reset"></div>
 
-      <!-- Right Column: Simulation / Logs / Diagnostics (Step 4: tabbed) -->
+      <!-- Right Column: Graph / Sim / Logs / Masks / Diagnostics (Step 8: 2-col tabbed) -->
       <div class="card card-preview col-right">
         <div class="card-header">
-          <h2 id="rightPanelTitle">Simulation Preview</h2>
+          <h2 id="rightPanelTitle">Scene Graph</h2>
           <div class="meta">
             <span class="kpi"><b id="sceneSvcStatus">Idle</b></span>
+            <span class="hint" id="diagText" style="margin-left:8px;">No diagnostics yet</span>
+            <span class="hint" id="jsonStatus" style="display:none;">Idle</span>
           </div>
         </div>
 
         <div class="card-body right-tabbed">
           <div class="right-tabs" role="tablist">
-            <button type="button" class="right-tab-btn" data-tab-target="sim"  data-active="true" role="tab" onclick="switchRightTab('sim')">Sim</button>
-            <button type="button" class="right-tab-btn" data-tab-target="logs"                    role="tab" onclick="switchRightTab('logs')">Logs</button>
-            <button type="button" class="right-tab-btn" data-tab-target="diag"                    role="tab" onclick="switchRightTab('diag')">Diagnostics</button>
+            <button type="button" class="right-tab-btn" data-tab-target="graph" data-active="true" role="tab" onclick="switchRightTab('graph', { manual: true })">Graph</button>
+            <button type="button" class="right-tab-btn" data-tab-target="sim"   role="tab" onclick="switchRightTab('sim', { manual: true })">Sim</button>
+            <button type="button" class="right-tab-btn" data-tab-target="robot" role="tab" onclick="switchRightTab('robot', { manual: true })">Robot</button>
+            <button type="button" class="right-tab-btn" data-tab-target="logs"  role="tab" onclick="switchRightTab('logs', { manual: true })">Logs</button>
+            <button type="button" class="right-tab-btn" data-tab-target="masks" role="tab" onclick="switchRightTab('masks', { manual: true })">Masks</button>
+            <button type="button" class="right-tab-btn" data-tab-target="diag"  role="tab" onclick="switchRightTab('diag', { manual: true })">Diagnostics</button>
           </div>
 
-          <div class="right-tab-pane" data-tab="sim" data-active="true">
+          <div class="right-tab-pane right-tab-pane-graph" data-tab="graph" data-active="true">
+            <div class="graph-wrap">
+              <div id="sceneGraph"></div>
+              <div class="graph-tip">Double-click background to add • Right-click or Delete to remove • Double-click a node to edit • Shift-click 2 nodes to link</div>
+            </div>
+          </div>
+
+          <div class="right-tab-pane" data-tab="sim">
             <div class="imgbox">
               <div id="threeViewport"></div>
               <img id="renderImage" src="/render_image" alt="render"/>
@@ -322,6 +385,39 @@
             </div>
           </div>
 
+          <div class="right-tab-pane" data-tab="robot">
+            <div class="right-tab-section robot-card" id="robotCollectCard">
+              <div class="label">Collect <span class="hint" id="robotCollectStatus">idle</span></div>
+              <div class="robot-card-body" id="robotCollectBody">
+                <div class="artifact-empty">No collect job yet — start one from chat to see status here.</div>
+              </div>
+            </div>
+            <div class="right-tab-section robot-card" id="robotGraspCard">
+              <div class="label">Grasp Plan <span class="hint" id="robotGraspStatus">idle</span></div>
+              <div class="robot-card-body" id="robotGraspBody">
+                <div class="artifact-empty">No grasp plan yet — runs automatically before collect.</div>
+              </div>
+            </div>
+            <div class="right-tab-section robot-card" id="robotDatasetCard">
+              <div class="label">LeRobot Dataset <span class="hint" id="robotDatasetStatus">idle</span></div>
+              <div class="robot-card-body" id="robotDatasetBody">
+                <div class="artifact-empty">No converted dataset yet — run scene_robot convert.</div>
+              </div>
+            </div>
+            <div class="right-tab-section robot-card" id="robotTrainCard">
+              <div class="label">Train <span class="hint" id="robotTrainStatus">idle</span></div>
+              <div class="robot-card-body" id="robotTrainBody">
+                <div class="artifact-empty">No train output yet.</div>
+              </div>
+            </div>
+            <div class="right-tab-section robot-card" id="robotEvalCard">
+              <div class="label">Eval <span class="hint" id="robotEvalStatus">idle</span></div>
+              <div class="robot-card-body" id="robotEvalBody">
+                <div class="artifact-empty">No eval rollouts yet.</div>
+              </div>
+            </div>
+          </div>
+
           <div class="right-tab-pane" data-tab="logs">
             <div class="right-tab-section">
               <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
@@ -337,10 +433,32 @@
             </div>
           </div>
 
+          <div class="right-tab-pane" data-tab="masks">
+            <div class="right-tab-section">
+              <div class="label">Numbered Mask Overlay <span class="hint" id="maskOverlayMeta">Unavailable</span></div>
+              <div class="assignment-overlay-wrap">
+                <img id="maskOverlayImage" alt="Numbered mask overlay" />
+                <div class="artifact-empty" id="maskOverlayEmpty">No numbered mask overlay available yet.</div>
+              </div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Mask Assignment Review <span class="hint" id="maskReviewMeta">No review data</span></div>
+              <div class="assignment-review-panel" id="maskReviewPanel">
+                <div class="artifact-empty">Run Real2Sim to inspect or correct mask-to-node assignment.</div>
+              </div>
+            </div>
+          </div>
+
           <div class="right-tab-pane" data-tab="diag">
             <div class="right-tab-section">
               <div class="label">Error Reason <span class="hint" id="agentErrorMeta">No active errors</span></div>
               <div class="codebox" id="agentErrorBox">No errors.</div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Artifact Links <span class="hint" id="artifactMeta">No outputs yet</span></div>
+              <div class="artifact-list" id="artifactList">
+                <div class="artifact-empty">Run Real2Sim or Scene Service to collect artifact links.</div>
+              </div>
             </div>
             <div class="right-tab-section">
               <div class="label">Scene State Preview <span class="hint">Graph + placements</span></div>
@@ -359,47 +477,97 @@
       </div>
 
     </div>
-
-    <!-- Drawer: Mask review + artifacts (Step 4: slimmed; logs/diag moved to right-column tabs) -->
-    <div class="drawer" id="drawer">
-      <div class="drawer-head" onclick="toggleDrawer()">
-        <div class="left">
-          <div class="chev" id="chev">▾</div>
-          <h3>Mask Review & Artifacts</h3>
-        </div>
-        <div class="right">
-          <span id="jsonStatus">Idle</span>
-          <span>•</span>
-          <span id="diagText">No diagnostics yet</span>
-        </div>
-      </div>
-      <div class="drawer-body">
-        <div class="drawer-section">
-          <div class="drawer-grid">
-            <div>
-              <div class="label">Mask Assignment Review <span class="hint" id="maskReviewMeta">No review data</span></div>
-              <div class="assignment-review-panel" id="maskReviewPanel">
-                <div class="artifact-empty">Run Real2Sim to inspect or correct mask-to-node assignment.</div>
-              </div>
-            </div>
-            <div>
-              <div class="label">Numbered Mask Overlay <span class="hint" id="maskOverlayMeta">Unavailable</span></div>
-              <div class="assignment-overlay-wrap">
-                <img id="maskOverlayImage" alt="Numbered mask overlay" />
-                <div class="artifact-empty" id="maskOverlayEmpty">No numbered mask overlay available yet.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="drawer-section">
-          <div class="label">Artifact Links <span class="hint" id="artifactMeta">No outputs yet</span></div>
-          <div class="artifact-list" id="artifactList">
-            <div class="artifact-empty">Run Real2Sim or Scene Service to collect artifact links.</div>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
+
+  <!-- Settings drawer (Step 7): right slide-out for advanced options.
+       All controls forward to existing handlers; the elements they read from
+       (classDirPicker, agentMode radios, resampleModeSelect) live elsewhere
+       in the DOM and are kept hidden by chat-first CSS. -->
+  <div class="settings-backdrop" id="settingsBackdrop" hidden onclick="toggleSettingsDrawer()"></div>
+  <aside class="settings-drawer" id="settingsDrawer" hidden role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="settings-head">
+      <h3 id="settingsTitle">Settings</h3>
+      <button type="button" class="settings-close" onclick="toggleSettingsDrawer()" aria-label="Close settings">×</button>
+    </div>
+    <div class="settings-body">
+
+      <section class="settings-section">
+        <div class="settings-section-title">Session</div>
+        <div class="settings-row settings-row-stack">
+          <div><span class="settings-key">session_id</span> <span class="settings-val" id="settingsSessionId">—</span></div>
+          <div><span class="settings-key">run_id</span> <span class="settings-val" id="settingsRunId">—</span></div>
+        </div>
+        <div class="settings-row">
+          <button type="button" class="toolbtn" onclick="startNewSession(); toggleSettingsDrawer()">+ New Session</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Mode</div>
+        <div class="settings-row">
+          <label class="settings-radio">
+            <input type="radio" name="settingsAgentMode" value="loop" id="settingsAgentModeLoop"
+                   onclick="settingsApplyMode('loop')" />
+            Tool-use loop
+          </label>
+          <label class="settings-radio">
+            <input type="radio" name="settingsAgentMode" value="plan" id="settingsAgentModePlan"
+                   onclick="settingsApplyMode('plan')" />
+            Plan + review
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Reference files</div>
+        <div class="settings-row settings-row-stack">
+          <div class="settings-key">Class names folder</div>
+          <div class="settings-row">
+            <button type="button" class="toolbtn" onclick="settingsPickClassDir()">Browse…</button>
+            <span class="settings-val" id="settingsClassDirStatus">No folder selected</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Templates</div>
+        <div class="settings-row">
+          <button type="button" class="toolbtn" onclick="saveCurrentAsTemplate()">💾 Save current as template</button>
+          <button type="button" class="toolbtn" id="settingsRepeatBtn" onclick="repeatLastPlanPrompt()" disabled>↻ Repeat last plan prompt</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">Resample mode <span class="settings-section-hint">used by /resample</span></div>
+        <div class="settings-row">
+          <label class="settings-radio">
+            <input type="radio" name="settingsResampleMode" value="joint" id="settingsResampleJoint"
+                   onclick="setResampleMode('joint')" />
+            Joint Resample
+          </label>
+          <label class="settings-radio">
+            <input type="radio" name="settingsResampleMode" value="lock_real2sim" id="settingsResampleLock"
+                   onclick="setResampleMode('lock_real2sim')" />
+            Lock Real2Sim
+          </label>
+        </div>
+        <div class="settings-row settings-hint">
+          Joint resamples every object together for a fresh layout. Lock Real2Sim keeps observed support chains rigid and resamples the rest.
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-section-title">About</div>
+        <div class="settings-row settings-hint">
+          Static cache: dev mode (set <code>FLASK_STATIC_CACHE_SECONDS</code> on the server to re-enable production caching).
+        </div>
+        <div class="settings-row settings-hint">
+          Agent loop model: <code>$AGENT_LOOP_MODEL</code> (env var on the server).
+        </div>
+      </section>
+
+    </div>
+  </aside>
 
   <script src="/assets/js/state.js"></script>
   <script src="/assets/js/ui.js"></script>

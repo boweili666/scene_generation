@@ -307,6 +307,90 @@ def _handle_edit_json(payload, *, default_input_path: str | Path, default_image_
     }, None, None
 
 
+def _read_json_silent(path: Path):
+    """Read a JSON file, returning {} on any error."""
+    try:
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _last_user_prompt(history) -> str:
+    """Pull the most recent user message from agent_state.history for a summary."""
+    if not isinstance(history, list):
+        return ""
+    for entry in reversed(history):
+        if isinstance(entry, dict) and entry.get("role") == "user":
+            content = entry.get("content")
+            if isinstance(content, str) and content.strip():
+                # First line, capped, so a long prompt doesn't blow up the JSON payload.
+                first_line = content.strip().splitlines()[0].strip()
+                return first_line[:160]
+    return ""
+
+
+def _summarize_session_dir(ses_dir: Path) -> dict:
+    """Return a compact summary of a session directory for listing in the UI."""
+    session_meta = _read_json_silent(ses_dir / "session.json")
+    agent_state = _read_json_silent(ses_dir / "agent_state.json")
+    runs_dir = ses_dir / "runs"
+    run_count = 0
+    if runs_dir.exists() and runs_dir.is_dir():
+        run_count = sum(1 for p in runs_dir.iterdir() if p.is_dir())
+
+    current_run_id = ""
+    cur_file = ses_dir / "current_run.txt"
+    if cur_file.exists():
+        try:
+            current_run_id = cur_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            current_run_id = ""
+
+    try:
+        updated_at_ts = ses_dir.stat().st_mtime
+    except Exception:
+        updated_at_ts = 0
+
+    return {
+        "session_id": str(session_meta.get("session_id") or ses_dir.name),
+        "created_at": session_meta.get("created_at") or "",
+        "updated_at_ts": updated_at_ts,
+        "run_count": run_count,
+        "current_run_id": current_run_id,
+        "current_state": agent_state.get("current_state") or "",
+        "last_intent": agent_state.get("last_intent") or "",
+        "last_prompt": _last_user_prompt(agent_state.get("history")),
+    }
+
+
+def _summarize_session_runs(ses_dir: Path) -> list:
+    """Return a list of run summaries for a session directory."""
+    runs_dir = ses_dir / "runs"
+    if not runs_dir.exists() or not runs_dir.is_dir():
+        return []
+    items = []
+    for run_dir in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+        if not run_dir.is_dir():
+            continue
+        run_meta = _read_json_silent(run_dir / "run.json")
+        scene_graph_file = run_dir / "scene_graph" / "current_scene_graph.json"
+        render_file = run_dir / "renders" / "render.png"
+        try:
+            updated_at_ts = run_dir.stat().st_mtime
+        except Exception:
+            updated_at_ts = 0
+        items.append({
+            "run_id": str(run_meta.get("run_id") or run_dir.name),
+            "created_at": run_meta.get("created_at") or "",
+            "updated_at_ts": updated_at_ts,
+            "has_scene_graph": scene_graph_file.exists(),
+            "has_render": render_file.exists(),
+        })
+    return items
+
+
 def register_routes(app):
     @app.route("/sessions", methods=["POST"])
     def session_create():
@@ -319,6 +403,39 @@ def register_routes(app):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"status": "ok", "context": context.to_dict()})
+
+    @app.route("/sessions", methods=["GET"])
+    def session_list():
+        from ..config import SESSIONS_DIR
+        items = []
+        if SESSIONS_DIR.exists():
+            for ses_dir in sorted(SESSIONS_DIR.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+                if not ses_dir.is_dir():
+                    continue
+                items.append(_summarize_session_dir(ses_dir))
+        return jsonify({"sessions": items})
+
+    @app.route("/sessions/<session_id>/runs", methods=["GET"])
+    def session_run_list(session_id):
+        from ..config import SESSIONS_DIR
+        from ..services.runtime_context import normalize_runtime_identifier
+        try:
+            normalized = normalize_runtime_identifier(session_id, label="session_id")
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        ses_dir = SESSIONS_DIR / normalized
+        if not ses_dir.exists() or not ses_dir.is_dir():
+            return jsonify({"error": f"Session not found: {normalized}"}), 404
+        runs = _summarize_session_runs(ses_dir)
+        current_run_id = None
+        cur_file = ses_dir / "current_run.txt"
+        if cur_file.exists():
+            current_run_id = cur_file.read_text(encoding="utf-8").strip() or None
+        return jsonify({
+            "session_id": normalized,
+            "current_run_id": current_run_id,
+            "runs": runs,
+        })
 
     @app.route("/sessions/<session_id>/runs", methods=["POST"])
     def session_run_create(session_id):
@@ -779,6 +896,107 @@ def register_routes(app):
     def scene_robot_eval_start():
         paths = _request_runtime_paths(create=True)
         return _scene_robot_stage_start(start_scene_robot_eval_job, Path(paths["scene_robot_eval_log_path"]))
+
+    @app.route("/scene_robot/dashboard")
+    def scene_robot_dashboard():
+        """Aggregated payload for the right-panel Robot tab.
+
+        Returns collect/train/eval summaries in one shot so the UI can
+        poll a single endpoint and render the whole tab.
+        """
+        from ..services import robot_dashboard
+        from ..services.agent_service import _load_agent_state
+        paths = _request_runtime_paths(create=True)
+        context = paths.get("context")
+        if context is None:
+            return jsonify({"error": "no runtime context"}), 400
+        try:
+            state = _load_agent_state(context)
+        except Exception as exc:
+            return jsonify({"error": f"could not load agent state: {exc}"}), 500
+        try:
+            payload = robot_dashboard.build_dashboard(context, state)
+        except Exception as exc:
+            return jsonify({"error": f"dashboard build failed: {exc}"}), 500
+        return jsonify(payload)
+
+    @app.route("/scene_robot/stop", methods=["POST"])
+    def scene_robot_stop():
+        """Best-effort terminate a running scene_robot job.
+
+        Looks up the live job in the in-process registry, walks the linked
+        subprocess via the saved PID (we don't currently track PIDs, so we
+        rely on `pkill` against the unique --session/--run flags). If the
+        request omits job_id we use whatever's tracked in session state.
+        """
+        import signal as _signal
+        from ..services.scene_robot_service import get_scene_robot_job_status, _JOBS, _JOBS_LOCK
+
+        body = request.get_json(silent=True) or {}
+        job_id = (body.get("job_id") or request.args.get("job_id") or "").strip()
+
+        # Resolve job_id from session state if not provided.
+        if not job_id:
+            paths = _request_runtime_paths(create=False)
+            context = paths.get("context")
+            if context is not None:
+                try:
+                    from ..services.agent_service import _load_agent_state
+                    state = _load_agent_state(context)
+                    sr = ((state.get("runs") or {}).get(context.run_id) or {}).get("scene_robot") or {}
+                    job_id = str(sr.get("job_id") or "")
+                except Exception:
+                    pass
+        if not job_id:
+            return jsonify({"status": "error", "msg": "no job_id provided and none in session state"}), 400
+
+        job = get_scene_robot_job_status(job_id)
+        if not job:
+            return jsonify({"status": "error", "msg": f"job {job_id} not in registry"}), 404
+        if job.get("status") not in ("queued", "running"):
+            return jsonify({"status": "noop", "msg": f"job already {job.get('status')}", "job_id": job_id})
+
+        # Kill via pkill -f (matches the unique --session/--run combo). The
+        # job's subprocess was launched with start_new_session=False so we
+        # don't have a PID handy in _JOBS — pkill is the simplest portable
+        # way to find it. Best-effort: log either outcome.
+        sess = (job.get("session_id") or "")
+        run_id = (job.get("run_id") or "")
+        killed = False
+        if sess and run_id:
+            import subprocess as _sp
+            pattern = f"--session {sess} --run {run_id}"
+            try:
+                rc = _sp.run(["pkill", "-TERM", "-f", pattern], check=False).returncode
+                killed = (rc == 0)
+            except Exception:
+                killed = False
+        # Reflect immediately in the in-memory job state so the UI sees it.
+        with _JOBS_LOCK:
+            entry = _JOBS.get(job_id)
+            if entry:
+                entry["status"] = "cancelled" if killed else entry.get("status", "running")
+                entry["error"] = entry.get("error") or "cancelled by user via /scene_robot/stop"
+        return jsonify({
+            "status": "ok" if killed else "best-effort",
+            "job_id": job_id,
+            "killed": killed,
+            "session_id": sess,
+            "run_id": run_id,
+        })
+
+    @app.route("/robot_file/<path:relpath>")
+    def robot_file(relpath):
+        """Serve files under the project root (currently outputs/eval/...
+        for the Robot tab's mp4 previews). Mirrors /runtime_file but rooted
+        at PROJECT_ROOT so we can reach outputs/ and datasets/."""
+        project_root = RUNTIME_DIR.resolve().parent
+        target = (project_root / relpath).resolve()
+        if target != project_root and project_root not in target.parents:
+            return jsonify({"error": "Invalid path"}), 400
+        if not target.exists() or not target.is_file():
+            return jsonify({"error": "File not found"}), 404
+        return send_file(target)
 
     @app.route("/scene_robot/log")
     def scene_robot_log():

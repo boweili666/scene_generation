@@ -18,6 +18,7 @@ streaming doesn't interleave.
 from __future__ import annotations
 
 import os
+import re
 import selectors
 import subprocess
 import threading
@@ -27,6 +28,81 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Match a Python traceback header in stderr. Isaac Sim and PyXR scripts
+# occasionally swallow exceptions and still exit 0 because the SimulationApp
+# wrapper performs an orderly shutdown; the only reliable signal that the
+# child actually raised is a "Traceback ..." line on stderr. We intentionally
+# only check stderr (see _run_subprocess), since some scripts print example
+# tracebacks to stdout for diagnostic purposes during a successful run.
+_PY_TRACEBACK_RE = re.compile(r"^Traceback \(most recent call last\):", re.MULTILINE)
+_PY_EXCEPTION_LINE_RE = re.compile(r"^([A-Z][A-Za-z0-9_]*(?:Error|Exception)):\s*(.+)$", re.MULTILINE)
+# Each line written to the log by `_write_stream_line` is prefixed with
+# "[<iso-ts>] [STDERR] [job=<id>] " — strip that off before pattern-matching
+# so `^Traceback` and `^ValueError:` anchors still work in `_scan_log_for_traceback`.
+_LOG_LINE_PREFIX_RE = re.compile(r"^\[[^\]]*\] \[STDERR\](?: \[job=[^\]]*\])? ")
+# Synthetic exit code used when the wrapper detects a Traceback in stderr but
+# the child exited with code 0. Distinct from real signals/POSIX codes so the
+# override is obvious in logs.
+_TRACEBACK_OVERRIDE_EXIT_CODE = 200
+
+
+def _summarize_python_failure(blob: str) -> str:
+    """Pull a one-line failure message out of a captured stderr blob."""
+    m = _PY_EXCEPTION_LINE_RE.search(blob)
+    if m:
+        return f"{m.group(1)}: {m.group(2).strip()}"
+    return "Python traceback in stderr"
+
+
+def _scan_log_for_traceback(log_path: str | os.PathLike[str], start_offset: int) -> str | None:
+    """Return a one-line summary if the log slice [start_offset:] contains a
+    Python traceback signature, else None.
+
+    Used by `_bg_runner` as a defensive cross-check so a clean return from
+    `runner` can still be demoted to "failed" when the underlying child
+    process actually raised an exception.
+    """
+    try:
+        path = Path(str(log_path))
+        if not path.exists():
+            return None
+        with path.open("rb") as fh:
+            if start_offset:
+                fh.seek(int(start_offset))
+            blob = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    # Quick substring check first. Each line in the log is prefixed with
+    # "[ts] [STDERR] [job=...] " so we can't use the anchored regex on the
+    # raw blob — the simple `in` test is faster anyway and avoids false
+    # negatives from the timestamp prefix.
+    if "Traceback (most recent call last):" not in blob:
+        return None
+    # Only flag tracebacks that came from STDERR; the wrapper tags every
+    # streamed line with [STDERR]/[STDOUT], so a Traceback emitted by
+    # diagnostic stdout printing should NOT be treated as a failure.
+    # Strip the per-line "[ts] [STDERR] [job=...] " prefix so the
+    # "^Traceback" / "^ValueError:" anchors match against the raw payload.
+    stderr_lines = [
+        _LOG_LINE_PREFIX_RE.sub("", line)
+        for line in blob.splitlines()
+        if "[STDERR]" in line
+    ]
+    stderr_blob = "\n".join(stderr_lines)
+    if not _PY_TRACEBACK_RE.search(stderr_blob):
+        return None
+    return _summarize_python_failure(stderr_blob)
+
+
+def label_for_stage(stage: str) -> str:
+    """Human-friendly label used in error messages for each stage."""
+    return {
+        "collect": "scene_robot collect",
+        "convert": "scene_robot convert",
+        "train": "scene_robot train",
+        "eval": "scene_robot eval",
+    }.get(stage, f"scene_robot {stage}")
 
 from ..config import (
     CONVERT_HDF5_SCRIPT,
@@ -164,7 +240,15 @@ def _run_subprocess(
     last_activity = start_time
     heartbeat_interval = 30.0
 
+    saw_stderr_traceback = False
+    # Keep recent stderr in memory so we can pull a one-line failure summary
+    # if we have to override the exit code. Bounded so a chatty job doesn't
+    # blow up RAM.
+    stderr_tail_lines: list[str] = []
+    STDERR_TAIL_MAX = 400
+
     def _write_stream_line(stream_name: str, line: str) -> None:
+        nonlocal saw_stderr_traceback
         ts_line = datetime.now().isoformat()
         entry = f"[{ts_line}] [{stream_name}]"
         if job_id:
@@ -172,6 +256,12 @@ def _run_subprocess(
         entry += f" {line}"
         print(entry, end="")
         _append_log_entry(entry, log_path=log_path)
+        if stream_name == "STDERR":
+            stderr_tail_lines.append(line)
+            if len(stderr_tail_lines) > STDERR_TAIL_MAX:
+                del stderr_tail_lines[: len(stderr_tail_lines) - STDERR_TAIL_MAX]
+            if not saw_stderr_traceback and _PY_TRACEBACK_RE.search(line):
+                saw_stderr_traceback = True
 
     while True:
         now = time.monotonic()
@@ -212,6 +302,7 @@ def _run_subprocess(
             break
 
     return_code = process.wait()
+
     footer = (
         f"[{datetime.now().isoformat()}]"
         + (f" [job={job_id}]" if job_id else "")
@@ -219,6 +310,24 @@ def _run_subprocess(
     )
     print(footer, end="")
     _append_log_entry(footer, log_path=log_path)
+
+    # If the child raised a Python exception but exited 0 (Isaac Sim's
+    # SimulationApp eats the exception during its shutdown sequence), turn
+    # that into a real failure here. Raising RuntimeError bypasses the
+    # callers' `if return_code != 0` path with a useful one-line summary
+    # that propagates straight into job["error"] for the agent to surface.
+    if return_code == 0 and saw_stderr_traceback:
+        summary = _summarize_python_failure("".join(stderr_tail_lines))
+        override_msg = (
+            f"[{datetime.now().isoformat()}]"
+            + (f" [job={job_id}]" if job_id else "")
+            + f" --- {label} exited 0 but stderr contained a Python traceback "
+            f"({summary}); reporting as failed ---\n"
+        )
+        print(override_msg, end="")
+        _append_log_entry(override_msg, log_path=log_path)
+        raise RuntimeError(f"{label} raised on stderr: {summary}")
+
     return return_code
 
 
@@ -331,6 +440,28 @@ def _start_stage_job(
         log_scene_robot_event(intro_message, job_id=job_id, log_path=log_path)
         try:
             artifacts = runner(payload, job_id=job_id)
+            # Belt-and-suspenders: even after a clean return from runner, scan
+            # the slice of the log produced by THIS job for a Python traceback
+            # signature. _run_subprocess already does this for stderr in real
+            # time, but if a future runner bypasses _run_subprocess (or writes
+            # exceptions through some other path), this still catches it. If
+            # we find one, demote status from "succeeded" to "failed".
+            failure_summary = _scan_log_for_traceback(log_path, log_start_offset)
+            if failure_summary:
+                with _JOBS_LOCK:
+                    job = _JOBS.get(job_id)
+                    if not job:
+                        return
+                    job["status"] = "failed"
+                    job["updated_at"] = _utcnow_iso()
+                    job["error"] = f"{label_for_stage(stage)} raised on stderr: {failure_summary}"
+                    job["traceback"] = None
+                log_scene_robot_event(
+                    f"Job exited cleanly but log shows a Python traceback ({failure_summary}); "
+                    f"marking as failed.",
+                    job_id=job_id, level="ERROR", log_path=log_path,
+                )
+                return
             with _JOBS_LOCK:
                 job = _JOBS.get(job_id)
                 if not job:
@@ -353,6 +484,30 @@ def _start_stage_job(
                 job["traceback"] = tb
 
     threading.Thread(target=_bg_runner, daemon=True).start()
+
+    # Spawn a background heartbeat for stages that take long enough to
+    # warrant periodic status updates. `convert` is fast (seconds-to-minutes),
+    # so we skip it; collect / train / eval can run for many minutes-to-hours
+    # and benefit from "still running, episode N/M" pings into chat history.
+    if stage in ("collect", "train", "eval"):
+        try:
+            from . import agent_heartbeat
+            kind_map = {
+                "collect": "scene_robot_collect",
+                "train": "scene_robot_train",
+                "eval": "scene_robot_eval",
+            }
+            agent_heartbeat.spawn(
+                kind=kind_map[stage],
+                job_id=job_id,
+                session_id=payload.get("session_id") if isinstance(payload.get("session_id"), str) else None,
+                run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
+                log_path=log_path,
+                get_status=get_scene_robot_job_status,
+            )
+        except Exception:  # noqa: BLE001 - heartbeat is best-effort
+            pass
+
     return {
         "job_id": job_id,
         "stage": stage,

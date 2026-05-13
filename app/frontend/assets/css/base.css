@@ -205,19 +205,77 @@
 
     .grid{
       display:grid;
-      grid-template-columns: minmax(380px, 430px) minmax(620px, 1.45fr) minmax(420px, 1.08fr);
-      grid-template-rows: auto auto;
+      /* 2-column layout (Step 8): chat on the left, single tabbed panel on
+         the right. Graph + Sim + Logs + Masks + Diag all live in tabs of
+         .card-preview. The legacy .card-actions row is hidden in chat-first
+         mode (forms.css) so it doesn't take grid space.
+         --chat-col-px drives the chat column's exact width; JS sets it from
+         the splitter drag and persists in localStorage. The right column
+         takes the remaining space (1fr). Pixel-based sizing makes the chat
+         column fully insensitive to content (font size changes, long words),
+         which is what we want for a stable layout. */
+      --chat-col-px: 560px;
+      grid-template-columns: var(--chat-col-px) 20px minmax(0, 1fr);
+      grid-template-rows: auto;
       grid-template-areas:
-        "prompt graph preview"
-        "actions graph preview";
-      gap: 16px;
-      min-height: calc(100vh - 74px - 36px);
+        "prompt splitter preview";
+      gap: 0;
+      /* Fixed viewport height (not just min-height) so the chat transcript
+         and right-panel tabs scroll *inside* their cards instead of pushing
+         the whole page taller. The chat's #agentTranscript already has
+         overflow-y:auto; capping the grid here lets that work. */
+      height: calc(100vh - 74px - 36px);
+      min-height: 480px;
     }
 
-    .card-prompt{ grid-area: prompt; }
-    .card-actions{ grid-area: actions; }
-    .card-graph{ grid-area: graph; }
-    .card-preview{ grid-area: preview; }
+    /* min-width:0 prevents the children's intrinsic min-content (which grows
+       with --chat-font-size or long words) from forcing the column wider
+       than --chat-col-px. Without it, A+/A− would expand the chat column. */
+    .card-prompt{ grid-area: prompt; min-width: 0; }
+    .card-actions{ grid-area: prompt; min-width: 0; }
+    .card-preview{ grid-area: preview; min-width: 0; }
+    /* Splitter is a 20px-wide grid column (no surrounding grid gap) so the
+       full width is grabbable. It has its own visible bar PLUS a center pill
+       drawn by ::before so it's still obvious if the pseudo-element fails. */
+    .grid-splitter{
+      grid-area: splitter;
+      align-self: stretch;
+      position: relative;
+      cursor: col-resize;
+      touch-action: none;
+      user-select: none;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 5;
+    }
+    .grid-splitter::before{
+      content: "";
+      display: block;
+      width: 4px;
+      height: 80px;
+      border-radius: 999px;
+      background: rgba(100, 116, 139, 0.55);
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.6);
+      transition: background 120ms ease, height 120ms ease, width 120ms ease, box-shadow 120ms ease;
+    }
+    .grid-splitter:hover::before,
+    .grid-splitter.is-dragging::before,
+    .grid-splitter:focus-visible::before{
+      width: 6px;
+      height: 110px;
+      background: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+    }
+    .grid-splitter:focus-visible{ outline: none; }
+    body.is-resizing-grid{
+      cursor: col-resize;
+      user-select: none;
+    }
+    body.is-resizing-grid *{
+      user-select: none !important;
+    }
 
     .card{
       background: var(--card);

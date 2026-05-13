@@ -165,7 +165,8 @@
         try {
           const review = await refreshMaskAssignmentReview({ silent: true, auto: false });
           if (review?.needs_attention) {
-            if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
+            // Step 8: auto-jump to the Masks tab (replaces the old drawer toggle).
+            if (typeof switchRightTab === "function") switchRightTab("masks", { auto: true });
             toast(
               "warn",
               "Review mask mapping",
@@ -180,8 +181,9 @@
         } else if (finalJobStatus === "failed") {
           document.getElementById("real2simLogStatus").textContent = "Failed";
           if (finalJob?.error_info?.code === "mask_assignment_failed") {
-            if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
-            toast("warn", "Mask assignment needs review", "Open the drawer and correct the assignment before continuing.");
+            // Step 8: jump to the Masks tab so the user can correct the assignment.
+            if (typeof switchRightTab === "function") switchRightTab("masks", { auto: true });
+            toast("warn", "Mask assignment needs review", "Switch to the Masks tab and correct the assignment before continuing.");
           }
         }
       })();
@@ -352,6 +354,8 @@
         card.classList.toggle("is-active", active);
         card.setAttribute("aria-checked", active ? "true" : "false");
       });
+      // Step 7: keep the settings-drawer mirror in sync.
+      if (typeof settingsSyncResampleMode === "function") settingsSyncResampleMode();
     }
 
     function getSelectedResampleMode() {

@@ -4,7 +4,10 @@
         updateInputMeta();
         updateReferenceImagePreview();
       });
-      document.getElementById("classDirPicker").addEventListener("change", updateInputMeta);
+      document.getElementById("classDirPicker").addEventListener("change", () => {
+        updateInputMeta();
+        if (typeof settingsSyncClassDir === "function") settingsSyncClassDir();
+      });
 
       document.getElementById("sceneInput").addEventListener("keydown", (evt) => {
         if (evt.key === "Enter" && !evt.shiftKey) {
@@ -25,6 +28,9 @@
       resetAgentPanel();
       refreshRepeatPlanButton();
       renderTemplateChips();
+      if (typeof initComposerTools === "function") initComposerTools();
+      if (typeof initChatFontSize === "function") initChatFontSize();
+      if (typeof initSplitter === "function") initSplitter();
 
       const tplNameInput = document.getElementById("savePlanTemplateNameInput");
       if (tplNameInput) {

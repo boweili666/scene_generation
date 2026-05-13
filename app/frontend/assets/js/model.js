@@ -791,6 +791,9 @@
         if (!feedbackLines.length && analysis.warnings.length) {
           feedbackLines.push(...analysis.warnings);
         }
+        // Step 8: auto-jump to the Graph tab when a fresh graph arrives,
+        // unless the user manually picked another tab in the last 5s.
+        if (typeof switchRightTab === "function") switchRightTab("graph", { auto: true });
       }
 
       if (data?.scene_result) {
@@ -801,6 +804,8 @@
         setPill("sim", "ok", "Ready");
         showImagePreview();
         refreshRuntimeRenderImage();
+        // Step 8: a fresh scene render is the new thing-to-look-at.
+        if (typeof switchRightTab === "function") switchRightTab("sim", { auto: true });
       }
 
       if (real2simJobInfo?.job_id) {
@@ -835,7 +840,11 @@
         clearReferenceImageInput();
       }
 
-      if (!document.getElementById("drawer").classList.contains("open")) toggleDrawer();
+      // Step 8: the bottom drawer was removed; the right-column tabs handle
+      // the previous "open the drawer to show the result" cue via the
+      // event-driven auto-switches above (graph → Graph, scene_result → Sim,
+      // failure → Logs from appendAgentFailureBubble, mask review attention
+      // → Masks from monitorReal2SimJob).
       return data;
     }
 
@@ -946,10 +955,13 @@
       } else {
         btn.title = "No saved plan prompt yet — propose a plan first.";
       }
+      if (typeof settingsSyncRepeatBtn === "function") settingsSyncRepeatBtn();
     }
 
     function renderTemplateChips() {
       const wrap = document.getElementById("planTemplatesChips");
+      // Even if the legacy chip row is gone, keep the composer count fresh.
+      if (typeof composerSyncTemplatesCount === "function") composerSyncTemplatesCount();
       if (!wrap) return;
       const templates = getNamedTemplates();
       wrap.innerHTML = "";
