@@ -199,7 +199,7 @@ class OpenAIServiceImagePromptTest(unittest.TestCase):
         self.assertEqual(content[0]["type"], "input_text")
         prompt_text = content[0]["text"]
         self.assertIn("Add a chair in front of the table", prompt_text)
-        self.assertIn("Objects explicitly requested in text but not present in the uploaded image should use source=retrieval.", prompt_text)
+        self.assertIn("use source=retrieval if the user requested it in text but it is not visible in the image.", prompt_text)
         self.assertEqual(content[1]["type"], "input_image")
 
     def test_assign_real2sim_masks_with_images_uses_overlay_and_schema(self) -> None:

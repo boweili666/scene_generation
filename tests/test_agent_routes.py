@@ -28,7 +28,7 @@ class AgentRouteTest(unittest.TestCase):
 
         with (
             mock.patch("app.backend.api.routes._resolve_request_runtime_context", return_value=runtime_ctx),
-            mock.patch("app.backend.api.routes.handle_agent_message", return_value=response_payload) as agent_mock,
+            mock.patch("app.backend.api.routes.handle_agent_loop_message", return_value=response_payload) as agent_mock,
         ):
             response = self.client.post(
                 "/agent/message",
@@ -47,13 +47,9 @@ class AgentRouteTest(unittest.TestCase):
             run_id="run_demo",
             text="add a chair",
             image_bytes=None,
-            class_names_raw="",
-            action="graph",
-            resample_mode=None,
-            scene_endpoint=None,
         )
 
-    def test_agent_message_multipart_forwards_image_and_controls(self) -> None:
+    def test_agent_message_multipart_forwards_image(self) -> None:
         runtime_ctx = SimpleNamespace(session_id="sess_demo", run_id="run_demo")
         response_payload = {
             "status": "ok",
@@ -69,7 +65,7 @@ class AgentRouteTest(unittest.TestCase):
 
         with (
             mock.patch("app.backend.api.routes._resolve_request_runtime_context", return_value=runtime_ctx),
-            mock.patch("app.backend.api.routes.handle_agent_message", return_value=response_payload) as agent_mock,
+            mock.patch("app.backend.api.routes.handle_agent_loop_message", return_value=response_payload) as agent_mock,
         ):
             response = self.client.post(
                 "/agent/message",
@@ -93,10 +89,6 @@ class AgentRouteTest(unittest.TestCase):
             run_id="run_demo",
             text="generate the scene",
             image_bytes=b"fake-image-bytes",
-            class_names_raw='["chair"]',
-            action="generate_scene",
-            resample_mode="joint",
-            scene_endpoint="scene_new",
         )
 
     def test_agent_state_forwards_runtime_context(self) -> None:
