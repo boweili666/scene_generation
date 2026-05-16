@@ -103,6 +103,15 @@ from ..control.phase_runner import (
     _semantic_to_controller_pose_world,
     _world_pose_to_base,
 )
+from ..scene.domain_randomization import (
+    DomainRandomizationConfig,
+    apply_light_randomization,
+    make_rng,
+    reset_camera_extrinsic_jitter,
+    resolve_base_randomization,
+    sample_episode_randomization,
+    set_camera_extrinsic_jitter,
+)
 from .scene_mouse_collect import (
     SceneMouseCollectArgs,
     SceneTeleopEpisodeWriter,
@@ -247,6 +256,20 @@ class SceneAutoGraspCollectArgs:
     # so the planned pre-grasp / grasp / lift / retreat poses track the
     # moved target. 0 disables randomization.
     target_forward_randomization: float = 0.0
+    # Per-episode domain randomization (all 0.0 / 0 → disabled, collection
+    # behaves exactly as before). Sampled and applied in `_run_episode_loop`
+    # via `scene.domain_randomization`. Light writes go to the live USD
+    # stage, camera jitter is composed inside the agibot `_sync` closure,
+    # and the robot-base offset is gated by a workspace-box reachability
+    # pre-check (resamples, then falls back to the nominal base).
+    light_intensity_randomization: float = 0.0
+    light_color_randomization: float = 0.0
+    light_direction_randomization_deg: float = 0.0
+    camera_extrinsics_pos_randomization: float = 0.0
+    camera_extrinsics_rot_randomization_deg: float = 0.0
+    robot_base_xy_randomization: float = 0.0
+    robot_base_yaw_randomization_deg: float = 0.0
+    domain_randomization_seed: int = 0
 
 
 # =============================================================================
@@ -699,6 +722,20 @@ def _run_episode_loop(
 
     randomization_range = float(args.target_forward_randomization)
     fwd_x, fwd_y = _robot_forward_xy_world(controller) if randomization_range > 0.0 else (0.0, 0.0)
+
+    dr_cfg = DomainRandomizationConfig(
+        light_intensity_randomization=float(args.light_intensity_randomization),
+        light_color_randomization=float(args.light_color_randomization),
+        light_direction_randomization_deg=float(args.light_direction_randomization_deg),
+        camera_extrinsics_pos_randomization=float(args.camera_extrinsics_pos_randomization),
+        camera_extrinsics_rot_randomization_deg=float(args.camera_extrinsics_rot_randomization_deg),
+        robot_base_xy_randomization=float(args.robot_base_xy_randomization),
+        robot_base_yaw_randomization_deg=float(args.robot_base_yaw_randomization_deg),
+        domain_randomization_seed=int(args.domain_randomization_seed),
+    )
+    dr_rng = make_rng(dr_cfg)
+    reset_camera_extrinsic_jitter()
+
     for episode_idx in range(num_episodes):
         print(f"[INFO] === Episode {episode_idx + 1}/{num_episodes} ===")
         if randomization_range > 0.0:
@@ -713,6 +750,46 @@ def _run_episode_loop(
         else:
             episode_snapshot = target_state_snapshot
             episode_candidate = candidate
+
+        episode_plan = plan
+        if dr_cfg.enabled:
+            er = sample_episode_randomization(dr_rng, dr_cfg)
+            if dr_cfg.any_light:
+                apply_light_randomization(scene.stage, er, dr_cfg)
+                print(
+                    f"[INFO] Light randomization: intensity_x={er.light_intensity_factor:.3f} "
+                    f"color_delta=({er.light_color_delta[0]:+.3f}, {er.light_color_delta[1]:+.3f}, "
+                    f"{er.light_color_delta[2]:+.3f}) "
+                    f"sun=(pitch={er.sun_pitch_deg:+.2f}, yaw={er.sun_yaw_deg:+.2f})deg"
+                )
+            if dr_cfg.any_camera:
+                set_camera_extrinsic_jitter(er.camera_jitter)
+                parts = []
+                for name, (p, _q) in er.camera_jitter.items():
+                    dpos = (p[0] ** 2 + p[1] ** 2 + p[2] ** 2) ** 0.5
+                    parts.append(f"{name} |dpos|={dpos:.4f}m")
+                print(f"[INFO] Camera extrinsics randomization: {', '.join(parts)}")
+            if dr_cfg.any_base:
+                episode_plan, base_info = resolve_base_randomization(
+                    dr_rng,
+                    dr_cfg,
+                    plan,
+                    episode_candidate,
+                    robot_name,
+                    float(args.workspace_margin),
+                )
+                if base_info.base_fell_back:
+                    print(
+                        f"[WARN] Robot base randomization: no reachable offset after "
+                        f"{base_info.base_resampled_tries} tries; using nominal base."
+                    )
+                else:
+                    print(
+                        f"[INFO] Robot base randomization: "
+                        f"delta_xy=({base_info.base_dx:+.4f}, {base_info.base_dy:+.4f})m, "
+                        f"dyaw={base_info.base_dyaw_deg:+.2f}deg "
+                        f"(reachable after {base_info.base_resampled_tries} tries)"
+                    )
         try:
             rollout_result = _attempt_recorded_grasp(
                 scene,
@@ -722,7 +799,7 @@ def _run_episode_loop(
                 writer,
                 scene.stage,
                 scene_root_path,
-                plan,
+                episode_plan,
                 robot_name,
                 base_z,
                 episode_candidate,

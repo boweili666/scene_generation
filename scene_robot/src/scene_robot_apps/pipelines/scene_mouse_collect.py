@@ -448,9 +448,15 @@ def _build_scene_mouse_collect(
                 raise RuntimeError(f"Unable to resolve body for camera {camera_name}: {mount['body_name']}")
             body_ids[camera_name] = int(body_id_list[0])
 
+        from ..scene.domain_randomization import (
+            camera_jitter_active,
+            get_camera_extrinsic_jitter,
+        )
+
         def _sync() -> None:
             body_pose_w = controller.robot.data.body_pose_w
             device = body_pose_w.device
+            jitter_on = camera_jitter_active()
             for camera_name, body_id in body_ids.items():
                 mount = _AGIBOT_MOUNT_POSES[camera_name]
                 mount_pos = torch.tensor(mount["pos"], device=device, dtype=torch.float32).repeat(scene.num_envs, 1)
@@ -461,6 +467,16 @@ def _build_scene_mouse_collect(
                     mount_pos,
                     mount_quat,
                 )
+                if jitter_on:
+                    # Per-episode SE(3) jitter in the camera's own frame
+                    # (body ⊕ mount ⊕ jitter). Identity when no episode has
+                    # published a jitter, so the default path is unchanged.
+                    j_pos, j_quat = get_camera_extrinsic_jitter(camera_name)
+                    jit_pos = torch.tensor(j_pos, device=device, dtype=torch.float32).repeat(scene.num_envs, 1)
+                    jit_quat = torch.tensor(j_quat, device=device, dtype=torch.float32).repeat(scene.num_envs, 1)
+                    cam_pos_w, cam_quat_w = combine_frame_transforms(
+                        cam_pos_w, cam_quat_w, jit_pos, jit_quat
+                    )
                 cameras[camera_name].set_world_poses(cam_pos_w, cam_quat_w, convention="opengl")
 
         sync_cameras = _sync

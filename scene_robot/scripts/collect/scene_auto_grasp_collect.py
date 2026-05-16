@@ -144,6 +144,54 @@ parser.add_argument(
     default=0.03,
     help="Per-episode randomization range (m) along the robot's forward axis. Each episode samples delta uniform in [-R, +R] and shifts both the target body and the grasp waypoints by that amount. 0 disables randomization.",
 )
+parser.add_argument(
+    "--light-intensity-randomization",
+    type=float,
+    default=0.0,
+    help="Per-episode dome/sun light intensity multiplier range. Each episode multiplies the base intensity by a uniform sample in [1-R, 1+R]. 0 disables.",
+)
+parser.add_argument(
+    "--light-color-randomization",
+    type=float,
+    default=0.0,
+    help="Per-episode additive RGB jitter on the light colour, each channel uniform in [-R, +R] around the base colour (clamped to [0,1]). 0 disables.",
+)
+parser.add_argument(
+    "--light-direction-randomization-deg",
+    type=float,
+    default=0.0,
+    help="Per-episode directional-light randomization. When >0 a /World/SunLight distant light is added and re-oriented by +/- this many degrees in pitch and yaw each episode. 0 disables (dome light only).",
+)
+parser.add_argument(
+    "--camera-extrinsics-pos-randomization",
+    type=float,
+    default=0.0,
+    help="Per-episode, per-camera translation jitter radius (m) applied in the camera mount's local frame, independently for head/left_hand/right_hand. 0 disables.",
+)
+parser.add_argument(
+    "--camera-extrinsics-rot-randomization-deg",
+    type=float,
+    default=0.0,
+    help="Per-episode, per-camera rotation jitter (deg) about a random axis in the camera mount's local frame, independently per camera. 0 disables.",
+)
+parser.add_argument(
+    "--robot-base-xy-randomization",
+    type=float,
+    default=0.0,
+    help="Per-episode robot base XY offset, drawn uniformly in a disk of this radius (m). Applied only if the cached grasp waypoints still fall inside the arm's working area from the new base (resamples, then falls back to the nominal base). 0 disables.",
+)
+parser.add_argument(
+    "--robot-base-yaw-randomization-deg",
+    type=float,
+    default=0.0,
+    help="Per-episode robot base yaw offset, uniform in [-deg, +deg], gated by the same reachability pre-check as --robot-base-xy-randomization. 0 disables.",
+)
+parser.add_argument(
+    "--domain-randomization-seed",
+    type=int,
+    default=0,
+    help="Seed for the light/camera/base domain-randomization RNG. 0 uses an unseeded RNG (matches --target-forward-randomization).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True
@@ -270,6 +318,14 @@ def main():
             phase_linear_speed=args_cli.phase_linear_speed,
             phase_angular_speed_deg=args_cli.phase_angular_speed_deg,
             target_forward_randomization=args_cli.target_forward_randomization,
+            light_intensity_randomization=args_cli.light_intensity_randomization,
+            light_color_randomization=args_cli.light_color_randomization,
+            light_direction_randomization_deg=args_cli.light_direction_randomization_deg,
+            camera_extrinsics_pos_randomization=args_cli.camera_extrinsics_pos_randomization,
+            camera_extrinsics_rot_randomization_deg=args_cli.camera_extrinsics_rot_randomization_deg,
+            robot_base_xy_randomization=args_cli.robot_base_xy_randomization,
+            robot_base_yaw_randomization_deg=args_cli.robot_base_yaw_randomization_deg,
+            domain_randomization_seed=args_cli.domain_randomization_seed,
         ),
     )
 
