@@ -746,6 +746,39 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 400
         return jsonify(result)
 
+    @app.route("/agent/interrupt", methods=["POST"])
+    def agent_interrupt():
+        """Interrupt the current run: kill any running Real2Sim /
+        scene_robot subprocess job AND raise the cooperative interrupt
+        flag so an in-flight loop/plan executor bails out at its next
+        turn/step. Leaves the session usable for the next message.
+        """
+        from ..services import agent_interrupt as _agent_interrupt
+        from ..services.pipeline_service import cancel_real2sim_jobs_for_run
+        from ..services.scene_robot_service import cancel_scene_robot_jobs_for_run
+
+        context = _resolve_request_runtime_context(create=False)
+        if context is None:
+            return jsonify({"status": "error", "msg": "no runtime context"}), 400
+        sid, rid = context.session_id, context.run_id
+
+        # Cooperative stop first so a loop/plan turn that starts mid-kill
+        # still sees the flag.
+        _agent_interrupt.request_interrupt(sid, rid)
+        results = []
+        for fn in (cancel_real2sim_jobs_for_run, cancel_scene_robot_jobs_for_run):
+            try:
+                results.append(fn(sid, rid))
+            except Exception as exc:  # noqa: BLE001 - best-effort teardown
+                results.append({"service": getattr(fn, "__name__", "?"), "error": str(exc)})
+        return jsonify({
+            "status": "ok",
+            "session_id": sid,
+            "run_id": rid,
+            "interrupt_requested": True,
+            "jobs": results,
+        })
+
     @app.route("/agent/state", methods=["GET"])
     def agent_state():
         try:

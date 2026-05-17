@@ -746,6 +746,39 @@ def start_scene_robot_eval_job(payload: dict[str, Any]) -> dict[str, object]:
     )
 
 
+def cancel_scene_robot_jobs_for_run(session_id: str, run_id: str) -> dict:
+    """Best-effort terminate any running scene_robot subprocess for this
+    run and mark its registry entries cancelled.
+
+    Subprocesses are launched with `--session <sid> --run <rid>` and run
+    under `.../runs/<rid>/...`; we have no PID handy (start_new_session
+    =False) so pkill on those unique tokens is the portable kill. Used by
+    /agent/interrupt; mirrors the inline logic in /scene_robot/stop.
+    """
+    import subprocess as _sp
+
+    killed = False
+    if session_id and run_id:
+        for pattern in (f"--session {session_id} --run {run_id}", f"/runs/{run_id}/"):
+            try:
+                rc = _sp.run(["pkill", "-TERM", "-f", pattern], check=False).returncode
+                killed = killed or (rc == 0)
+            except Exception:
+                pass
+    cancelled: list[str] = []
+    with _JOBS_LOCK:
+        for jid, entry in _JOBS.items():
+            payload = entry.get("payload") or {}
+            if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
+                continue
+            if entry.get("status") in ("queued", "running"):
+                entry["status"] = "cancelled"
+                entry["error"] = entry.get("error") or "cancelled by user via /agent/interrupt"
+                entry["updated_at"] = _utcnow_iso()
+                cancelled.append(jid)
+    return {"service": "scene_robot", "killed": killed, "cancelled_jobs": cancelled}
+
+
 def get_scene_robot_job_status(job_id: str) -> dict | None:
     with _JOBS_LOCK:
         base = _JOBS.get(job_id)

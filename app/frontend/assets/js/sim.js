@@ -225,6 +225,46 @@
       toast("info", "Prompt drafted", "Review or edit the prompt, then use Apply Instruction.");
     }
 
+    /* ===== Interrupt ===== */
+    async function interruptAgent() {
+      // POST /agent/interrupt: backend kills any running Real2Sim /
+      // scene_robot subprocess for this run AND raises the cooperative
+      // flag so an in-flight loop/plan bails. We also stop the local
+      // pollers so the UI doesn't keep chasing the now-dead job.
+      let data = null;
+      try {
+        const res = await fetch(withRuntimeQuery("/agent/interrupt"), { method: "POST" });
+        try { data = await res.json(); } catch (e) { /* non-JSON */ }
+        invalidateReal2SimMonitor();
+        invalidateSceneRobotMonitor();
+        if (res.ok && data && data.status === "ok") {
+          const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+          const killed = jobs.some((j) => j && j.killed);
+          toast(
+            "ok",
+            "Interrupted",
+            killed
+              ? "Stopped the running job and the agent — you can interact again."
+              : "Interrupt sent (nothing was running) — you can interact again."
+          );
+        } else {
+          toast("warn", "Interrupt", (data && (data.msg || data.error)) || "Interrupt sent (best-effort).");
+        }
+      } catch (err) {
+        invalidateReal2SimMonitor();
+        invalidateSceneRobotMonitor();
+        toast("err", "Interrupt failed", String(err && err.message ? err.message : err));
+      } finally {
+        setPill("sim", "", "Idle");
+        const r2s = document.getElementById("real2simLogStatus");
+        if (r2s) r2s.textContent = "Interrupted";
+        const sr = document.getElementById("sceneRobotLogStatus");
+        if (sr) sr.textContent = "Interrupted";
+        const svc = document.getElementById("sceneSvcStatus");
+        if (svc) svc.textContent = "Idle";
+      }
+    }
+
     /* ===== Real2Sim ===== */
     function runReal2Sim() {
       prefillAgentShortcut(

@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..config import SCENE_SERVICE_URL
+from .agent_interrupt import consume_interrupt as _consume_interrupt
 from .agent_loop import LoopContext, TOOL_DEFINITIONS, TOOL_HANDLERS
 from .agent_service import (
     STATE_COMPLETED,
@@ -517,6 +518,18 @@ def execute_plan(
 
     paused = False
     while plan["current_step_index"] < len(plan["steps"]):
+        if _consume_interrupt(context.session_id, context.run_id):
+            plan["status"] = "cancelled"
+            plan["updated_at"] = _utcnow_iso()
+            _store_active_plan(state, plan)
+            _save_agent_state(context, state)
+            return _build_plan_response(
+                context,
+                state,
+                plan,
+                message="Interrupted. Any running job was stopped and the plan was cancelled — send a new message to continue.",
+                outcome="interrupted",
+            )
         idx = plan["current_step_index"]
         step = plan["steps"][idx]
         step["started_at"] = _utcnow_iso()

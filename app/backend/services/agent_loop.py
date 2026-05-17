@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import SCENE_SERVICE_URL
+from .agent_interrupt import clear_interrupt, consume_interrupt
 from .agent_service import (
     DEFAULT_SCENE_ROBOT_NUM_EPISODES,
     DEFAULT_SCENE_ROBOT_ROBOT,
@@ -1426,6 +1427,10 @@ def handle_agent_loop_message(
     state["current_run_id"] = context.run_id
     _ensure_run_state(state, context)
 
+    # A fresh message starts a fresh loop: drop any never-consumed
+    # interrupt from a prior turn so it can't kill this new message.
+    clear_interrupt(context.session_id, context.run_id)
+
     failure_notes = _sync_inflight_jobs(state, context)
     if failure_notes:
         # sync_*_to_session writes to disk; reload so we see the latest state.
@@ -1456,6 +1461,22 @@ def handle_agent_loop_message(
     last_response = None
 
     for turn in range(MAX_TOOL_TURNS):
+        if consume_interrupt(context.session_id, context.run_id):
+            _append_agent_history(
+                state,
+                "assistant",
+                "(interrupted by user — stopped before completing the request)",
+            )
+            _save_agent_state(context, state)
+            return _build_agent_response(
+                context,
+                state="interrupted",
+                intent="agent_loop",
+                message="Interrupted. Any running job was stopped — send a new message to continue.",
+                reason="User requested interrupt.",
+                outcome="interrupted",
+                session_state=_session_state_snapshot(state, context),
+            )
         response = client.responses.create(
             model=AGENT_LOOP_MODEL,
             instructions=SYSTEM_PROMPT,

@@ -798,6 +798,38 @@ def start_real2sim_job(payload: dict) -> dict[str, object]:
     }
 
 
+def cancel_real2sim_jobs_for_run(session_id: str, run_id: str) -> dict:
+    """Best-effort terminate any running Real2Sim subprocess for this run
+    and mark its registry entries cancelled.
+
+    The segmentation + streaming-generation child processes run with
+    `--scene-graph .../runs/<rid>/...` and cwd under the per-run dir, so
+    pkill on the `/runs/<rid>/` path token catches both. Real2Sim had no
+    stop path before; this is invoked by /agent/interrupt.
+    """
+    import subprocess as _sp
+
+    killed = False
+    if run_id:
+        try:
+            rc = _sp.run(["pkill", "-TERM", "-f", f"/runs/{run_id}/"], check=False).returncode
+            killed = rc == 0
+        except Exception:
+            killed = False
+    cancelled: list[str] = []
+    with _REAL2SIM_JOBS_LOCK:
+        for jid, entry in _REAL2SIM_JOBS.items():
+            payload = entry.get("payload") or {}
+            if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
+                continue
+            if entry.get("status") in ("queued", "running"):
+                entry["status"] = "cancelled"
+                entry["error"] = entry.get("error") or "cancelled by user via /agent/interrupt"
+                entry["updated_at"] = _utcnow_iso()
+                cancelled.append(jid)
+    return {"service": "real2sim", "killed": killed, "cancelled_jobs": cancelled}
+
+
 def get_real2sim_job_status(job_id: str) -> dict | None:
     with _REAL2SIM_JOBS_LOCK:
         base = _REAL2SIM_JOBS.get(job_id)

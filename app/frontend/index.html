@@ -143,6 +143,8 @@
 
           <div class="btns">
             <button class="btn-primary" id="btnApplyInstruction" onclick="applyInstruction()">Send</button>
+            <button class="toolbtn" id="btnInterruptAgent" onclick="interruptAgent()"
+                    title="Stop any running Real2Sim / scene_robot job and interrupt the agent so you can interact again.">⏹ Interrupt</button>
             <button class="toolbtn" id="repeatPlanPromptBtn" onclick="repeatLastPlanPrompt()" disabled
                     title="No saved plan prompt yet — propose a plan first.">↻ Repeat</button>
             <button class="toolbtn" id="savePlanTemplateBtn" onclick="saveCurrentAsTemplate()"
