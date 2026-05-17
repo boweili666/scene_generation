@@ -56,7 +56,7 @@
       <div class="status-row">
         <div class="pill"><span class="dot" id="dotModel"></span><strong>Model</strong> <span id="statusModel">Idle</span></div>
         <div class="pill"><span class="dot" id="dotGraph"></span><strong>Graph</strong> <span id="statusGraph">Idle</span></div>
-        <div class="pill"><span class="dot" id="dotSim"></span><strong>Sim</strong> <span id="statusSim">Idle</span></div>
+        <div class="pill"><span class="dot" id="dotSim"></span><strong>Scene</strong> <span id="statusSim">Idle</span></div>
       </div>
     </div>
     <div class="pipeline-strip" id="pipelineStrip" role="status" aria-label="Pipeline status"></div>
@@ -350,12 +350,13 @@
 
         <div class="card-body right-tabbed">
           <div class="right-tabs" role="tablist">
-            <button type="button" class="right-tab-btn" data-tab-target="graph" data-active="true" role="tab" onclick="switchRightTab('graph', { manual: true })">Graph</button>
-            <button type="button" class="right-tab-btn" data-tab-target="sim"   role="tab" onclick="switchRightTab('sim', { manual: true })">Sim</button>
-            <button type="button" class="right-tab-btn" data-tab-target="robot" role="tab" onclick="switchRightTab('robot', { manual: true })">Robot</button>
-            <button type="button" class="right-tab-btn" data-tab-target="logs"  role="tab" onclick="switchRightTab('logs', { manual: true })">Logs</button>
-            <button type="button" class="right-tab-btn" data-tab-target="masks" role="tab" onclick="switchRightTab('masks', { manual: true })">Masks</button>
-            <button type="button" class="right-tab-btn" data-tab-target="diag"  role="tab" onclick="switchRightTab('diag', { manual: true })">Diagnostics</button>
+            <button type="button" class="right-tab-btn" data-tab-target="graph"    data-active="true" role="tab" onclick="switchRightTab('graph', { manual: true })">Graph</button>
+            <button type="button" class="right-tab-btn" data-tab-target="real2sim" role="tab" onclick="switchRightTab('real2sim', { manual: true })">Real2Sim</button>
+            <button type="button" class="right-tab-btn" data-tab-target="scene"    role="tab" onclick="switchRightTab('scene', { manual: true })">Scene</button>
+            <button type="button" class="right-tab-btn" data-tab-target="robot"    role="tab" onclick="switchRightTab('robot', { manual: true })">Robot</button>
+            <span class="right-tab-sep" aria-hidden="true"></span>
+            <button type="button" class="right-tab-btn" data-tab-target="logs"     role="tab" onclick="switchRightTab('logs', { manual: true })">Logs</button>
+            <button type="button" class="right-tab-btn" data-tab-target="diag"     role="tab" onclick="switchRightTab('diag', { manual: true })">Diagnostics</button>
           </div>
 
           <div class="right-tab-pane right-tab-pane-graph" data-tab="graph" data-active="true">
@@ -365,12 +366,11 @@
             </div>
           </div>
 
-          <div class="right-tab-pane" data-tab="sim">
+          <div class="right-tab-pane" data-tab="scene">
             <div class="imgbox">
-              <div id="threeViewport"></div>
               <img id="renderImage" src="/render_image" alt="render"/>
               <div class="empty" id="imagePlaceholder">
-                No render yet. Run <b>Real2Sim</b> or <b>Scene Service</b> to refresh the preview.
+                No render yet. Run <b>Scene Service</b> to refresh the render.
               </div>
             </div>
             <div class="progress-card" id="simProgressCard">
@@ -420,10 +420,6 @@
 
           <div class="right-tab-pane" data-tab="logs">
             <div class="right-tab-section">
-              <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
-              <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
-            </div>
-            <div class="right-tab-section">
               <div class="label">scene_robot Log <span class="hint" id="sceneRobotLogStatus">Idle</span></div>
               <div class="codebox" id="sceneRobotLog">Waiting for scene_robot logs...</div>
             </div>
@@ -433,7 +429,13 @@
             </div>
           </div>
 
-          <div class="right-tab-pane" data-tab="masks">
+          <div class="right-tab-pane" data-tab="real2sim">
+            <div class="right-tab-section">
+              <div class="label">3D Reconstruction</div>
+              <div class="imgbox">
+                <div id="threeViewport"></div>
+              </div>
+            </div>
             <div class="right-tab-section">
               <div class="label">Numbered Mask Overlay <span class="hint" id="maskOverlayMeta">Unavailable</span></div>
               <div class="assignment-overlay-wrap">
@@ -446,6 +448,10 @@
               <div class="assignment-review-panel" id="maskReviewPanel">
                 <div class="artifact-empty">Run Real2Sim to inspect or correct mask-to-node assignment.</div>
               </div>
+            </div>
+            <div class="right-tab-section">
+              <div class="label">Real2Sim Log <span class="hint" id="real2simLogStatus">Idle</span></div>
+              <div class="codebox" id="real2simLog">Waiting for Real2Sim logs...</div>
             </div>
           </div>
 

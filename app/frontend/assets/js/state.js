@@ -1218,6 +1218,10 @@
     }
 
     async function showThreeViewer() {
+      // The 3D reconstruction viewer lives in the Real2Sim tab; surface it
+      // when a GLB loads so the reconstruction isn't produced into a hidden
+      // pane (mirrors model.js switching to "scene" on a fresh render).
+      if (typeof switchRightTab === "function") switchRightTab("real2sim", { auto: true });
       document.getElementById("threeViewport").style.display = "block";
       document.getElementById("renderImage").style.display = "none";
       document.getElementById("imagePlaceholder").style.display = "none";

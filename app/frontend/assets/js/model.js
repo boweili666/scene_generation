@@ -805,7 +805,7 @@
         showImagePreview();
         refreshRuntimeRenderImage();
         // Step 8: a fresh scene render is the new thing-to-look-at.
-        if (typeof switchRightTab === "function") switchRightTab("sim", { auto: true });
+        if (typeof switchRightTab === "function") switchRightTab("scene", { auto: true });
       }
 
       if (real2simJobInfo?.job_id) {

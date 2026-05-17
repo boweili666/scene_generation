@@ -46,6 +46,15 @@
       background: linear-gradient(180deg, rgba(248,250,255,1), rgba(255,255,255,1));
       flex: 0 0 auto;
     }
+    /* Pushes the ops tabs (Logs/Diagnostics) to the right edge, visually
+       separating them from the pipeline-stage tabs to their left. */
+    .right-tab-sep{
+      margin-left: auto;
+      align-self: stretch;
+      width: 1px;
+      margin-right: 8px;
+      background: rgba(15,23,42,0.10);
+    }
     .right-tab-btn{
       appearance: none;
       cursor: pointer;

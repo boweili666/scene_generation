@@ -28,7 +28,7 @@
     }
 
     // Right-column tab switcher (Step 4 + 8).
-    // Tabs: graph / sim / logs / masks / diag.
+    // Tabs: graph / real2sim / scene / robot / logs / diag.
     // `opts.manual` records when the user clicked a tab so subsequent
     // event-driven auto-switches can hold off for `MANUAL_TAB_HOLD_MS`.
     let _lastManualTabAt = 0;
@@ -56,10 +56,10 @@
       if (title) {
         title.textContent =
           want === "graph" ? "Scene Graph"
-          : want === "sim" ? "Simulation Preview"
+          : want === "real2sim" ? "Real2Sim"
+          : want === "scene" ? "Scene Preview"
           : want === "robot" ? "Robot Pipeline"
           : want === "logs" ? "Logs"
-          : want === "masks" ? "Mask Review"
           : "Diagnostics";
       }
       if (want === "robot" && typeof refreshRobotDashboard === "function") {
@@ -78,7 +78,7 @@
           try { cy.resize(); cy.fit(undefined, 24); } catch (e) { /* harmless */ }
         });
       }
-      if (want === "sim" && typeof viewerState !== "undefined" && viewerState && typeof viewerState.resize === "function") {
+      if (want === "real2sim" && typeof viewerState !== "undefined" && viewerState && typeof viewerState.resize === "function") {
         requestAnimationFrame(() => {
           try { viewerState.resize(); } catch (e) { /* harmless */ }
         });

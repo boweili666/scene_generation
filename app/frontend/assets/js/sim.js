@@ -165,8 +165,8 @@
         try {
           const review = await refreshMaskAssignmentReview({ silent: true, auto: false });
           if (review?.needs_attention) {
-            // Step 8: auto-jump to the Masks tab (replaces the old drawer toggle).
-            if (typeof switchRightTab === "function") switchRightTab("masks", { auto: true });
+            // Step 8: auto-jump to the Real2Sim tab (replaces the old drawer toggle).
+            if (typeof switchRightTab === "function") switchRightTab("real2sim", { auto: true });
             toast(
               "warn",
               "Review mask mapping",
@@ -181,9 +181,9 @@
         } else if (finalJobStatus === "failed") {
           document.getElementById("real2simLogStatus").textContent = "Failed";
           if (finalJob?.error_info?.code === "mask_assignment_failed") {
-            // Step 8: jump to the Masks tab so the user can correct the assignment.
-            if (typeof switchRightTab === "function") switchRightTab("masks", { auto: true });
-            toast("warn", "Mask assignment needs review", "Switch to the Masks tab and correct the assignment before continuing.");
+            // Step 8: jump to the Real2Sim tab so the user can correct the assignment.
+            if (typeof switchRightTab === "function") switchRightTab("real2sim", { auto: true });
+            toast("warn", "Mask assignment needs review", "Switch to the Real2Sim tab and correct the assignment before continuing.");
           }
         }
       })();
