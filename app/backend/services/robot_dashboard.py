@@ -234,8 +234,15 @@ def _parse_train_log_progress(log_path: Path, *, tail_kb: int = 64) -> dict[str,
     return out
 
 
-def find_train_output(repo_id: Optional[str]) -> Optional[Path]:
-    """Best-effort: try `outputs/train/<repo_basename>` first, else newest."""
+def find_train_output(repo_id: Optional[str], context: RuntimeContext) -> Optional[Path]:
+    """This run's newest train output dir, or None.
+
+    Train output dirs are named `<session>_<run>_<timestamp>` (see
+    agent_loop._tool_run_scene_robot_train). We scope strictly to this
+    run's `<session>_<run>_` prefix and return None when there is no
+    match — the previous "newest dir across all sessions" fallback made
+    the Robot tab's Train card show another session's training run.
+    """
     if not OUTPUTS_TRAIN_DIR.exists():
         return None
     if repo_id:
@@ -243,7 +250,10 @@ def find_train_output(repo_id: Optional[str]) -> Optional[Path]:
         cand = OUTPUTS_TRAIN_DIR / basename
         if cand.exists() and cand.is_dir():
             return cand
-    candidates = [p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir()]
+    prefix = f"{context.session_id}_{context.run_id}_"
+    candidates = [
+        p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir() and p.name.startswith(prefix)
+    ]
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -258,7 +268,7 @@ def summarize_train(
 ) -> dict[str, Any]:
     """Return train output summary for the dashboard."""
     out: dict[str, Any] = {"exists": False}
-    output_dir = find_train_output(repo_id)
+    output_dir = find_train_output(repo_id, context)
     if output_dir is None:
         return out
     out["exists"] = True
@@ -361,17 +371,22 @@ def _read_json_silent(path: Path) -> Optional[dict[str, Any]]:
 
 
 def summarize_grasp_plan(context: RuntimeContext) -> dict[str, Any]:
-    """Pull the latest robot-placement plan + selected grasp proposal.
+    """Pull THIS run's robot-placement plan + selected grasp proposal.
 
-    `plan_robot_base_pose` writes its outputs to a shared dir (the script's
-    `--plan_output_dir` default is `<PROJECT_ROOT>/runtime/robot_placement`)
-    rather than under the per-run dir, so we read from the shared location.
-    Each new collect run overwrites the four files in-place, which means
-    what we read here is the plan that drove the LATEST collect call —
-    the right thing for the UI to show.
+    Collect passes `--plan_output_dir <run>/robot_placement` so each run's
+    plan is isolated (see agent_loop._tool_run_scene_robot_collect /
+    scene_robot_service._build_collect_cmd). We read ONLY the per-run dir
+    and intentionally do NOT fall back to the legacy shared
+    `<RUNTIME_DIR>/robot_placement`: that shared path is what made every
+    session's Robot tab show the same plan, so a run that hasn't produced
+    its own plan must render empty (like the Collect / Dataset cards),
+    not borrow whatever was written there last.
     """
     out: dict[str, Any] = {"exists": False}
-    plan_root = Path(RUNTIME_DIR) / "robot_placement"
+    per_run_root = Path(getattr(context, "robot_placement_dir", "") or "")
+    if not per_run_root:
+        return out
+    plan_root = per_run_root
     base_plan_path = plan_root / "robot_base_plan.json"
     grasp_path = plan_root / "selected_grasp_proposal.json"
 
@@ -465,12 +480,14 @@ def summarize_lerobot_dataset(repo_id: Optional[str], context: RuntimeContext) -
         if cand.is_dir():
             candidates.append(cand)
     if not candidates:
-        # Glob session/run-prefixed dirs (covers `..._partial4` etc.)
+        # Strict `<session>_<run>_` prefix (covers same-run `..._partial4`
+        # variants). The old `session_id[:8] in name` substring test let
+        # another session/run's dataset leak into this run's card.
+        prefix = f"{context.session_id}_{context.run_id}_"
         for entry in LEROBOT_DATASETS_DIR.iterdir():
             if not entry.is_dir():
                 continue
-            name = entry.name
-            if context.session_id[:8] in name or context.run_id[:8] in name:
+            if entry.name.startswith(prefix):
                 candidates.append(entry)
     if not candidates:
         return out
@@ -529,22 +546,19 @@ def summarize_lerobot_dataset(repo_id: Optional[str], context: RuntimeContext) -
 
 
 def find_latest_eval_dir(context: RuntimeContext) -> Optional[Path]:
-    """Pick the most-recent <session>_<run>_*_runs/ dir under outputs/eval/.
-    Falls back to the newest directory overall when the session-tagged
-    convention isn't followed."""
+    """THIS run's most-recent `<session>_<run>_*_runs/` dir, or None.
+
+    Eval dirs are named `<session>_<run>_<timestamp>_runs` (see
+    agent_loop._tool_run_scene_robot_eval). We scope strictly to this
+    run's prefix and return None on no match — the previous "newest dir
+    overall" fallback made every session without its own eval show
+    another session's eval run.
+    """
     if not OUTPUTS_EVAL_DIR.exists():
         return None
     pattern = f"{context.session_id}_{context.run_id}_*"
     cands = sorted(OUTPUTS_EVAL_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-    if cands:
-        return cands[0]
-    # Fallback: newest dir overall.
-    fallback = sorted(
-        [p for p in OUTPUTS_EVAL_DIR.iterdir() if p.is_dir()],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    return fallback[0] if fallback else None
+    return cands[0] if cands else None
 
 
 def summarize_eval(context: RuntimeContext) -> dict[str, Any]:

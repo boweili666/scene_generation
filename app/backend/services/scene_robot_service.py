@@ -344,6 +344,9 @@ def _build_collect_cmd(payload: dict[str, Any]) -> list[str]:
     if run_id:
         cmd += ["--run", str(run_id)]
 
+    if payload.get("plan_output_dir"):
+        cmd += ["--plan_output_dir", str(payload["plan_output_dir"])]
+
     if payload.get("robot"):
         cmd += ["--robot", str(payload["robot"])]
     if payload.get("target"):

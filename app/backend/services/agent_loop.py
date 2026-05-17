@@ -484,6 +484,7 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
         "session_id": context.session_id,
         "run_id": context.run_id,
         "log_path": str(context.scene_robot_log_path),
+        "plan_output_dir": str(context.robot_placement_dir),
         "robot": robot,
         "target": target,
         "num_episodes": num_episodes,
@@ -543,10 +544,16 @@ def _latest_collect_hdf5(context: RuntimeContext) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _latest_train_output(repo_id: str | None = None) -> Path | None:
+def _latest_train_output(context: RuntimeContext) -> Path | None:
+    # Train output dirs are `<session>_<run>_<timestamp>` (see
+    # _tool_run_scene_robot_train). Scope strictly to this run so eval
+    # doesn't pick up another run/session's checkpoint; None when absent.
     if not OUTPUTS_TRAIN_DIR.exists():
         return None
-    candidates = [p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir()]
+    prefix = f"{context.session_id}_{context.run_id}_"
+    candidates = [
+        p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir() and p.name.startswith(prefix)
+    ]
     if not candidates:
         return None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -666,9 +673,9 @@ def _tool_run_scene_robot_eval(args: dict[str, Any], lctx: "LoopContext") -> dic
 
     checkpoint = (args.get("checkpoint") or "").strip() if isinstance(args.get("checkpoint"), str) else ""
     if not checkpoint:
-        latest = _latest_train_output()
+        latest = _latest_train_output(context)
         if latest is None:
-            return {"ok": False, "error": "No checkpoint provided and no train outputs found; run train first or pass checkpoint."}
+            return {"ok": False, "error": "No checkpoint provided and no train outputs found for this run; run train first or pass checkpoint."}
         checkpoint = str(latest / "checkpoints" / "last" / "pretrained_model")
 
     repo_id = (args.get("repo_id") or "").strip() if isinstance(args.get("repo_id"), str) else ""
