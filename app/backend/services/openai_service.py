@@ -54,10 +54,19 @@ OBJECT RULES
    - `path`: "/World/<ClassName>_<ID>"
    - `id`: integer ID
    - `class`: lowercase class name
-   - `caption`: short caption
+   - `caption`: short VISUAL description (see rule 8)
    - `source`: one of `real2sim` or `retrieval`
 7. Class names must be lowercase.
-8. Caption max 6 words.
+8. Caption: max 6 words, describing ONLY the object's visible physical
+   appearance (color, shape, material, size). The caption is used
+   verbatim as a vision-segmentation prompt, so it MUST be a plain
+   "<attributes> <object-noun>" phrase (e.g. "orange bolt", "green
+   clamp"). Do NOT include task / role / purpose / goal words (e.g.
+   "target", "the one to pick", "goal object"), instruction wording, or
+   scene-relative position words ("left", "right", "near the ...");
+   those wreck the segmentation grounding. Use a different visible
+   attribute to disambiguate same-class objects (e.g. "orange bolt" vs
+   "yellow bolt"), never a positional/task word.
 9. Choose `source` conservatively:
    - use `real2sim` for objects that should come from the current observed real scene / uploaded image
    - use `retrieval` for objects that should come from the asset library or are newly imagined from text

@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE_PATH)
     parser.add_argument("--scene-graph", type=Path, default=DEFAULT_SCENE_GRAPH)
     parser.add_argument("--prompts", nargs="+", default=None)
+    # Optional per-prompt label, parallel to --prompts. SAM3 is fed the
+    # --prompts text (a caption grounds better); the mask is recorded under
+    # the label (the class) so manifest.py's prompt==class join still works.
+    # When omitted or length-mismatched, label falls back to the prompt
+    # text (exact legacy behaviour).
+    parser.add_argument("--prompt-labels", nargs="+", default=None)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--mesh-output-dir", type=Path, default=DEFAULT_MESH_OUTPUT)
     parser.add_argument("--reuse-mesh-dir", type=Path, default=DEFAULT_REUSE_MESH_DIR)
@@ -172,10 +178,21 @@ def main() -> None:
     if not prompts:
         raise RuntimeError("No prompts available. Provide --prompts or a valid scene graph.")
 
-    # Keep table first, because downstream relative-XY step usually uses table as reference.
-    table_like = [p for p in prompts if p.strip().lower() == "table"]
-    others = [p for p in prompts if p.strip().lower() != "table"]
-    prompts = table_like + others
+    # Pair each SAM3 text with its recorded label (the class). Fall back to
+    # text==label when --prompt-labels is absent or length-mismatched
+    # (exact legacy behaviour).
+    labels = args.prompt_labels
+    if not labels or len(labels) != len(prompts):
+        labels = list(prompts)
+    pairs = list(zip(prompts, labels))
+
+    # Keep table first, because downstream relative-XY step usually uses
+    # table as reference. Match on the label (class), not the SAM3 text
+    # (which may be a caption like "light wood work table").
+    table_like = [pr for pr in pairs if pr[1].strip().lower() == "table"]
+    others = [pr for pr in pairs if pr[1].strip().lower() != "table"]
+    pairs = table_like + others
+    prompts = [t for t, _ in pairs]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[INFO] Device: {device}")
@@ -206,11 +223,14 @@ def main() -> None:
     global_mask_idx = 0
     mask_metadata: dict[str, dict[str, Any]] = {}
 
-    for prompt in prompts:
-        prompt_key = normalize_label(prompt)
-        print(f"\n[SEGMENT] {prompt}")
+    for prompt_text, prompt_label in pairs:
+        prompt_key = normalize_label(prompt_label)
+        if prompt_text.strip().lower() == prompt_label.strip().lower():
+            print(f"\n[SEGMENT] {prompt_text}")
+        else:
+            print(f"\n[SEGMENT] {prompt_text}  (label={prompt_label})")
 
-        inputs = processor(images=image, text=prompt, return_tensors="pt").to(device)
+        inputs = processor(images=image, text=prompt_text, return_tensors="pt").to(device)
         with torch.no_grad():
             outputs = model(**inputs)
 
@@ -251,8 +271,13 @@ def main() -> None:
             Image.fromarray(rgba_full).save(mask_path)
             mask_metadata[str(global_mask_idx)] = {
                 "mask_path": mask_path.name,
-                "prompt": prompt.strip().lower(),
+                # Record the label (class) so manifest.py's
+                # normalize(prompt)==normalize(target_class) join holds.
+                "prompt": prompt_label.strip().lower(),
                 "prompt_key": prompt_key,
+                # The actual text SAM3 was prompted with (debug/transparency;
+                # downstream consumers ignore unknown keys).
+                "sam3_prompt": prompt_text.strip().lower(),
                 "bbox_xyxy": [x_min, y_min, x_max, y_max],
             }
 
@@ -268,7 +293,9 @@ def main() -> None:
     if existing:
         print(f"[INFO] Using existing meshes in {args.mesh_output_dir} (count={len(existing)})")
     else:
-        reused = copy_reused_meshes(prompts, args.reuse_mesh_dir, args.mesh_output_dir)
+        reused = copy_reused_meshes(
+            [lbl for _, lbl in pairs], args.reuse_mesh_dir, args.mesh_output_dir
+        )
         print(f"[INFO] Reused meshes copied: {reused}")
 
     (args.output_root / MASK_METADATA_FILENAME).write_text(

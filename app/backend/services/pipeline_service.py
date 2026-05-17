@@ -418,7 +418,21 @@ def _run_step(cmd, timeout, label, env=None, cwd=None, job_id: str | None = None
     return _Result("".join(stdout_chunks), "".join(stderr_chunks))
 
 
-def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
+def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[tuple[str, str]]:
+    """Return (sam3_text, class_label) pairs for each real2sim object.
+
+    `sam3_text` is the object's caption when present (a discriminative
+    phrase like "orange target bolt" grounds far better in SAM3 than the
+    bare class "bolt", and disambiguates two same-class objects), else
+    the class. `class_label` stays the class so the recorded mask label
+    keeps matching `target_class` in manifest.py's exact-equality join
+    (`normalize(mask.prompt) == normalize(target_class)`) — the SAM3
+    input text and the recorded label are intentionally decoupled.
+
+    Distinct objects sharing a class are NOT collapsed: two bolts with
+    different captions yield two prompts (both labelled "bolt"), so
+    manifest's multi-instance match still picks the best by score.
+    """
     path = Path(scene_graph_path)
     if not path.exists():
         return []
@@ -426,36 +440,30 @@ def _extract_prompts_from_scene_graph(scene_graph_path: str) -> list[str]:
     with path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
-    prompts: list[str] = []
-    objects = data.get("objects")
-    if isinstance(objects, list):
-        for obj in objects:
-            if not isinstance(obj, dict):
-                continue
-            if obj.get("source") != "real2sim":
-                continue
-            val = obj.get("class_name") or obj.get("class")
-            if isinstance(val, str) and val.strip():
-                prompts.append(val.strip().lower())
+    def _iter_objects():
+        objects = data.get("objects")
+        if isinstance(objects, list):
+            yield from (o for o in objects if isinstance(o, dict))
+        obj_map = data.get("obj")
+        if isinstance(obj_map, dict):
+            yield from (o for o in obj_map.values() if isinstance(o, dict))
 
-    obj_map = data.get("obj")
-    if isinstance(obj_map, dict):
-        for obj in obj_map.values():
-            if not isinstance(obj, dict):
-                continue
-            if obj.get("source") != "real2sim":
-                continue
-            val = obj.get("class_name") or obj.get("class")
-            if isinstance(val, str) and val.strip():
-                prompts.append(val.strip().lower())
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for item in prompts:
-        if item not in seen:
-            deduped.append(item)
-            seen.add(item)
-    return deduped
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for obj in _iter_objects():
+        if obj.get("source") != "real2sim":
+            continue
+        cls = obj.get("class_name") or obj.get("class")
+        if not (isinstance(cls, str) and cls.strip()):
+            continue
+        label = cls.strip().lower()
+        caption = obj.get("caption")
+        text = caption.strip().lower() if isinstance(caption, str) and caption.strip() else label
+        pair = (text, label)
+        if pair not in seen:
+            pairs.append(pair)
+            seen.add(pair)
+    return pairs
 
 
 def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -> dict:
@@ -563,22 +571,35 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
 
     image_path = str(payload.get("image_path") or LATEST_INPUT_IMAGE)
     scene_graph_path = str(payload.get("scene_graph_path") or SCENE_GRAPH_PATH)
-    scene_graph_prompts = _extract_prompts_from_scene_graph(scene_graph_path)
-    prompts = payload.get("prompts") or scene_graph_prompts
     log_real2sim_event(
         f"Starting Real2Sim with image={image_path} scene_graph={scene_graph_path}",
         job_id=job_id,
         log_path=log_path,
     )
-    if not prompts:
+    # A manual `payload["prompts"]` override is a plain list[str]; treat each
+    # as text==label (back-compat). Otherwise use (sam3_text, class_label)
+    # pairs from the scene graph: SAM3 is fed the caption, the recorded
+    # label stays the class so manifest's prompt==class join is preserved.
+    manual_prompts = payload.get("prompts")
+    if manual_prompts:
+        if not isinstance(manual_prompts, list) or not all(
+            isinstance(p, str) and p.strip() for p in manual_prompts
+        ):
+            raise ValueError("prompts must be a non-empty list of strings")
+        prompt_pairs = [(p.strip().lower(), p.strip().lower()) for p in manual_prompts]
+    else:
+        prompt_pairs = [
+            (t.strip().lower(), l.strip().lower())
+            for t, l in _extract_prompts_from_scene_graph(scene_graph_path)
+            if t and t.strip() and l and l.strip()
+        ]
+    if not prompt_pairs:
         raise ValueError("No object prompts found in scene graph. Generate scene graph first.")
-    if not isinstance(prompts, list) or not all(isinstance(p, str) and p for p in prompts):
-        raise ValueError("prompts must be a non-empty list of strings")
-    prompts = [p.strip().lower() for p in prompts if p and p.strip()]
-    if not prompts:
-        raise ValueError("prompts resolved to empty after normalization")
+    prompt_texts = [t for t, _ in prompt_pairs]
+    prompt_labels = [l for _, l in prompt_pairs]
     log_real2sim_event(
-        f"Resolved {len(prompts)} prompt(s): {', '.join(prompts)}",
+        f"Resolved {len(prompt_pairs)} prompt(s): "
+        + ", ".join(t if t == l else f"{t} [as {l}]" for t, l in prompt_pairs),
         job_id=job_id,
         log_path=log_path,
     )
@@ -614,7 +635,9 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         "--reuse-mesh-dir",
         reuse_mesh_dir,
         "--prompts",
-        *prompts,
+        *prompt_texts,
+        "--prompt-labels",
+        *prompt_labels,
     ]
     _run_step(
         step1_cmd,
@@ -677,7 +700,7 @@ def run_real2sim(payload: dict | None = None, job_id: str | None = None) -> dict
         "real2sim_root_dir": str(real2sim_root),
         "image_path": image_path,
         "scene_graph_path": scene_graph_path,
-        "prompts": prompts,
+        "prompts": prompt_texts,
         "mask_output": mask_output,
         "scene_results_dir": scene_results_dir,
         "predict_stream_server": predict_stream_server,
