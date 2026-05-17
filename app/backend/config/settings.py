@@ -36,7 +36,7 @@ GENMESH_ROOT = str(PROJECT_ROOT / "genmesh")
 SCENE_GRAPH_PATH = str((SCENE_GRAPH_RUNTIME_DIR / "current_scene_graph.json").resolve())
 
 DEFAULT_PLACEMENTS_PATH = (SCENE_SERVICE_PLACEMENTS_DIR / "placements_default.json").resolve()
-DEFAULT_MODEL = os.environ.get("SCENE_GRAPH_DEFAULT_MODEL", "gpt-5-nano")
+DEFAULT_MODEL = os.environ.get("SCENE_GRAPH_DEFAULT_MODEL", "gpt-5.5")
 DEFAULT_RENDER_PATH = (RENDERS_DIR / "render.png").resolve()
 LATEST_INPUT_IMAGE = (UPLOADS_DIR / "latest_input.jpg").resolve()
 LOG_PATH = str((LOGS_DIR / "real2sim.log").resolve())
