@@ -220,6 +220,7 @@
 
     async function startNewSession() {
       invalidateReal2SimMonitor();
+      invalidateSceneRobotMonitor();
       clearPersistedRuntimeState();
       runtimeSessionState.sessionId = null;
       runtimeSessionState.runId = null;
@@ -232,6 +233,8 @@
       interactionState.currentSceneGraph = null;
       real2simLogState.offset = 0;
       real2simLogState.path = "real2sim.log";
+      sceneRobotLogState.offset = 0;
+      sceneRobotLogState.path = "scene_robot.log";
 
       clearThreeViewer();
       setPreviewMessage("No render yet. Run Real2Sim or Scene Service to refresh the preview.");
@@ -247,6 +250,8 @@
       document.getElementById("feedbackBox").textContent = "-";
       document.getElementById("real2simLog").textContent = "Waiting for Real2Sim logs...";
       document.getElementById("real2simLogStatus").textContent = "Idle";
+      document.getElementById("sceneRobotLog").textContent = "Waiting for scene_robot logs...";
+      document.getElementById("sceneRobotLogStatus").textContent = "Idle";
       document.getElementById("sceneInput").value = "";
       const classDirPicker = document.getElementById("classDirPicker");
       if (classDirPicker) {
@@ -488,6 +493,8 @@
       interactionState.currentSceneGraph = null;
       real2simLogState.offset = 0;
       real2simLogState.path = "real2sim.log";
+      sceneRobotLogState.offset = 0;
+      sceneRobotLogState.path = "scene_robot.log";
 
       clearThreeViewer();
       setPreviewMessage("Loading session…");
@@ -511,6 +518,10 @@
       if (r2sLog) r2sLog.textContent = "Waiting for Real2Sim logs...";
       const r2sStatus = document.getElementById("real2simLogStatus");
       if (r2sStatus) r2sStatus.textContent = "Idle";
+      const srLog = document.getElementById("sceneRobotLog");
+      if (srLog) srLog.textContent = "Waiting for scene_robot logs...";
+      const srStatus = document.getElementById("sceneRobotLogStatus");
+      if (srStatus) srStatus.textContent = "Idle";
       const sceneInputEl = document.getElementById("sceneInput");
       if (sceneInputEl) sceneInputEl.value = "";
       clearReferenceImageInput();
