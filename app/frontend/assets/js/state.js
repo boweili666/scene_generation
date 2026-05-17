@@ -40,7 +40,11 @@
       queueBusy: false,
       loadingMerged: false,
       mergedUrl: null,
-      mergedRoot: null
+      mergedRoot: null,
+      // Job id of the Real2Sim run currently loaded into the viewer.
+      // Used to wipe the previous run's GLBs when a new run starts (and
+      // to NOT wipe on a benign re-poll / page-reload of the same job).
+      real2simJobId: null
     };
 
     const real2simLogState = {
@@ -1742,6 +1746,13 @@
             setPreviewMessage("GLB load failed in browser. Open DevTools Console for details.");
           }
         }
+        // Stream drained: settle the camera once on the now-complete
+        // scene at the correct aspect. Per-GLB framing during streaming
+        // can land while the pane is hidden / mid-load (sheared view).
+        try {
+          if (viewerState.resize) viewerState.resize();
+        } catch (e) { /* harmless */ }
+        framePreviewCamera();
       } finally {
         viewerState.queueBusy = false;
       }

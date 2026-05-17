@@ -79,8 +79,16 @@
         });
       }
       if (want === "real2sim" && typeof viewerState !== "undefined" && viewerState && typeof viewerState.resize === "function") {
+        // The 3D viewer may have been rendered/framed while this pane was
+        // display:none (GLBs stream in while the user watches Logs), so the
+        // camera aspect is wrong (scene looks sheared). On show, recompute
+        // the aspect AND re-fit the camera to the now-complete scene —
+        // resize alone fixes the aspect but leaves the stale framing.
         requestAnimationFrame(() => {
-          try { viewerState.resize(); } catch (e) { /* harmless */ }
+          try {
+            viewerState.resize();
+            if (typeof framePreviewCamera === "function") framePreviewCamera();
+          } catch (e) { /* harmless */ }
         });
       }
     }

@@ -54,6 +54,15 @@
         const logPath = jobInfo.log_path || "real2sim.log";
 
         resetReal2SimLog(logStartOffset, logPath);
+        // A genuinely new Real2Sim run must not keep showing the previous
+        // run's reconstruction. clearThreeViewer wipes the stale merged /
+        // object GLBs + the load-dedupe state so the viewer reloads only
+        // THIS run's artifacts. Guarded by job id so a benign re-poll or a
+        // page-reload rehydrate of the SAME job doesn't wipe a correct scene.
+        if (viewerState.real2simJobId !== jobId) {
+          clearThreeViewer();
+          viewerState.real2simJobId = jobId;
+        }
         setPill("sim","warn","Real2Sim");
         statusEl.textContent = `Job ${jobId.slice(0, 8)} running`;
         resultEl.textContent = JSON.stringify({ job_id: jobId, status: "running" }, null, 2);
