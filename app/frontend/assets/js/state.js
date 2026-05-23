@@ -334,13 +334,15 @@
         || "";
 
       sessions.forEach((s) => {
-        const row = document.createElement("button");
-        row.type = "button";
+        const row = document.createElement("div");
         row.className = "session-row";
         row.setAttribute("role", "option");
         row.title = s.session_id;
         if (s.session_id === currentSessionId) row.classList.add("is-current");
-        row.addEventListener("click", () => {
+        row.addEventListener("click", (evt) => {
+          if (evt.target && evt.target.closest && evt.target.closest(".session-row-delete")) {
+            return;
+          }
           switchToSession(s.session_id, s.current_run_id || null).catch((err) => {
             console.error(err);
             toast("err", "Switch failed", String(err));
@@ -355,8 +357,22 @@
         const timeEl = document.createElement("span");
         timeEl.className = "session-row-time";
         timeEl.textContent = formatRelativeTime(s.updated_at_ts);
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "session-row-delete";
+        delBtn.title = "Delete this session";
+        delBtn.setAttribute("aria-label", "Delete session");
+        delBtn.textContent = "×";
+        delBtn.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          deleteSessionById(s.session_id).catch((err) => {
+            console.error(err);
+            toast("err", "Delete failed", String(err));
+          });
+        });
         top.appendChild(idEl);
         top.appendChild(timeEl);
+        top.appendChild(delBtn);
         row.appendChild(top);
 
         const prompt = document.createElement("div");
@@ -454,6 +470,42 @@
       const dd = document.getElementById("sessionsDropdown");
       if (dd && !dd.hidden) setSessionsDropdownOpen(false);
     });
+
+    async function deleteSessionById(sessionId) {
+      if (!sessionId) return;
+      const label = shortenSessionId(sessionId);
+      const confirmed = window.confirm(
+        `Delete session ${label}?\n\nThis stops any running jobs for this session and removes its runtime directory. This cannot be undone.`
+      );
+      if (!confirmed) return;
+
+      const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || `HTTP ${res.status}`);
+      }
+
+      const currentSessionId = runtimeSessionState.sessionId
+        || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY)
+        || "";
+      if (sessionId === currentSessionId) {
+        clearPersistedRuntimeState();
+        runtimeSessionState.sessionId = null;
+        runtimeSessionState.runId = null;
+        runtimeSessionState.context = null;
+        runtimeSessionState.initializing = null;
+        invalidateReal2SimMonitor();
+        invalidateSceneRobotMonitor();
+        clearThreeViewer();
+        setPreviewMessage("No session selected.");
+        resetAgentPanel();
+        latestSessionState = null;
+        renderPipelineStrip();
+      }
+
+      toast("ok", "Session deleted", `Removed ${label}`);
+      await refreshSessionsList();
+    }
 
     async function switchToSession(sessionId, runId) {
       if (!sessionId) return;

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -229,3 +230,73 @@ def create_run(session_id: str, run_id: str | None = None) -> RuntimeContext:
     normalized_session_id = normalize_runtime_identifier(session_id, label="session_id")
     normalized_run_id = normalize_runtime_identifier(run_id or generate_run_id(), label="run_id")
     return build_runtime_context(normalized_session_id, normalized_run_id).ensure()
+
+
+def _interrupt_and_cancel_jobs(session_id: str, run_id: str) -> list[dict]:
+    from . import agent_interrupt as _agent_interrupt
+    from .pipeline_service import cancel_real2sim_jobs_for_run
+    from .scene_robot_service import cancel_scene_robot_jobs_for_run
+
+    _agent_interrupt.request_interrupt(session_id, run_id)
+    results: list[dict] = []
+    for fn in (cancel_real2sim_jobs_for_run, cancel_scene_robot_jobs_for_run):
+        try:
+            results.append(fn(session_id, run_id))
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown
+            results.append({"service": getattr(fn, "__name__", "?"), "error": str(exc)})
+    return results
+
+
+def delete_run(session_id: str, run_id: str) -> dict:
+    normalized_session_id = normalize_runtime_identifier(session_id, label="session_id")
+    normalized_run_id = normalize_runtime_identifier(run_id, label="run_id")
+
+    session_root = SESSIONS_DIR / normalized_session_id
+    run_root = session_root / "runs" / normalized_run_id
+    if not run_root.exists() or not run_root.is_dir():
+        raise FileNotFoundError(
+            f"Run not found: {normalized_session_id}/{normalized_run_id}"
+        )
+
+    cancelled = _interrupt_and_cancel_jobs(normalized_session_id, normalized_run_id)
+    shutil.rmtree(run_root, ignore_errors=False)
+
+    current_run_path = session_root / _CURRENT_RUN_FILENAME
+    if current_run_path.exists():
+        current = current_run_path.read_text(encoding="utf-8").strip()
+        if current == normalized_run_id:
+            current_run_path.unlink()
+
+    return {
+        "session_id": normalized_session_id,
+        "run_id": normalized_run_id,
+        "cancelled_jobs": cancelled,
+    }
+
+
+def delete_session(session_id: str) -> dict:
+    normalized_session_id = normalize_runtime_identifier(session_id, label="session_id")
+    session_root = SESSIONS_DIR / normalized_session_id
+    if not session_root.exists() or not session_root.is_dir():
+        raise FileNotFoundError(f"Session not found: {normalized_session_id}")
+
+    runs_root = session_root / "runs"
+    cancelled_per_run: list[dict] = []
+    if runs_root.exists() and runs_root.is_dir():
+        for run_dir in runs_root.iterdir():
+            if not run_dir.is_dir():
+                continue
+            try:
+                rid = normalize_runtime_identifier(run_dir.name, label="run_id")
+            except ValueError:
+                continue
+            cancelled_per_run.append({
+                "run_id": rid,
+                "jobs": _interrupt_and_cancel_jobs(normalized_session_id, rid),
+            })
+
+    shutil.rmtree(session_root, ignore_errors=False)
+    return {
+        "session_id": normalized_session_id,
+        "runs_cancelled": cancelled_per_run,
+    }

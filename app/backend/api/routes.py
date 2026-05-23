@@ -66,6 +66,8 @@ from ..services.real2sim_review_service import load_assignment_review, save_assi
 from ..services.runtime_context import (
     create_run,
     create_session,
+    delete_run,
+    delete_session,
     resolve_runtime_context,
 )
 
@@ -445,6 +447,26 @@ def register_routes(app):
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"status": "ok", "context": context.to_dict()})
+
+    @app.route("/sessions/<session_id>", methods=["DELETE"])
+    def session_delete(session_id):
+        try:
+            result = delete_session(session_id)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        return jsonify({"status": "ok", **result})
+
+    @app.route("/sessions/<session_id>/runs/<run_id>", methods=["DELETE"])
+    def session_run_delete(session_id, run_id):
+        try:
+            result = delete_run(session_id, run_id)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except FileNotFoundError as e:
+            return jsonify({"error": str(e)}), 404
+        return jsonify({"status": "ok", **result})
 
     @app.route("/")
     def index():
