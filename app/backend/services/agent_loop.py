@@ -98,8 +98,9 @@ Available tools (in normal pipeline order):
   for the current scene graph + image. Returns immediately with a job id;
   it runs in the background and the UI streams its log.
 - generate_scene: call the Isaac scene service to produce the scene USD
-  preview using the current scene graph (pick resample_mode joint or
-  lock_real2sim).
+  preview using the current scene graph. Default resample_mode is
+  lock_real2sim (keeps observed real2sim support chains rigid); only
+  pass joint when the user explicitly asks to fully resample the layout.
 - run_scene_robot_collect: launch the scene_robot auto-grasp data
   collection job. Defaults: robot=agibot, num_episodes=5, target=first
   real2sim object in the scene graph. Returns immediately with a job id.
@@ -350,9 +351,9 @@ def _tool_generate_scene(args: dict[str, Any], lctx: "LoopContext") -> dict[str,
     if not context.scene_graph_path.exists():
         return {"ok": False, "error": "No scene graph in this run; create_scene_graph first."}
 
-    resample_mode = str(args.get("resample_mode") or "joint").strip().lower()
+    resample_mode = str(args.get("resample_mode") or "lock_real2sim").strip().lower()
     if resample_mode not in {"joint", "lock_real2sim"}:
-        resample_mode = "joint"
+        resample_mode = "lock_real2sim"
     scene_endpoint = str(args.get("scene_endpoint") or "scene_new").strip().lower()
     if scene_endpoint not in {"scene", "scene_new"}:
         scene_endpoint = "scene_new"
@@ -965,7 +966,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "resample_mode": {
                     "type": "string",
                     "enum": ["joint", "lock_real2sim"],
-                    "description": "Layout strategy. lock_real2sim keeps observed real2sim support chains rigid.",
+                    "description": "Layout strategy. Default lock_real2sim — keeps observed real2sim support chains rigid; only pass joint when the user explicitly asks to fully resample the layout.",
                 },
                 "scene_endpoint": {
                     "type": "string",
