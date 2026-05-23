@@ -30,9 +30,17 @@ The source HDF5 layout (written by scene_mouse_collect / scene_auto_grasp_collec
         demo_1/
             ...
 
-Each source demo becomes one LeRobot episode. observation.state is
-joint_pos (full articulation), action is the HDF5 actions array, and the
-three RGB streams map to observation.images.{head,left_hand,right_hand}.
+Each source demo becomes one LeRobot episode. action is the HDF5 actions
+array, and the three RGB streams map to
+observation.images.{head,left_hand,right_hand}.
+
+observation.state depends on --state-layout:
+  * full34 (default): the raw 34-D Isaac articulation joint_pos vector.
+  * slim20: a 20-D real-robot-deployable state
+    [body2, head2, left_arm7, right_arm7, left_grip, right_grip] sliced from
+    joint_pos using Genie Sim's G1 dof_order, with the two gripper DOFs
+    collapsed via the official `omnipicker_sim_to_real` mapping so sim and
+    the physical AgiBot share the same normalized [0, 1] gripper domain.
 """
 
 from __future__ import annotations
@@ -71,6 +79,77 @@ def _load_lerobot():
 
 
 CAMERA_KEYS = ("head", "left_hand", "right_hand")
+
+
+# ---------------------------------------------------------------------------
+# State layouts
+# ---------------------------------------------------------------------------
+# `full34` keeps the original behaviour: observation.state = the raw 34-D
+# Isaac articulation joint_pos vector (full DOF incl. 16 gripper mimic joints).
+#
+# `slim20` produces a real-robot-deployable state: only the joints the
+# physical AgiBot SDK actually exposes, in a fixed order, with the two gripper
+# DOFs collapsed via the official Genie Sim `omnipicker_sim_to_real` mapping so
+# sim and real share the same normalized [0, 1] gripper domain.
+#
+# The 34-D joint_pos is stored in Genie Sim's G1 `dof_order`
+# (source/data_collection/config/robot_cfg/robot_joint_names.json). Verified
+# index-by-index against the official G1 omnipicker `init_joint_position` and
+# the HDF5 `obs/gripper_joint_pos` cross-check (arm joints idx4..17 match to
+# 1e-3; idx19 == obs/gripper_joint_pos; driver range 0.06..0.79 lands on the
+# official 0.78 omnipicker basis).
+#
+#   idx0  body_joint1 (lift)        idx1  body_joint2 (pitch)
+#   idx2  head_joint1 (yaw)         idx3  head_joint2 (pitch)
+#   idx4,6,8,10,12,14,16  left arm joint1..7   (L/R interleaved in dof_order)
+#   idx5,7,9,11,13,15,17  right arm joint1..7
+#   idx19 gripper_l_outer_joint1 (left driver)   <- omnipicker_sim_to_real
+#   idx21 gripper_r_outer_joint1 (right driver)  <- omnipicker_sim_to_real
+SLIM20_BODY_HEAD_IDX = (0, 1, 2, 3)
+SLIM20_LEFT_ARM_IDX = (4, 6, 8, 10, 12, 14, 16)
+SLIM20_RIGHT_ARM_IDX = (5, 7, 9, 11, 13, 15, 17)
+SLIM20_LEFT_GRIPPER_DRIVER_IDX = 19
+SLIM20_RIGHT_GRIPPER_DRIVER_IDX = 21
+SLIM20_DIM = 20
+
+
+def omnipicker_sim_to_real(g_pos: float) -> float:
+    """Official Genie Sim omnipicker gripper mapping (verbatim).
+
+    Source: genie_sim
+    source/data_collection/server/recording/sim_data_converter.py.
+    Maps the omnipicker driver joint angle (rad) to a normalized [0, 1]
+    open/close value using a dead-band + soft threshold, so the sim and the
+    real robot share the same gripper domain without per-endpoint
+    calibration. >0.75 rad -> fully open (0.0), <0.6 -> fully closed (1.0),
+    linear in the 0.15 rad band between.
+    """
+    if g_pos > 0.75:
+        return 0.0
+    elif g_pos < 0.6:
+        return 1.0
+    else:
+        return min(1.0, max(0.0, (g_pos - 0.6) / 0.15))
+
+
+def joint_pos_to_slim20(joint_pos_row: np.ndarray) -> np.ndarray:
+    """Reduce one 34-D Isaac joint_pos row to the 20-D real-robot state."""
+    jp = np.asarray(joint_pos_row, dtype=np.float32).reshape(-1)
+    if jp.shape[0] < 34:
+        raise ValueError(
+            f"slim20 expects a 34-D joint_pos row, got shape {jp.shape}. "
+            "Was this dataset collected with the G1 omnipicker articulation?"
+        )
+    body_head = jp[list(SLIM20_BODY_HEAD_IDX)]
+    left_arm = jp[list(SLIM20_LEFT_ARM_IDX)]
+    right_arm = jp[list(SLIM20_RIGHT_ARM_IDX)]
+    left_grip = np.float32(omnipicker_sim_to_real(float(jp[SLIM20_LEFT_GRIPPER_DRIVER_IDX])))
+    right_grip = np.float32(omnipicker_sim_to_real(float(jp[SLIM20_RIGHT_GRIPPER_DRIVER_IDX])))
+    out = np.concatenate(
+        [body_head, left_arm, right_arm, [left_grip, right_grip]]
+    ).astype(np.float32)
+    assert out.shape[0] == SLIM20_DIM, out.shape
+    return out
 
 
 def _read_env_args(h5: h5py.File) -> dict:
@@ -196,7 +275,10 @@ def convert(
     max_episodes: int | None,
     use_videos: bool,
     overwrite: bool,
+    state_layout: str = "full34",
 ) -> None:
+    if state_layout not in ("full34", "slim20"):
+        raise SystemExit(f"Unknown --state-layout {state_layout!r} (full34|slim20)")
     LeRobotDataset = _load_lerobot()
 
     if not hdf5_path.exists():
@@ -220,9 +302,21 @@ def convert(
                 )
             fps = float(capture_hz)
 
-        state_dim, action_dim, image_shapes = _probe_shapes(h5)
+        raw_state_dim, action_dim, image_shapes = _probe_shapes(h5)
+        if state_layout == "slim20":
+            if raw_state_dim < 34:
+                raise SystemExit(
+                    f"--state-layout slim20 needs a 34-D joint_pos source, "
+                    f"got {raw_state_dim}-D. This HDF5 was not collected with "
+                    "the G1 omnipicker articulation."
+                )
+            state_dim = SLIM20_DIM
+        else:
+            state_dim = raw_state_dim
         print(
-            f"[info] state_dim={state_dim} action_dim={action_dim} "
+            f"[info] state_layout={state_layout} "
+            f"raw_state_dim={raw_state_dim} -> state_dim={state_dim} "
+            f"action_dim={action_dim} "
             f"cameras={ {k: v for k, v in image_shapes.items()} } fps={fps}"
         )
 
@@ -275,8 +369,12 @@ def convert(
                     cam_arrays[cam] = arr.astype(np.uint8)
 
             for t in range(n_steps):
+                if state_layout == "slim20":
+                    state_t = joint_pos_to_slim20(joint_pos[t])
+                else:
+                    state_t = joint_pos[t]
                 frame: dict = {
-                    "observation.state": joint_pos[t],
+                    "observation.state": state_t,
                     "action": actions[t],
                 }
                 for cam, arr in cam_arrays.items():
@@ -324,6 +422,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-episodes", type=int, default=None, help="Stop after writing N episodes (useful for dry runs)")
     parser.add_argument("--no-videos", action="store_true", help="Store images as PNGs instead of MP4 videos")
     parser.add_argument("--overwrite", action="store_true", help="Delete --output-root first if it exists")
+    parser.add_argument(
+        "--state-layout",
+        type=str,
+        default="full34",
+        choices=("full34", "slim20"),
+        help=(
+            "observation.state layout. 'full34' = raw 34-D Isaac joint_pos "
+            "(original behaviour). 'slim20' = real-robot-deployable 20-D "
+            "[body2, head2, left_arm7, right_arm7, left_grip, right_grip] "
+            "using Genie Sim G1 dof_order + omnipicker_sim_to_real grippers."
+        ),
+    )
     args = parser.parse_args(argv)
 
     convert(
@@ -336,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         max_episodes=args.max_episodes,
         use_videos=not args.no_videos,
         overwrite=args.overwrite,
+        state_layout=args.state_layout,
     )
     return 0
 
