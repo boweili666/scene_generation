@@ -497,13 +497,9 @@ def collect_scene_result_artifacts(real2sim_root: str, scene_results_dir: str) -
 
     scene_glb = None
     if results_root.exists():
-        candidates = sorted(
-            p for p in results_root.glob("*.glb") if p.is_file() and p.name.lower().endswith(".glb")
-        )
-        if candidates:
-            preferred = next((p for p in candidates if p.name == "scene_merged.glb"), None)
-            chosen = preferred or candidates[0]
-            scene_glb = _rel(chosen)
+        post_path = results_root / "scene_merged_post.glb"
+        if post_path.is_file():
+            scene_glb = _rel(post_path)
 
     poses_json = None
     poses_path = results_root / "poses.json"
@@ -784,7 +780,6 @@ def start_real2sim_job(payload: dict) -> dict[str, object]:
             kind="real2sim",
             job_id=job_id,
             session_id=payload.get("session_id") if isinstance(payload.get("session_id"), str) else None,
-            run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
             log_path=log_path,
             get_status=get_real2sim_job_status,
         )
@@ -798,21 +793,24 @@ def start_real2sim_job(payload: dict) -> dict[str, object]:
     }
 
 
-def cancel_real2sim_jobs_for_run(session_id: str, run_id: str) -> dict:
-    """Best-effort terminate any running Real2Sim subprocess for this run
-    and mark its registry entries cancelled.
+def cancel_real2sim_jobs_for_session(session_id: str) -> dict:
+    """Best-effort terminate any running Real2Sim subprocess for this
+    session and mark its registry entries cancelled.
 
     The segmentation + streaming-generation child processes run with
-    `--scene-graph .../runs/<rid>/...` and cwd under the per-run dir, so
-    pkill on the `/runs/<rid>/` path token catches both. Real2Sim had no
-    stop path before; this is invoked by /agent/interrupt.
+    `--scene-graph .../sessions/<sid>/...` and cwd under the per-session
+    dir, so pkill on the `/sessions/<sid>/` path token catches both.
+    Invoked by /agent/interrupt and session deletion.
     """
     import subprocess as _sp
 
     killed = False
-    if run_id:
+    if session_id:
         try:
-            rc = _sp.run(["pkill", "-TERM", "-f", f"/runs/{run_id}/"], check=False).returncode
+            rc = _sp.run(
+                ["pkill", "-TERM", "-f", f"/sessions/{session_id}/"],
+                check=False,
+            ).returncode
             killed = rc == 0
         except Exception:
             killed = False
@@ -820,7 +818,7 @@ def cancel_real2sim_jobs_for_run(session_id: str, run_id: str) -> dict:
     with _REAL2SIM_JOBS_LOCK:
         for jid, entry in _REAL2SIM_JOBS.items():
             payload = entry.get("payload") or {}
-            if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
+            if payload.get("session_id") != session_id:
                 continue
             if entry.get("status") in ("queued", "running"):
                 entry["status"] = "cancelled"
@@ -893,8 +891,6 @@ def get_real2sim_job_status(job_id: str) -> dict | None:
     }
     if isinstance(payload.get("session_id"), str) and payload.get("session_id"):
         job["session_id"] = payload["session_id"]
-    if isinstance(payload.get("run_id"), str) and payload.get("run_id"):
-        job["run_id"] = payload["run_id"]
     job["artifacts"] = merged_artifacts
     job.pop("payload", None)
     return job

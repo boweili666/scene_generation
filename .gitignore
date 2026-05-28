@@ -12,3 +12,7 @@ __pycache__/
 
 # Recorded dataset artifacts (HDF5 collections + converted LeRobotDataset folders)
 datasets/
+scripts/start_local.sh
+
+# Local scratch space for one-off scripts / experiments (not tracked)
+scratch/

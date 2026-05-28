@@ -316,18 +316,16 @@ def _coerce_plan_steps(raw_steps: Any) -> list[dict[str, Any]]:
 def propose_plan(
     *,
     session_id: str | None,
-    run_id: str | None,
     text: str | None,
     image_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         context = create_session()
     context.ensure()
 
     has_uploaded_image = _save_input_image(context, image_bytes)
     state = _load_agent_state(context)
-    state["current_run_id"] = context.run_id
     _ensure_run_state(state, context)
 
     user_text = (text or "").strip()
@@ -453,9 +451,8 @@ def _step_starts_long_job(step: dict[str, Any]) -> bool:
 def execute_plan(
     *,
     session_id: str | None,
-    run_id: str | None,
 ) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return _empty_plan_response("No active session.")
 
@@ -518,7 +515,7 @@ def execute_plan(
 
     paused = False
     while plan["current_step_index"] < len(plan["steps"]):
-        if _consume_interrupt(context.session_id, context.run_id):
+        if _consume_interrupt(context.session_id):
             plan["status"] = "cancelled"
             plan["updated_at"] = _utcnow_iso()
             _store_active_plan(state, plan)
@@ -733,10 +730,9 @@ def _normalize_edit_step(raw: Any) -> dict[str, Any] | None:
 def update_plan(
     *,
     session_id: str | None,
-    run_id: str | None,
     steps: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return _empty_plan_response("No active session.")
 
@@ -796,7 +792,6 @@ def update_plan(
 def update_follow_up_plan(
     *,
     session_id: str | None,
-    run_id: str | None,
     steps: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """Replace `plan["follow_up_plan"]` on the active plan after user edits.
@@ -804,7 +799,7 @@ def update_follow_up_plan(
     `steps` empty list clears the follow-up. Steps are validated via the
     same `_normalize_edit_step` path as `update_plan`.
     """
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return _empty_plan_response("No active session.")
 
@@ -893,8 +888,8 @@ def _followup_to_plan_steps(follow_up: list[Any]) -> list[dict[str, Any]]:
     return fresh
 
 
-def accept_follow_up_plan(*, session_id: str | None, run_id: str | None) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+def accept_follow_up_plan(*, session_id: str | None) -> dict[str, Any]:
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return _empty_plan_response("No active session.")
 
@@ -936,8 +931,8 @@ def accept_follow_up_plan(*, session_id: str | None, run_id: str | None) -> dict
     )
 
 
-def cancel_plan(*, session_id: str | None, run_id: str | None) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+def cancel_plan(*, session_id: str | None) -> dict[str, Any]:
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return _empty_plan_response("No active session.")
 
@@ -970,10 +965,9 @@ def cancel_plan(*, session_id: str | None, run_id: str | None) -> dict[str, Any]
 def get_plan_history(
     *,
     session_id: str | None,
-    run_id: str | None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return {"status": "ok", "plans": []}
     state = _load_agent_state(context)
@@ -985,7 +979,6 @@ def get_plan_history(
     return {
         "status": "ok",
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "plans": plans,
         "session_state": _session_state_snapshot(state, context),
     }

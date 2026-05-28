@@ -506,10 +506,9 @@
     function settingsSyncSession() {
       const ses = document.getElementById("settingsSessionId");
       const run = document.getElementById("settingsRunId");
-      if (!ses || !run) return;
       const ss = (typeof latestSessionState !== "undefined" && latestSessionState) || null;
-      ses.textContent = ss?.session_id ? String(ss.session_id) : "—";
-      run.textContent = ss?.current_run_id ? String(ss.current_run_id) : "—";
+      if (ses) ses.textContent = ss?.session_id ? String(ss.session_id) : "—";
+      if (run) run.textContent = "—";
     }
 
     function settingsSyncMode() {
@@ -2015,7 +2014,7 @@
         return;
       }
 
-      const mode = payload.resample_mode || "joint";
+      const mode = payload.resample_mode || "lock_real2sim";
       const counts = payload.asset_resolution_counts || {};
       meta.textContent =
         `mode ${mode} • real2sim ${counts.real2sim || 0} • retrieval ${counts.retrieval || 0} • fallback ${counts.fallback || 0} • missing ${counts.missing || 0}`;

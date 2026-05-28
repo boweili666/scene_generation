@@ -71,16 +71,16 @@ def _resolve_context_path(context: RuntimeContext, value: str | Path | None) -> 
         return None
     candidate = Path(value)
     if not candidate.is_absolute():
-        candidate = context.run_root / candidate
+        candidate = context.session_root / candidate
     return candidate.resolve()
 
 
 def _enrich_real2sim_artifacts(context: RuntimeContext, artifacts: dict[str, Any] | None) -> dict[str, Any]:
     raw = dict(artifacts or {})
-    root_dir = _resolve_context_path(context, raw.get("real2sim_root_dir") or context.run_root)
+    root_dir = _resolve_context_path(context, raw.get("real2sim_root_dir") or context.session_root)
     results_dir = _resolve_context_path(context, raw.get("scene_results_dir") or context.real2sim_scene_results_dir)
     enriched = dict(raw)
-    enriched["real2sim_root_dir"] = str(root_dir) if root_dir is not None else str(context.run_root)
+    enriched["real2sim_root_dir"] = str(root_dir) if root_dir is not None else str(context.session_root)
     enriched["scene_results_dir"] = str(results_dir) if results_dir is not None else str(context.real2sim_scene_results_dir)
 
     for key in ("assignment_json", "poses_json", "manifest_json", "scene_glb", "scene_usd"):
@@ -117,8 +117,8 @@ def _enrich_real2sim_artifacts(context: RuntimeContext, artifacts: dict[str, Any
 
 
 def _collect_real2sim_artifacts_for_context(context: RuntimeContext) -> dict[str, Any]:
-    artifacts = collect_scene_result_artifacts(str(context.run_root), str(context.real2sim_scene_results_dir))
-    artifacts["real2sim_root_dir"] = str(context.run_root)
+    artifacts = collect_scene_result_artifacts(str(context.session_root), str(context.real2sim_scene_results_dir))
+    artifacts["real2sim_root_dir"] = str(context.session_root)
     artifacts["scene_results_dir"] = str(context.real2sim_scene_results_dir)
     return _enrich_real2sim_artifacts(context, artifacts)
 
@@ -166,7 +166,6 @@ def _normalize_scene_result_for_agent(context: RuntimeContext, scene_result: dic
     render_path = _resolve_context_path(context, result.get("screenshot_path") or context.render_path)
 
     result["session_id"] = context.session_id
-    result["run_id"] = context.run_id
     result["saved_usd"] = str(saved_usd_path) if saved_usd_path is not None else None
     result["saved_usd_url"] = _runtime_file_url(saved_usd_path)
     result["placements_path"] = str(placements_path) if placements_path is not None else None
@@ -203,20 +202,15 @@ def _load_agent_state(context: RuntimeContext) -> dict[str, Any]:
     if not state_path.exists():
         return {
             "session_id": context.session_id,
-            "current_run_id": context.run_id,
             "current_state": STATE_UNDERSTAND_REQUEST,
             "pending_question": None,
             "last_intent": None,
             "last_layout_strategy": None,
             "last_completed_state": None,
             "last_decision": None,
-            "latest_real2sim_run_id": None,
-            "latest_scene_generation_run_id": None,
-            "latest_scene_robot_run_id": None,
             "active_plan": None,
             "plan_history": [],
             "job_audit": {},
-            "runs": {},
             "history": [],
         }
     try:
@@ -226,20 +220,15 @@ def _load_agent_state(context: RuntimeContext) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {}
     payload.setdefault("session_id", context.session_id)
-    payload.setdefault("current_run_id", context.run_id)
     payload.setdefault("current_state", STATE_UNDERSTAND_REQUEST)
     payload.setdefault("pending_question", None)
     payload.setdefault("last_intent", None)
     payload.setdefault("last_layout_strategy", None)
     payload.setdefault("last_completed_state", None)
     payload.setdefault("last_decision", None)
-    payload.setdefault("latest_real2sim_run_id", None)
-    payload.setdefault("latest_scene_generation_run_id", None)
-    payload.setdefault("latest_scene_robot_run_id", None)
     payload.setdefault("active_plan", None)
     payload.setdefault("plan_history", [])
     payload.setdefault("job_audit", {})
-    payload.setdefault("runs", {})
     payload.setdefault("history", [])
     return payload
 
@@ -248,7 +237,6 @@ def _save_agent_state(context: RuntimeContext, state: dict[str, Any]) -> None:
     state_path = context.session_root / _AGENT_STATE_FILENAME
     context.ensure()
     state["session_id"] = context.session_id
-    state["current_run_id"] = context.run_id
     state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -280,38 +268,44 @@ def _set_current_state(
 
 
 def _ensure_run_state(state: dict[str, Any], context: RuntimeContext) -> dict[str, Any]:
-    runs = state.setdefault("runs", {})
-    if not isinstance(runs, dict):
-        runs = {}
-        state["runs"] = runs
-    run_state = runs.setdefault(context.run_id, {})
-    if not isinstance(run_state, dict):
-        run_state = {}
-        runs[context.run_id] = run_state
-    run_state.setdefault("run_id", context.run_id)
-    run_state.setdefault("scene_graph_path", str(context.scene_graph_path))
-    run_state.setdefault("latest_input_image", str(context.latest_input_image))
-    run_state.setdefault("render_image", str(context.render_path))
-    run_state.setdefault("placements_path", str(context.default_placements_path))
-    return run_state
+    """Ensure per-session artifact paths are written to the agent state.
+
+    Historically these lived in `state["runs"][run_id]`; with run merged
+    into session they live on the top-level state dict. The return value
+    is the same dict (state) so callers that read keys from it keep
+    working without explicit migration.
+    """
+    state.setdefault("scene_graph_path", str(context.scene_graph_path))
+    state.setdefault("latest_input_image", str(context.latest_input_image))
+    state.setdefault("render_image", str(context.render_path))
+    state.setdefault("placements_path", str(context.default_placements_path))
+    return state
 
 
 def _session_state_snapshot(state: dict[str, Any], context: RuntimeContext) -> dict[str, Any]:
-    runs = state.get("runs") if isinstance(state.get("runs"), dict) else {}
-    current_run = runs.get(context.run_id, {}) if isinstance(runs, dict) else {}
     history = state.get("history") if isinstance(state.get("history"), list) else []
+    scene_generation_status = ""
+    sg = state.get("scene_generation")
+    if isinstance(sg, dict):
+        scene_generation_status = str(sg.get("status") or "")
+    # Frontend still references `current_run.real2sim` and `current_run.scene_robot`
+    # for sim/robot status; we keep the shape after the run/session merge so
+    # downstream UI code didn't have to be rewritten — it just always points
+    # at the session-level blocks now.
+    current_run = {
+        "real2sim": state.get("real2sim") if isinstance(state.get("real2sim"), dict) else {},
+        "scene_robot": state.get("scene_robot") if isinstance(state.get("scene_robot"), dict) else {},
+        "scene_generation": sg if isinstance(sg, dict) else {},
+    }
     return {
         "session_id": context.session_id,
-        "current_run_id": context.run_id,
         "current_state": state.get("current_state"),
         "last_intent": state.get("last_intent"),
         "last_completed_state": state.get("last_completed_state"),
         "last_layout_strategy": state.get("last_layout_strategy"),
-        "latest_real2sim_run_id": state.get("latest_real2sim_run_id"),
-        "latest_scene_generation_run_id": state.get("latest_scene_generation_run_id"),
-        "latest_scene_robot_run_id": state.get("latest_scene_robot_run_id"),
-        "history": history,
+        "scene_generation_status": scene_generation_status,
         "current_run": current_run,
+        "history": history,
         "job_audit": state.get("job_audit") if isinstance(state.get("job_audit"), dict) else {},
     }
 
@@ -394,7 +388,6 @@ def _record_real2sim_state(
     if log_start_offset is not None:
         real2sim_state["log_start_offset"] = int(log_start_offset)
     run_state["real2sim"] = real2sim_state
-    state["latest_real2sim_run_id"] = context.run_id
     return real2sim_state
 
 
@@ -440,7 +433,6 @@ def _record_scene_robot_state(
     if log_start_offset is not None:
         scene_robot_state["log_start_offset"] = int(log_start_offset)
     run_state["scene_robot"] = scene_robot_state
-    state["latest_scene_robot_run_id"] = context.run_id
     return scene_robot_state
 
 
@@ -496,7 +488,6 @@ def _record_scene_generation_state(
         "resample_mode": normalized.get("resample_mode") or resample_mode,
         "outputs": normalized,
     }
-    state["latest_scene_generation_run_id"] = context.run_id
     return normalized
 
 
@@ -504,21 +495,19 @@ def sync_real2sim_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] |
     if not isinstance(job, dict):
         return None
     # `pipeline_service.get_real2sim_job_status` pops `payload` before
-    # returning, but copies `session_id` / `run_id` to top-level. Read
-    # from there with a payload fallback for any caller that still
-    # forwards the raw stored job dict.
+    # returning, but copies `session_id` to top-level. Read from there
+    # with a payload fallback for any caller that still forwards the raw
+    # stored job dict.
     session_id = job.get("session_id")
-    run_id = job.get("run_id")
-    if not isinstance(session_id, str) or not isinstance(run_id, str):
+    if not isinstance(session_id, str):
         payload = job.get("payload")
         if isinstance(payload, dict):
             session_id = payload.get("session_id")
-            run_id = payload.get("run_id")
-    if not isinstance(session_id, str) or not isinstance(run_id, str):
+    if not isinstance(session_id, str):
         return None
 
     try:
-        context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+        context = resolve_runtime_context(session_id=session_id, create=True)
     except ValueError:
         return None
     if context is None:
@@ -580,8 +569,8 @@ def sync_real2sim_job_to_session(job: dict[str, Any] | None) -> dict[str, Any] |
     return _session_state_snapshot(state, context)
 
 
-def clear_job_audit(*, session_id: str | None, run_id: str | None) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+def clear_job_audit(*, session_id: str | None) -> dict[str, Any]:
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         return {"status": "ok", "session_state": None}
     state = _load_agent_state(context)
@@ -590,7 +579,6 @@ def clear_job_audit(*, session_id: str | None, run_id: str | None) -> dict[str, 
     return {
         "status": "ok",
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "session_state": _session_state_snapshot(state, context),
     }
 
@@ -599,12 +587,11 @@ def sync_scene_robot_job_to_session(job: dict[str, Any] | None) -> dict[str, Any
     if not isinstance(job, dict):
         return None
     session_id = job.get("session_id")
-    run_id = job.get("run_id")
-    if not isinstance(session_id, str) or not isinstance(run_id, str):
+    if not isinstance(session_id, str):
         return None
 
     try:
-        context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+        context = resolve_runtime_context(session_id=session_id, create=True)
     except ValueError:
         return None
     if context is None:
@@ -724,7 +711,7 @@ def _agent_summary_from_state(state: dict[str, Any], context: RuntimeContext) ->
             message = "scene_robot collect completed for the current run."
         elif last_completed_state == STATE_GENERATE_SCENE:
             if isinstance(scene_state.get("outputs"), dict):
-                strategy = scene_state.get("resample_mode") or state.get("last_layout_strategy") or "joint"
+                strategy = scene_state.get("resample_mode") or state.get("last_layout_strategy") or "lock_real2sim"
                 message = f"Scene generated with layout strategy '{strategy}'."
             else:
                 message = "Scene generation completed."
@@ -748,14 +735,13 @@ def _agent_summary_from_state(state: dict[str, Any], context: RuntimeContext) ->
     }
 
 
-def get_agent_state_response(*, session_id: str | None, run_id: str | None) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+def get_agent_state_response(*, session_id: str | None) -> dict[str, Any]:
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         context = create_session()
     context.ensure()
 
     state = _load_agent_state(context)
-    state["current_run_id"] = context.run_id
     current_run = _ensure_run_state(state, context)
     _refresh_real2sim_state_from_disk(state, context)
     current_run = _ensure_run_state(state, context)
@@ -827,7 +813,6 @@ def _build_agent_response(
     return {
         "status": "ok",
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "agent": {
             "state": state,
             "intent": intent,
@@ -855,7 +840,6 @@ def _scene_service_payload(
 ) -> dict[str, Any]:
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "camera_eye": [18.0, 0.0, 18.0],
         "camera_target": [0.0, 0.0, 1.0],
         "frames": 20,
@@ -868,7 +852,7 @@ def _scene_service_payload(
         "room_include_left_wall": True,
         "room_include_right_wall": True,
         "room_include_front_wall": False,
-        "resample_mode": resample_mode if scene_endpoint == "scene_new" else "joint",
+        "resample_mode": resample_mode,
     }
     if seed is not None:
         payload["seed"] = int(seed)

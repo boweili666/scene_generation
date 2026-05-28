@@ -156,10 +156,10 @@ def derive_collect_hdf5_path(
         if cleaned:
             target_slug = cleaned
     robot_slug = (robot or "").strip().lower() or "agibot"
-    candidate = DATASETS_DIR / f"{context.session_id}_{context.run_id}_{robot_slug}_{target_slug}.hdf5"
+    candidate = DATASETS_DIR / f"{context.session_id}_{robot_slug}_{target_slug}.hdf5"
     if candidate.exists():
         return candidate
-    pattern = f"{context.session_id}_{context.run_id}_*.hdf5"
+    pattern = f"{context.session_id}_*.hdf5"
     matches = sorted(DATASETS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0] if matches else None
 
@@ -250,7 +250,7 @@ def find_train_output(repo_id: Optional[str], context: RuntimeContext) -> Option
         cand = OUTPUTS_TRAIN_DIR / basename
         if cand.exists() and cand.is_dir():
             return cand
-    prefix = f"{context.session_id}_{context.run_id}_"
+    prefix = f"{context.session_id}_"
     candidates = [
         p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir() and p.name.startswith(prefix)
     ]
@@ -480,10 +480,10 @@ def summarize_lerobot_dataset(repo_id: Optional[str], context: RuntimeContext) -
         if cand.is_dir():
             candidates.append(cand)
     if not candidates:
-        # Strict `<session>_<run>_` prefix (covers same-run `..._partial4`
-        # variants). The old `session_id[:8] in name` substring test let
-        # another session/run's dataset leak into this run's card.
-        prefix = f"{context.session_id}_{context.run_id}_"
+        # Strict `<session>_` prefix (covers `..._partial4` variants).
+        # The old `session_id[:8] in name` substring test let another
+        # session's dataset leak into this session's card.
+        prefix = f"{context.session_id}_"
         for entry in LEROBOT_DATASETS_DIR.iterdir():
             if not entry.is_dir():
                 continue
@@ -556,7 +556,7 @@ def find_latest_eval_dir(context: RuntimeContext) -> Optional[Path]:
     """
     if not OUTPUTS_EVAL_DIR.exists():
         return None
-    pattern = f"{context.session_id}_{context.run_id}_*"
+    pattern = f"{context.session_id}_*"
     cands = sorted(OUTPUTS_EVAL_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0] if cands else None
 
@@ -597,8 +597,7 @@ def _format_elapsed(created_at: Any) -> Optional[int]:
 
 def build_dashboard(context: RuntimeContext, agent_state: dict[str, Any]) -> dict[str, Any]:
     """Assemble the per-tab payload."""
-    run_state = (agent_state.get("runs") or {}).get(context.run_id) or {}
-    sr_state = run_state.get("scene_robot") if isinstance(run_state.get("scene_robot"), dict) else {}
+    sr_state = agent_state.get("scene_robot") if isinstance(agent_state.get("scene_robot"), dict) else {}
 
     # --- Collect ---
     collect: dict[str, Any] = {
@@ -632,7 +631,7 @@ def build_dashboard(context: RuntimeContext, agent_state: dict[str, Any]) -> dic
     repo_id: Optional[str] = None
     if collect.get("robot") and collect.get("target"):
         target_slug = (collect["target"] or "").strip().lstrip("/").replace("/", "_") or "obj"
-        repo_id = f"local/{context.session_id}_{context.run_id}_{collect['robot']}_{target_slug}"
+        repo_id = f"local/{context.session_id}_{collect['robot']}_{target_slug}"
     train = summarize_train(context, repo_id=repo_id, train_log_path=Path(context.scene_robot_train_log_path))
     train["status"] = "idle"
     if train.get("exists"):
@@ -668,7 +667,6 @@ def build_dashboard(context: RuntimeContext, agent_state: dict[str, Any]) -> dic
 
     return {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "collect": collect,
         "grasp": grasp,
         "dataset": dataset,

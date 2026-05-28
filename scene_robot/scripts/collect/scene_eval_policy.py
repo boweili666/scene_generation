@@ -47,7 +47,6 @@ parser = argparse.ArgumentParser(description="Closed-loop evaluation of a LeRobo
 parser.add_argument("--robot", type=str, default="agibot", choices=["agibot"])
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--session", type=str, default=None)
-parser.add_argument("--run", type=str, default=None)
 parser.add_argument("--scene_usd_path", type=str, default=None)
 parser.add_argument("--scene_graph_path", type=str, default=None)
 parser.add_argument("--placements_path", type=str, default=None)
@@ -117,13 +116,10 @@ simulation_app = app_launcher.app
 
 def _resolve_session_paths() -> None:
     session = args_cli.session
-    run_id = args_cli.run
-    if session or run_id:
-        if not (session and run_id):
-            raise SystemExit("--session and --run must be provided together")
-        session_root = PROJECT_ROOT / "runtime" / "sessions" / session / "runs" / run_id
+    if session:
+        session_root = PROJECT_ROOT / "runtime" / "sessions" / session
         if not session_root.exists():
-            raise SystemExit(f"Session run directory not found: {session_root}")
+            raise SystemExit(f"Session directory not found: {session_root}")
         if args_cli.scene_usd_path is None:
             args_cli.scene_usd_path = str(session_root / "scene_service" / "usd" / "scene_latest.usd")
         if args_cli.scene_graph_path is None:
@@ -181,4 +177,13 @@ def main():
 
 if __name__ == "__main__":
     main()
-    simulation_app.close()
+    # See scene_auto_grasp_collect.py — SimulationApp.close() often hangs;
+    # eval results are already written by main(), so on hang we hard-exit
+    # to let the parent observe a clean exit code and release the GPU.
+    import threading
+    threading.Timer(30.0, lambda: os._exit(0)).start()
+    try:
+        simulation_app.close()
+    except Exception:
+        pass
+    os._exit(0)

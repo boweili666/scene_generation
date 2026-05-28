@@ -21,6 +21,7 @@ feeds it to `controller.step_pose_target`.
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,7 @@ from .scene_auto_grasp_collect import (
     _restore_target_rigid_body_state,
     _robot_forward_xy_world,
     _shifted_target_snapshot,
+    _snapshot_scene_rigid_bodies,
     _snapshot_target_rigid_body_state,
 )
 from .scene_mouse_collect import _build_scene_mouse_collect, _reset_scene_to_plan
@@ -583,7 +585,9 @@ def _run_single_episode(
             float(args.target_forward_randomization),
         )
         offset_xy = (fwd_x * delta, fwd_y * delta)
-        episode_snapshot = _shifted_target_snapshot(target_snapshot, offset_xy)
+        episode_snapshot = _shifted_target_snapshot(
+            target_snapshot, offset_xy, target_prim_path=target_prim_path
+        )
         print(
             f"[eval] episode {episode_idx}: randomization delta={delta:+.4f}m "
             f"offset_xy=({offset_xy[0]:+.4f}, {offset_xy[1]:+.4f})"
@@ -755,12 +759,29 @@ def run_scene_eval(simulation_app, robot_name: str, args: SceneEvalArgs) -> None
     scene_root_path = f"{scene.env_prim_paths[0]}/GeneratedScene"
     target_live_prim_path = f"{scene_root_path}/{Path(plan.target_prim).name}"
 
-    # Capture the canonical target pose once, with the scene fully settled,
-    # so every episode can snap it back to the same "rest" configuration.
-    target_snapshot = _snapshot_target_rigid_body_state(target_live_prim_path)
+    # Capture the canonical pose of every scene rigid body once, with the
+    # scene fully settled, so each episode can snap the whole layout — not
+    # just the grasp target — back to the same "rest" configuration. This
+    # mirrors scene_auto_grasp_collect: otherwise non-target objects knocked
+    # over during a rollout would leak into subsequent episodes.
+    try:
+        scene_graph_dict = json.loads(Path(args.scene_graph_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        scene_graph_dict = {}
+    scene_obj_paths = list((scene_graph_dict.get("obj") or {}).keys())
+    all_live_prim_paths = [
+        f"{scene_root_path}/{Path(str(p)).name}" for p in scene_obj_paths
+    ]
+    if target_live_prim_path not in all_live_prim_paths:
+        all_live_prim_paths.append(target_live_prim_path)
+    target_snapshot: dict[str, Any] | list[dict[str, Any]] | None = (
+        _snapshot_scene_rigid_bodies(all_live_prim_paths) or None
+    )
     if target_snapshot is None:
-        print(f"[eval] WARNING: could not snapshot target rigid body at {target_live_prim_path}; "
+        print(f"[eval] WARNING: could not snapshot any rigid body under {scene_root_path}; "
               f"episodes will rely on _reset_scene_to_plan alone.")
+    else:
+        print(f"[eval] snapshotted {len(target_snapshot)} rigid body/bodies for per-episode reset.")
 
     # Load policy AFTER isaac boot so import failures don't kill scene setup.
     policy_device = torch.device(args.device if torch.cuda.is_available() else "cpu")

@@ -67,10 +67,6 @@ class SceneRequest(BaseModel):
         default=None,
         description="Optional session identifier for runtime/sessions/<session_id>/... path isolation.",
     )
-    run_id: Optional[str] = Field(
-        default=None,
-        description="Optional run identifier under the selected session for runtime isolation.",
-    )
     scene_graph_path: Optional[str] = Field(
         default=DEFAULT_SCENE_GRAPH_PATH,
         description="Local JSON file path; provide either this or scene_graph. Uses built-in default if omitted.",
@@ -90,9 +86,9 @@ class SceneRequest(BaseModel):
         default=str(CFG_REAL2SIM_MANIFEST_PATH),
         description="Manifest generated from the latest Real2Sim outputs for source=real2sim matching.",
     )
-    resample_mode: Literal["joint", "lock_real2sim"] = Field(
-        default="joint",
-        description="Scene resampling mode: joint samples all objects; lock_real2sim keeps real2sim support chains rigid and only samples their unsupported roots.",
+    resample_mode: Literal["lock_real2sim", "joint"] = Field(
+        default="lock_real2sim",
+        description="Scene resampling mode: lock_real2sim keeps real2sim support chains rigid and only samples their unsupported roots (preserves observed layout); joint samples all objects.",
     )
     plane_size: float = 10.0
     plane_height: float = 0.0
@@ -191,11 +187,10 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
         return data
 
     def _runtime_context_for_request(req: SceneRequest, *, create: bool = False):
-        if req.session_id is None and req.run_id is None:
+        if req.session_id is None:
             return None
         return resolve_runtime_context(
             session_id=req.session_id,
-            run_id=req.run_id,
             create=create,
         )
 
@@ -833,7 +828,6 @@ def _create_app(sim_app: SimulationApp) -> FastAPI:
 
         return {
             "session_id": runtime_ctx.session_id if runtime_ctx is not None else None,
-            "run_id": runtime_ctx.run_id if runtime_ctx is not None else None,
             "seed": seed,
             "resample_mode": resample_mode,
             "placements": _serialize_placements_payload(placements, placement_aabbs),

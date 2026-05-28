@@ -94,6 +94,7 @@ from ..grasp.target_state import (
     _robot_forward_xy_world,
     _shifted_candidate,
     _shifted_target_snapshot,
+    _snapshot_scene_rigid_bodies,
     _snapshot_target_rigid_body_state,
 )
 from ..control.phase_runner import (
@@ -185,6 +186,7 @@ __all__ = [
     "_shifted_candidate",
     "_shifted_target_snapshot",
     "_shortlist_output_path",
+    "_snapshot_scene_rigid_bodies",
     "_snapshot_target_rigid_body_state",
     "_wait_for_run_request",
     "_world_bbox_payload",
@@ -741,7 +743,11 @@ def _run_episode_loop(
         if randomization_range > 0.0:
             delta = random.uniform(-randomization_range, randomization_range)
             offset_xy = (fwd_x * delta, fwd_y * delta)
-            episode_snapshot = _shifted_target_snapshot(target_state_snapshot, offset_xy)
+            episode_snapshot = _shifted_target_snapshot(
+                target_state_snapshot,
+                offset_xy,
+                target_prim_path=f"{scene_root_path}/{Path(plan.target_prim).name}",
+            )
             episode_candidate = _shifted_candidate(candidate, offset_xy)
             print(
                 f"[INFO] Target forward randomization: delta={delta:+.4f}m "
@@ -887,13 +893,30 @@ def run_scene_auto_grasp_collect(simulation_app, robot_name: str, args: SceneAut
             scene, controller, sync_cameras, args, target_prim=plan.target_prim
         )
 
-        # --- Stage 3: snapshot target rigid body pose for per-episode reset ---
+        # --- Stage 3: snapshot every scene rigid body for per-episode reset ---
+        # We restore the *whole* scene between episodes, not just the grasp
+        # target. Non-target objects (e.g. a second screw on the same table)
+        # can get knocked over by grasp/lift contacts; without resetting them
+        # the disturbed pose would leak into every subsequent episode.
         target_live_prim_path = f"{scene_root_path}/{Path(plan.target_prim).name}"
-        target_state_snapshot = _snapshot_target_rigid_body_state(target_live_prim_path)
-        if target_state_snapshot is None:
+        scene_graph_dict = _load_json(Path(args.scene_graph_path))
+        scene_obj_paths = list((scene_graph_dict.get("obj") or {}).keys())
+        all_live_prim_paths = [
+            f"{scene_root_path}/{Path(str(p)).name}" for p in scene_obj_paths
+        ]
+        if target_live_prim_path not in all_live_prim_paths:
+            all_live_prim_paths.append(target_live_prim_path)
+        target_state_snapshot = _snapshot_scene_rigid_bodies(all_live_prim_paths)
+        if not target_state_snapshot:
+            target_state_snapshot = None
             print(
-                f"[WARN] Could not snapshot target prim state for {target_live_prim_path}; "
-                "bolt will not be reset between episodes."
+                f"[WARN] Could not snapshot any scene rigid body state under {scene_root_path}; "
+                "objects will not be reset between episodes."
+            )
+        else:
+            print(
+                f"[INFO] Snapshotted {len(target_state_snapshot)} rigid body/bodies for "
+                "per-episode reset."
             )
 
         # --- Stage 4+5: filter, rank, pick top candidate ---

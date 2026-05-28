@@ -37,6 +37,34 @@
       };
     }
 
+    // Fired when a long job finishes (real2sim or scene_robot collect).
+    // Tells the backend to inject an `[auto]` continuation message so the
+    // agent loop picks up the next pipeline stage without the user having
+    // to retype. Deduped per job id via localStorage so a re-mounted UI
+    // or second tab can't fire it twice; the backend also dedupes via
+    // session state. Best-effort: failures are swallowed.
+    async function notifyAgentJobDone({ jobId, jobKind, status, error }) {
+      try {
+        if (!jobId || !jobKind || !status) return;
+        const ackKey = "scene_ui_last_auto_continued_job_id";
+        const lastAcked = window.localStorage.getItem(ackKey) || "";
+        if (lastAcked === String(jobId)) return;
+        window.localStorage.setItem(ackKey, String(jobId));
+        await fetch(withRuntimeQuery("/agent/continue"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            job_id: String(jobId),
+            job_kind: jobKind,
+            status,
+            error: error ? String(error) : "",
+          }),
+        });
+      } catch (err) {
+        console.warn("agent/continue notify failed:", err);
+      }
+    }
+
     async function monitorReal2SimJob(jobInfo = {}) {
       const jobId = jobInfo.job_id;
       if (!jobId) {
@@ -141,6 +169,11 @@
             setPill("sim","ok","Ready");
             document.getElementById("real2simLogStatus").textContent = "Completed";
             toast("ok","Real2Sim done", `Loaded ${loadedObjectCount} object GLB(s)${loadedMerged ? " + merged scene" : ""}.`);
+            notifyAgentJobDone({
+              jobId: String(job.job_id || jobId || ""),
+              jobKind: "real2sim",
+              status: "succeeded",
+            });
           } else if (job.status === "failed") {
             done = true;
             finalJobStatus = job.status;
@@ -163,6 +196,12 @@
                 user_message: failureMessage,
               });
             }
+            notifyAgentJobDone({
+              jobId: String(job.job_id || jobId || ""),
+              jobKind: "real2sim",
+              status: "failed",
+              error: failureMessage,
+            });
           }
         }
 
@@ -345,6 +384,11 @@
             finalJobStatus = job.status;
             document.getElementById("sceneRobotLogStatus").textContent = "Completed";
             toast("ok", "scene_robot done", "Collect job finished.");
+            notifyAgentJobDone({
+              jobId: String(job.job_id || jobId || ""),
+              jobKind: "scene_robot",
+              status: "succeeded",
+            });
           } else if (job.status === "failed") {
             done = true;
             finalJobStatus = job.status;
@@ -364,6 +408,12 @@
                 user_message: failureMessage,
               });
             }
+            notifyAgentJobDone({
+              jobId: String(job.job_id || jobId || ""),
+              jobKind: "scene_robot",
+              status: "failed",
+              error: failureMessage,
+            });
           }
         }
 
@@ -394,7 +444,7 @@
 
     /* ===== Isaac Scene Service ===== */
     function setResampleMode(mode) {
-      const normalized = mode === "lock_real2sim" ? "lock_real2sim" : "joint";
+      const normalized = mode === "joint" ? "joint" : "lock_real2sim";
       const input = document.getElementById("resampleModeSelect");
       if (input) input.value = normalized;
 

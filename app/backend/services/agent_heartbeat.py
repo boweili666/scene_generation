@@ -196,7 +196,6 @@ def spawn(
     kind: str,
     job_id: str,
     session_id: Optional[str],
-    run_id: Optional[str],
     log_path: str,
     get_status: Callable[[str], Optional[dict[str, Any]]],
     interval_seconds: int = HEARTBEAT_INTERVAL_SECONDS,
@@ -204,10 +203,10 @@ def spawn(
 ) -> Optional[threading.Thread]:
     """Start the heartbeat daemon thread for a single job.
 
-    Skips spawning when session_id/run_id are missing (no session to
-    write to) or when interval_seconds <= 0 (heartbeats disabled).
+    Skips spawning when session_id is missing (no session to write to)
+    or when interval_seconds <= 0 (heartbeats disabled).
     """
-    if not session_id or not run_id:
+    if not session_id:
         return None
     if interval_seconds <= 0:
         return None
@@ -233,7 +232,7 @@ def spawn(
                 return
 
             try:
-                ctx = resolve_runtime_context(session_id=session_id, run_id=run_id)
+                ctx = resolve_runtime_context(session_id=session_id)
                 if ctx is not None:
                     state = _load_agent_state(ctx)
                     content = format_heartbeat(kind, job_id, job or {}, log_path)

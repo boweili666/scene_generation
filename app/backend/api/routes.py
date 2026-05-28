@@ -64,9 +64,7 @@ from ..services.scene_robot_service import (
 )
 from ..services.real2sim_review_service import load_assignment_review, save_assignment_review
 from ..services.runtime_context import (
-    create_run,
     create_session,
-    delete_run,
     delete_session,
     resolve_runtime_context,
 )
@@ -90,8 +88,7 @@ def _request_value(name: str) -> str | None:
 
 def _resolve_request_runtime_context(*, create: bool = False):
     session_id = _request_value("session_id")
-    run_id = _request_value("run_id")
-    return resolve_runtime_context(session_id=session_id, run_id=run_id, create=create)
+    return resolve_runtime_context(session_id=session_id, create=create)
 
 
 def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
@@ -123,7 +120,7 @@ def _request_runtime_paths(*, create: bool = False) -> dict[str, object]:
         "scene_graph_path": context.scene_graph_path,
         "render_path": context.render_path,
         "placements_path": context.default_placements_path,
-        "real2sim_root_dir": context.run_root,
+        "real2sim_root_dir": context.session_root,
         "real2sim_mask_output_dir": context.real2sim_masks_dir,
         "real2sim_mesh_output_dir": context.real2sim_meshes_dir,
         "real2sim_reuse_mesh_dir": context.real2sim_meshes_dir,
@@ -337,18 +334,6 @@ def _summarize_session_dir(ses_dir: Path) -> dict:
     """Return a compact summary of a session directory for listing in the UI."""
     session_meta = _read_json_silent(ses_dir / "session.json")
     agent_state = _read_json_silent(ses_dir / "agent_state.json")
-    runs_dir = ses_dir / "runs"
-    run_count = 0
-    if runs_dir.exists() and runs_dir.is_dir():
-        run_count = sum(1 for p in runs_dir.iterdir() if p.is_dir())
-
-    current_run_id = ""
-    cur_file = ses_dir / "current_run.txt"
-    if cur_file.exists():
-        try:
-            current_run_id = cur_file.read_text(encoding="utf-8").strip()
-        except Exception:
-            current_run_id = ""
 
     try:
         updated_at_ts = ses_dir.stat().st_mtime
@@ -359,38 +344,10 @@ def _summarize_session_dir(ses_dir: Path) -> dict:
         "session_id": str(session_meta.get("session_id") or ses_dir.name),
         "created_at": session_meta.get("created_at") or "",
         "updated_at_ts": updated_at_ts,
-        "run_count": run_count,
-        "current_run_id": current_run_id,
         "current_state": agent_state.get("current_state") or "",
         "last_intent": agent_state.get("last_intent") or "",
         "last_prompt": _last_user_prompt(agent_state.get("history")),
     }
-
-
-def _summarize_session_runs(ses_dir: Path) -> list:
-    """Return a list of run summaries for a session directory."""
-    runs_dir = ses_dir / "runs"
-    if not runs_dir.exists() or not runs_dir.is_dir():
-        return []
-    items = []
-    for run_dir in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
-        if not run_dir.is_dir():
-            continue
-        run_meta = _read_json_silent(run_dir / "run.json")
-        scene_graph_file = run_dir / "scene_graph" / "current_scene_graph.json"
-        render_file = run_dir / "renders" / "render.png"
-        try:
-            updated_at_ts = run_dir.stat().st_mtime
-        except Exception:
-            updated_at_ts = 0
-        items.append({
-            "run_id": str(run_meta.get("run_id") or run_dir.name),
-            "created_at": run_meta.get("created_at") or "",
-            "updated_at_ts": updated_at_ts,
-            "has_scene_graph": scene_graph_file.exists(),
-            "has_render": render_file.exists(),
-        })
-    return items
 
 
 def register_routes(app):
@@ -398,10 +355,7 @@ def register_routes(app):
     def session_create():
         payload = request.get_json(silent=True) or {}
         try:
-            context = create_session(
-                session_id=payload.get("session_id"),
-                run_id=payload.get("run_id"),
-            )
+            context = create_session(session_id=payload.get("session_id"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({"status": "ok", "context": context.to_dict()})
@@ -417,51 +371,10 @@ def register_routes(app):
                 items.append(_summarize_session_dir(ses_dir))
         return jsonify({"sessions": items})
 
-    @app.route("/sessions/<session_id>/runs", methods=["GET"])
-    def session_run_list(session_id):
-        from ..config import SESSIONS_DIR
-        from ..services.runtime_context import normalize_runtime_identifier
-        try:
-            normalized = normalize_runtime_identifier(session_id, label="session_id")
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        ses_dir = SESSIONS_DIR / normalized
-        if not ses_dir.exists() or not ses_dir.is_dir():
-            return jsonify({"error": f"Session not found: {normalized}"}), 404
-        runs = _summarize_session_runs(ses_dir)
-        current_run_id = None
-        cur_file = ses_dir / "current_run.txt"
-        if cur_file.exists():
-            current_run_id = cur_file.read_text(encoding="utf-8").strip() or None
-        return jsonify({
-            "session_id": normalized,
-            "current_run_id": current_run_id,
-            "runs": runs,
-        })
-
-    @app.route("/sessions/<session_id>/runs", methods=["POST"])
-    def session_run_create(session_id):
-        payload = request.get_json(silent=True) or {}
-        try:
-            context = create_run(session_id, run_id=payload.get("run_id"))
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        return jsonify({"status": "ok", "context": context.to_dict()})
-
     @app.route("/sessions/<session_id>", methods=["DELETE"])
     def session_delete(session_id):
         try:
             result = delete_session(session_id)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        except FileNotFoundError as e:
-            return jsonify({"error": str(e)}), 404
-        return jsonify({"status": "ok", **result})
-
-    @app.route("/sessions/<session_id>/runs/<run_id>", methods=["DELETE"])
-    def session_run_delete(session_id, run_id):
-        try:
-            result = delete_run(session_id, run_id)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except FileNotFoundError as e:
@@ -515,7 +428,6 @@ def register_routes(app):
             context = paths.get("context")
             if context is not None:
                 result["session_id"] = context.session_id
-                result["run_id"] = context.run_id
             return jsonify(result)
         scene_graph_path = Path(paths["scene_graph_path"])
         if not scene_graph_path.exists():
@@ -535,7 +447,7 @@ def register_routes(app):
         response = dict(scene_graph_json)
         context = paths.get("context")
         if context is not None:
-            response["_session"] = {"session_id": context.session_id, "run_id": context.run_id}
+            response["_session"] = {"session_id": context.session_id}
         return jsonify(response)
 
     @app.route("/scene_from_input", methods=["POST"])
@@ -567,7 +479,7 @@ def register_routes(app):
         response = dict(scene_graph_json)
         context = paths.get("context")
         if context is not None:
-            response["_session"] = {"session_id": context.session_id, "run_id": context.run_id}
+            response["_session"] = {"session_id": context.session_id}
         return jsonify(response)
 
     @app.route("/apply_instruction", methods=["POST"])
@@ -606,7 +518,6 @@ def register_routes(app):
         context = paths.get("context")
         if context is not None:
             result["session_id"] = context.session_id
-            result["run_id"] = context.run_id
         return jsonify(result)
 
     @app.route("/agent/message", methods=["POST"])
@@ -636,14 +547,12 @@ def register_routes(app):
             if effective_mode == "plan":
                 result = propose_agent_plan(
                     session_id=context.session_id if context is not None else None,
-                    run_id=context.run_id if context is not None else None,
                     text=text,
                     image_bytes=image_bytes,
                 )
             else:
                 result = handle_agent_loop_message(
                     session_id=context.session_id if context is not None else None,
-                    run_id=context.run_id if context is not None else None,
                     text=text,
                     image_bytes=image_bytes,
                 )
@@ -660,13 +569,71 @@ def register_routes(app):
 
         return jsonify(result)
 
+    @app.route("/agent/continue", methods=["POST"])
+    def agent_continue():
+        """Backend-triggered continuation after a long job finishes.
+
+        Frontend pollers call this when a real2sim / scene_robot job
+        transitions to succeeded/failed. We inject a synthetic user
+        message tagged `[auto]` and run a normal agent loop turn —
+        SYSTEM_PROMPT rule 5 tells the LLM to act on it without echoing.
+
+        Deduped per session via state["last_auto_continued_job_id"] so
+        a re-mounted UI / second tab doesn't fire the same continuation
+        twice.
+        """
+        payload = request.get_json(silent=True) or {}
+        job_id = str(payload.get("job_id") or "").strip()
+        job_kind = str(payload.get("job_kind") or "").strip()
+        status = str(payload.get("status") or "").strip().lower()
+        error_msg = str(payload.get("error") or "").strip()
+
+        if not job_id or job_kind not in {"real2sim", "scene_robot"} or status not in {"succeeded", "failed"}:
+            return jsonify({"error": "job_id, job_kind in {real2sim,scene_robot}, status in {succeeded,failed} required"}), 400
+
+        try:
+            context = _resolve_request_runtime_context(create=False)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if context is None:
+            return jsonify({"error": "no active session"}), 400
+
+        from ..services.agent_service import _load_agent_state, _save_agent_state
+        state = _load_agent_state(context)
+        last_acked = str(state.get("last_auto_continued_job_id") or "")
+        if last_acked == job_id:
+            return jsonify({"skipped": True, "reason": "already_continued", "job_id": job_id})
+        state["last_auto_continued_job_id"] = job_id
+        _save_agent_state(context, state)
+
+        if status == "succeeded":
+            auto_text = f"[auto] job {job_id} ({job_kind}) succeeded. Continue the pipeline if there is a sensible next step."
+        else:
+            tail = f" reason: {error_msg}" if error_msg else ""
+            auto_text = f"[auto] job {job_id} ({job_kind}) failed.{tail}"
+
+        try:
+            result = handle_agent_loop_message(
+                session_id=context.session_id,
+                text=auto_text,
+                image_bytes=None,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 502
+        except Exception as e:  # noqa: BLE001
+            import traceback as _tb
+            return jsonify({"error": f"{type(e).__name__}: {e}", "traceback": _tb.format_exc()}), 500
+
+        return jsonify(result)
+
     @app.route("/agent/plan/execute", methods=["POST"])
     def agent_plan_execute():
         try:
             context = _resolve_request_runtime_context(create=True)
             result = execute_agent_plan(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -684,7 +651,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = update_agent_plan(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
                 steps=steps,
             )
         except ValueError as e:
@@ -703,7 +669,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = update_agent_follow_up_plan(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
                 steps=steps,
             )
         except ValueError as e:
@@ -718,7 +683,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = accept_agent_follow_up_plan(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -737,7 +701,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = get_agent_plan_history(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
                 limit=limit_value,
             )
         except ValueError as e:
@@ -750,7 +713,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = clear_agent_job_audit(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -762,7 +724,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = cancel_agent_plan(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -770,33 +731,32 @@ def register_routes(app):
 
     @app.route("/agent/interrupt", methods=["POST"])
     def agent_interrupt():
-        """Interrupt the current run: kill any running Real2Sim /
+        """Interrupt the current session: kill any running Real2Sim /
         scene_robot subprocess job AND raise the cooperative interrupt
         flag so an in-flight loop/plan executor bails out at its next
         turn/step. Leaves the session usable for the next message.
         """
         from ..services import agent_interrupt as _agent_interrupt
-        from ..services.pipeline_service import cancel_real2sim_jobs_for_run
-        from ..services.scene_robot_service import cancel_scene_robot_jobs_for_run
+        from ..services.pipeline_service import cancel_real2sim_jobs_for_session
+        from ..services.scene_robot_service import cancel_scene_robot_jobs_for_session
 
         context = _resolve_request_runtime_context(create=False)
         if context is None:
             return jsonify({"status": "error", "msg": "no runtime context"}), 400
-        sid, rid = context.session_id, context.run_id
+        sid = context.session_id
 
         # Cooperative stop first so a loop/plan turn that starts mid-kill
         # still sees the flag.
-        _agent_interrupt.request_interrupt(sid, rid)
+        _agent_interrupt.request_interrupt(sid)
         results = []
-        for fn in (cancel_real2sim_jobs_for_run, cancel_scene_robot_jobs_for_run):
+        for fn in (cancel_real2sim_jobs_for_session, cancel_scene_robot_jobs_for_session):
             try:
-                results.append(fn(sid, rid))
+                results.append(fn(sid))
             except Exception as exc:  # noqa: BLE001 - best-effort teardown
                 results.append({"service": getattr(fn, "__name__", "?"), "error": str(exc)})
         return jsonify({
             "status": "ok",
             "session_id": sid,
-            "run_id": rid,
             "interrupt_requested": True,
             "jobs": results,
         })
@@ -807,7 +767,6 @@ def register_routes(app):
             context = _resolve_request_runtime_context(create=True)
             result = get_agent_state_response(
                 session_id=context.session_id if context is not None else None,
-                run_id=context.run_id if context is not None else None,
             )
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -844,7 +803,6 @@ def register_routes(app):
         context = paths.get("context")
         if context is not None:
             payload.setdefault("session_id", context.session_id)
-            payload.setdefault("run_id", context.run_id)
         job_info = _start_real2sim_job(payload)
         job_id = str(job_info["job_id"])
         job = _get_real2sim_job_status(job_id)
@@ -856,7 +814,6 @@ def register_routes(app):
         }
         if context is not None:
             response["session_id"] = context.session_id
-            response["run_id"] = context.run_id
         return jsonify(response)
 
     @app.route("/real2sim/status/<job_id>")
@@ -891,7 +848,6 @@ def register_routes(app):
         context = paths.get("context")
         if context is not None:
             payload.setdefault("session_id", context.session_id)
-            payload.setdefault("run_id", context.run_id)
         job_info = start_scene_robot_collect_job(payload)
         job_id = str(job_info["job_id"])
         response = {
@@ -902,7 +858,6 @@ def register_routes(app):
         }
         if context is not None:
             response["session_id"] = context.session_id
-            response["run_id"] = context.run_id
         return jsonify(response)
 
     @app.route("/scene_robot/status/<job_id>")
@@ -919,7 +874,6 @@ def register_routes(app):
         context = paths.get("context")
         if context is not None:
             payload.setdefault("session_id", context.session_id)
-            payload.setdefault("run_id", context.run_id)
         try:
             job_info = start_fn(payload)
         except KeyError as exc:
@@ -934,7 +888,6 @@ def register_routes(app):
         }
         if context is not None:
             response["session_id"] = context.session_id
-            response["run_id"] = context.run_id
         return jsonify(response)
 
     @app.route("/scene_robot/convert/start", methods=["POST"])
@@ -998,7 +951,7 @@ def register_routes(app):
                 try:
                     from ..services.agent_service import _load_agent_state
                     state = _load_agent_state(context)
-                    sr = ((state.get("runs") or {}).get(context.run_id) or {}).get("scene_robot") or {}
+                    sr = state.get("scene_robot") or {}
                     job_id = str(sr.get("job_id") or "")
                 except Exception:
                     pass
@@ -1011,18 +964,20 @@ def register_routes(app):
         if job.get("status") not in ("queued", "running"):
             return jsonify({"status": "noop", "msg": f"job already {job.get('status')}", "job_id": job_id})
 
-        # Kill via pkill -f (matches the unique --session/--run combo). The
+        # Kill via pkill -f (matches the unique --session token). The
         # job's subprocess was launched with start_new_session=False so we
         # don't have a PID handy in _JOBS — pkill is the simplest portable
         # way to find it. Best-effort: log either outcome.
         sess = (job.get("session_id") or "")
-        run_id = (job.get("run_id") or "")
         killed = False
-        if sess and run_id:
+        if sess:
             import subprocess as _sp
-            pattern = f"--session {sess} --run {run_id}"
+            pattern = f"--session {sess}"
             try:
-                rc = _sp.run(["pkill", "-TERM", "-f", pattern], check=False).returncode
+                rc = _sp.run(
+                    ["pkill", "-TERM", "-f", "--", pattern],
+                    check=False,
+                ).returncode
                 killed = (rc == 0)
             except Exception:
                 killed = False
@@ -1037,7 +992,6 @@ def register_routes(app):
             "job_id": job_id,
             "killed": killed,
             "session_id": sess,
-            "run_id": run_id,
         })
 
     @app.route("/robot_file/<path:relpath>")
@@ -1115,7 +1069,6 @@ def register_routes(app):
             }
             if context is not None:
                 response["session_id"] = context.session_id
-                response["run_id"] = context.run_id
             return jsonify(response)
 
         try:
@@ -1144,5 +1097,4 @@ def register_routes(app):
         }
         if context is not None:
             response["session_id"] = context.session_id
-            response["run_id"] = context.run_id
         return jsonify(response)

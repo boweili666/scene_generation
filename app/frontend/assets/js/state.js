@@ -73,12 +73,10 @@
     };
     const runtimeSessionState = {
       sessionId: null,
-      runId: null,
       context: null,
       initializing: null,
     };
     const RUNTIME_SESSION_STORAGE_KEY = "scene_ui_session_id";
-    const RUNTIME_RUN_STORAGE_KEY = "scene_ui_run_id";
     let imagePreviewObjectUrl = null;
     const PREVIEW_FLOOR_Y = -1.2;
     const PREVIEW_FLOOR_CLEARANCE = 0.015;
@@ -86,21 +84,9 @@
     const PREVIEW_STAGE_GRID_RADIUS = 13.2;
     const PREVIEW_STAGE_THICKNESS = 0.62;
 
-    function runtimeRunStorageKey(sessionId = null) {
-      const suffix = sessionId || runtimeSessionState.sessionId || "default";
-      return `${RUNTIME_RUN_STORAGE_KEY}:${suffix}`;
-    }
-
     function hydrateRuntimeStateFromStorage() {
       if (!runtimeSessionState.sessionId) {
         runtimeSessionState.sessionId = window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY) || null;
-      }
-      if (!runtimeSessionState.runId) {
-        runtimeSessionState.runId =
-          window.localStorage.getItem(runtimeRunStorageKey(runtimeSessionState.sessionId)) ||
-          window.localStorage.getItem(RUNTIME_RUN_STORAGE_KEY) ||
-          window.sessionStorage.getItem(RUNTIME_RUN_STORAGE_KEY) ||
-          null;
       }
     }
 
@@ -108,30 +94,18 @@
       if (runtimeSessionState.sessionId) {
         window.localStorage.setItem(RUNTIME_SESSION_STORAGE_KEY, runtimeSessionState.sessionId);
       }
-      if (runtimeSessionState.runId) {
-        window.localStorage.setItem(runtimeRunStorageKey(runtimeSessionState.sessionId), runtimeSessionState.runId);
-        window.localStorage.setItem(RUNTIME_RUN_STORAGE_KEY, runtimeSessionState.runId);
-        window.sessionStorage.setItem(RUNTIME_RUN_STORAGE_KEY, runtimeSessionState.runId);
-      }
     }
 
     function applyRuntimeContext(context) {
       if (!context || typeof context !== "object") return runtimeSessionState;
       runtimeSessionState.sessionId = context.session_id || context.sessionId || runtimeSessionState.sessionId;
-      runtimeSessionState.runId = context.run_id || context.runId || runtimeSessionState.runId;
       runtimeSessionState.context = context;
       persistRuntimeState();
       return runtimeSessionState;
     }
 
     function clearPersistedRuntimeState() {
-      const previousSessionId = runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY) || null;
-      if (previousSessionId) {
-        window.localStorage.removeItem(runtimeRunStorageKey(previousSessionId));
-      }
       window.localStorage.removeItem(RUNTIME_SESSION_STORAGE_KEY);
-      window.localStorage.removeItem(RUNTIME_RUN_STORAGE_KEY);
-      window.sessionStorage.removeItem(RUNTIME_RUN_STORAGE_KEY);
     }
 
     function invalidateReal2SimMonitor() {
@@ -148,37 +122,25 @@
 
     async function ensureRuntimeContext(options = {}) {
       hydrateRuntimeStateFromStorage();
-      const forceNewRun = !!options.forceNewRun;
       const forceNewSession = !!options.forceNewSession;
       if (forceNewSession) {
         clearPersistedRuntimeState();
         runtimeSessionState.sessionId = null;
-        runtimeSessionState.runId = null;
         runtimeSessionState.context = null;
       }
-      if (!forceNewRun && runtimeSessionState.sessionId && runtimeSessionState.runId) {
+      if (runtimeSessionState.sessionId) {
         return runtimeSessionState;
       }
-      if (!forceNewRun && runtimeSessionState.initializing) {
+      if (runtimeSessionState.initializing) {
         return runtimeSessionState.initializing;
       }
 
-      const existingSessionId = forceNewSession ? null : (runtimeSessionState.sessionId || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY));
       runtimeSessionState.initializing = (async () => {
-        let response;
-        if (existingSessionId) {
-          response = await fetch(`/sessions/${encodeURIComponent(existingSessionId)}/runs`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-        } else {
-          response = await fetch("/sessions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({}),
-          });
-        }
+        const response = await fetch("/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
         const data = await response.json();
         if (!response.ok || !data?.context) {
           throw new Error(data?.error || "Failed to initialize runtime session.");
@@ -197,13 +159,11 @@
     function appendRuntimeToPayload(payload = {}) {
       const nextPayload = { ...(payload || {}) };
       if (runtimeSessionState.sessionId) nextPayload.session_id = runtimeSessionState.sessionId;
-      if (runtimeSessionState.runId) nextPayload.run_id = runtimeSessionState.runId;
       return nextPayload;
     }
 
     function appendRuntimeToFormData(formData) {
       if (runtimeSessionState.sessionId) formData.set("session_id", runtimeSessionState.sessionId);
-      if (runtimeSessionState.runId) formData.set("run_id", runtimeSessionState.runId);
       return formData;
     }
 
@@ -211,9 +171,6 @@
       const resolved = new URL(url, window.location.origin);
       if (runtimeSessionState.sessionId) {
         resolved.searchParams.set("session_id", runtimeSessionState.sessionId);
-      }
-      if (runtimeSessionState.runId) {
-        resolved.searchParams.set("run_id", runtimeSessionState.runId);
       }
       Object.entries(extraParams || {}).forEach(([key, value]) => {
         if (value === undefined || value === null || value === "") return;
@@ -227,7 +184,6 @@
       invalidateSceneRobotMonitor();
       clearPersistedRuntimeState();
       runtimeSessionState.sessionId = null;
-      runtimeSessionState.runId = null;
       runtimeSessionState.context = null;
       runtimeSessionState.initializing = null;
 
@@ -262,7 +218,7 @@
         classDirPicker.value = "";
       }
       clearReferenceImageInput();
-      setResampleMode("joint");
+      setResampleMode("lock_real2sim");
       updateInputMeta();
       setMetrics({ objects: "-", edges: "-", score: "-" });
       setPill("model", "", "Idle");
@@ -343,7 +299,7 @@
           if (evt.target && evt.target.closest && evt.target.closest(".session-row-delete")) {
             return;
           }
-          switchToSession(s.session_id, s.current_run_id || null).catch((err) => {
+          switchToSession(s.session_id).catch((err) => {
             console.error(err);
             toast("err", "Switch failed", String(err));
           });
@@ -491,7 +447,6 @@
       if (sessionId === currentSessionId) {
         clearPersistedRuntimeState();
         runtimeSessionState.sessionId = null;
-        runtimeSessionState.runId = null;
         runtimeSessionState.context = null;
         runtimeSessionState.initializing = null;
         invalidateReal2SimMonitor();
@@ -507,7 +462,7 @@
       await refreshSessionsList();
     }
 
-    async function switchToSession(sessionId, runId) {
+    async function switchToSession(sessionId) {
       if (!sessionId) return;
       const currentSessionId = runtimeSessionState.sessionId
         || window.localStorage.getItem(RUNTIME_SESSION_STORAGE_KEY)
@@ -515,27 +470,6 @@
       // Clicking the active session is a no-op.
       if (sessionId === currentSessionId) {
         setSessionsDropdownOpen(false);
-        return;
-      }
-
-      // If the runId wasn't passed (or was empty), ask the server which run
-      // is current for this session. Falls back to whatever the session has.
-      let resolvedRunId = runId || "";
-      if (!resolvedRunId) {
-        try {
-          const res = await fetch(`/sessions/${encodeURIComponent(sessionId)}/runs`);
-          const data = await res.json();
-          if (res.ok) {
-            resolvedRunId = data.current_run_id
-              || (Array.isArray(data.runs) && data.runs[0] && data.runs[0].run_id)
-              || "";
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      }
-      if (!resolvedRunId) {
-        toast("err", "Switch failed", "Session has no runs to load.");
         return;
       }
 
@@ -581,7 +515,7 @@
       const sceneInputEl = document.getElementById("sceneInput");
       if (sceneInputEl) sceneInputEl.value = "";
       clearReferenceImageInput();
-      setResampleMode("joint");
+      setResampleMode("lock_real2sim");
       updateInputMeta();
       setMetrics({ objects: "-", edges: "-", score: "-" });
       setPill("model", "", "Idle");
@@ -590,9 +524,8 @@
       latestSessionState = null;
       renderPipelineStrip();
 
-      // Point runtime state at the chosen session/run, persist, and reload.
+      // Point runtime state at the chosen session, persist, and reload.
       runtimeSessionState.sessionId = sessionId;
-      runtimeSessionState.runId = resolvedRunId;
       runtimeSessionState.context = null;
       runtimeSessionState.initializing = null;
       persistRuntimeState();
@@ -795,6 +728,7 @@
       // Scene graph: any past-graph signal counts. We don't have an explicit
       // `has_scene_graph` field in session_state, so we infer it from any
       // downstream activity or completion markers.
+      const sceneGenStatus = sessionState?.scene_generation_status || "";
       const graphTouched =
         lcs === "create_scene_graph" ||
         cs  === "run_real2sim" ||
@@ -802,7 +736,7 @@
         cs  === "completed" ||
         !!r2sStatusRaw ||
         !!srStatusRaw ||
-        !!sessionState?.latest_scene_generation_run_id;
+        sceneGenStatus === "succeeded";
       let graphStatus = "idle";
       let graphDetail = "";
       if (cs === "create_scene_graph") {
@@ -819,13 +753,13 @@
         real2simDetail = String(r2s.error_info.code);
       }
 
-      // Scene USD: completion is signalled by `latest_scene_generation_run_id`.
+      // Scene USD: completion is signalled by scene_generation_status.
       // We don't track per-run scene_service status, so this stays best-effort.
       let sceneStatus = "idle";
       let sceneDetail = "";
       if (cs === "generate_scene") {
         sceneStatus = "running";
-      } else if (sessionState?.latest_scene_generation_run_id) {
+      } else if (sceneGenStatus === "succeeded") {
         sceneStatus = "ok";
         sceneDetail = "ready";
       } else if (lcs === "generate_scene") {
@@ -1285,13 +1219,13 @@
     }
 
     async function showThreeViewer() {
-      // The 3D reconstruction viewer lives in the Real2Sim tab; surface it
-      // when a GLB loads so the reconstruction isn't produced into a hidden
-      // pane (mirrors model.js switching to "scene" on a fresh render).
+      // The 3D reconstruction viewer lives in the Real2Sim tab; surface
+      // that tab when a GLB loads so the reconstruction isn't produced
+      // into a hidden pane. Only touch elements inside the Real2Sim
+      // pane — renderImage / imagePlaceholder live in the Scene pane
+      // and toggling them here used to blank out Scene's render preview.
       if (typeof switchRightTab === "function") switchRightTab("real2sim", { auto: true });
       document.getElementById("threeViewport").style.display = "block";
-      document.getElementById("renderImage").style.display = "none";
-      document.getElementById("imagePlaceholder").style.display = "none";
       await initThreeViewer();
       if (viewerState.resize) {
         viewerState.resize();

@@ -711,10 +711,9 @@
     }
 
     async function handleAgentResponse(data, options = {}) {
-      if (data?.session_id || data?.run_id) {
+      if (data?.session_id) {
         applyRuntimeContext({
           session_id: data.session_id,
-          run_id: data.run_id,
         });
       }
       refreshSessionStateCache(data?.session_state);
@@ -921,10 +920,9 @@
         );
       }
 
-      if (data?.session_id || data?.run_id) {
+      if (data?.session_id) {
         applyRuntimeContext({
           session_id: data.session_id,
-          run_id: data.run_id,
         });
       }
       preview.textContent = JSON.stringify(data, null, 2);

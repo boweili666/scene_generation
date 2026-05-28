@@ -18,11 +18,10 @@ class AgentRouteTest(unittest.TestCase):
         self.client = create_app().test_client()
 
     def test_agent_message_json_forwards_runtime_context(self) -> None:
-        runtime_ctx = SimpleNamespace(session_id="sess_demo", run_id="run_demo")
+        runtime_ctx = SimpleNamespace(session_id="sess_demo")
         response_payload = {
             "status": "ok",
             "session_id": "sess_demo",
-            "run_id": "run_demo",
             "agent": {"intent": "graph", "state": "completed", "message": "ok", "question": None},
         }
 
@@ -36,7 +35,6 @@ class AgentRouteTest(unittest.TestCase):
                     "text": "add a chair",
                     "action": "graph",
                     "session_id": "sess_demo",
-                    "run_id": "run_demo",
                 },
             )
 
@@ -44,17 +42,15 @@ class AgentRouteTest(unittest.TestCase):
         self.assertEqual(response.get_json(), response_payload)
         agent_mock.assert_called_once_with(
             session_id="sess_demo",
-            run_id="run_demo",
             text="add a chair",
             image_bytes=None,
         )
 
     def test_agent_message_multipart_forwards_image(self) -> None:
-        runtime_ctx = SimpleNamespace(session_id="sess_demo", run_id="run_demo")
+        runtime_ctx = SimpleNamespace(session_id="sess_demo")
         response_payload = {
             "status": "ok",
             "session_id": "sess_demo",
-            "run_id": "run_demo",
             "agent": {
                 "intent": "generate_scene",
                 "state": "needs_clarification",
@@ -76,7 +72,6 @@ class AgentRouteTest(unittest.TestCase):
                     "scene_endpoint": "scene_new",
                     "class_names": "[\"chair\"]",
                     "session_id": "sess_demo",
-                    "run_id": "run_demo",
                     "image": (io.BytesIO(b"fake-image-bytes"), "reference.png"),
                 },
                 content_type="multipart/form-data",
@@ -86,17 +81,15 @@ class AgentRouteTest(unittest.TestCase):
         self.assertEqual(response.get_json(), response_payload)
         agent_mock.assert_called_once_with(
             session_id="sess_demo",
-            run_id="run_demo",
             text="generate the scene",
             image_bytes=b"fake-image-bytes",
         )
 
     def test_agent_state_forwards_runtime_context(self) -> None:
-        runtime_ctx = SimpleNamespace(session_id="sess_demo", run_id="run_demo")
+        runtime_ctx = SimpleNamespace(session_id="sess_demo")
         response_payload = {
             "status": "ok",
             "session_id": "sess_demo",
-            "run_id": "run_demo",
             "agent": {"intent": "generate_scene", "state": "await_layout_strategy", "message": "Need layout strategy"},
         }
 
@@ -106,12 +99,12 @@ class AgentRouteTest(unittest.TestCase):
         ):
             response = self.client.get(
                 "/agent/state",
-                query_string={"session_id": "sess_demo", "run_id": "run_demo"},
+                query_string={"session_id": "sess_demo"},
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), response_payload)
-        state_mock.assert_called_once_with(session_id="sess_demo", run_id="run_demo")
+        state_mock.assert_called_once_with(session_id="sess_demo")
 
 
 if __name__ == "__main__":

@@ -338,11 +338,8 @@ def _build_collect_cmd(payload: dict[str, Any]) -> list[str]:
     cmd: list[str] = [python_bin, "-u", script]
 
     session_id = payload.get("session_id")
-    run_id = payload.get("run_id")
     if session_id:
         cmd += ["--session", str(session_id)]
-    if run_id:
-        cmd += ["--run", str(run_id)]
 
     if payload.get("plan_output_dir"):
         cmd += ["--plan_output_dir", str(payload["plan_output_dir"])]
@@ -374,7 +371,7 @@ def run_scene_robot_collect(payload: dict[str, Any], job_id: str | None = None) 
 
     log_scene_robot_event(
         f"Starting scene_robot collect: session={payload.get('session_id')} "
-        f"run={payload.get('run_id')} robot={payload.get('robot')} "
+        f"robot={payload.get('robot')} "
         f"target={payload.get('target')} num_episodes={payload.get('num_episodes')}",
         job_id=job_id,
         log_path=log_path,
@@ -504,7 +501,6 @@ def _start_stage_job(
                 kind=kind_map[stage],
                 job_id=job_id,
                 session_id=payload.get("session_id") if isinstance(payload.get("session_id"), str) else None,
-                run_id=payload.get("run_id") if isinstance(payload.get("run_id"), str) else None,
                 log_path=log_path,
                 get_status=get_scene_robot_job_status,
             )
@@ -523,7 +519,7 @@ def start_scene_robot_collect_job(payload: dict[str, Any]) -> dict[str, object]:
     log_path = str(payload.get("log_path") or SCENE_ROBOT_LOG_PATH)
     intro = (
         f"Starting scene_robot collect: session={payload.get('session_id')} "
-        f"run={payload.get('run_id')} robot={payload.get('robot')} "
+        f"robot={payload.get('robot')} "
         f"target={payload.get('target')} num_episodes={payload.get('num_episodes')}"
     )
     return _start_stage_job(
@@ -683,8 +679,6 @@ def _build_eval_cmd(payload: dict[str, Any]) -> list[str]:
     cmd: list[str] = [python_bin, "-u", script]
     if payload.get("session_id"):
         cmd += ["--session", str(payload["session_id"])]
-    if payload.get("run_id"):
-        cmd += ["--run", str(payload["run_id"])]
     if payload.get("robot"):
         cmd += ["--robot", str(payload["robot"])]
     cmd += ["--target", str(payload["target"])]
@@ -746,22 +740,29 @@ def start_scene_robot_eval_job(payload: dict[str, Any]) -> dict[str, object]:
     )
 
 
-def cancel_scene_robot_jobs_for_run(session_id: str, run_id: str) -> dict:
+def cancel_scene_robot_jobs_for_session(session_id: str) -> dict:
     """Best-effort terminate any running scene_robot subprocess for this
-    run and mark its registry entries cancelled.
+    session and mark its registry entries cancelled.
 
-    Subprocesses are launched with `--session <sid> --run <rid>` and run
-    under `.../runs/<rid>/...`; we have no PID handy (start_new_session
-    =False) so pkill on those unique tokens is the portable kill. Used by
-    /agent/interrupt; mirrors the inline logic in /scene_robot/stop.
+    Subprocesses are launched with `--session <sid>` and run under
+    `.../sessions/<sid>/...`; we have no PID handy (start_new_session
+    =False) so pkill on those unique tokens is the portable kill. Used
+    by /agent/interrupt and session deletion; mirrors the inline logic
+    in /scene_robot/stop.
     """
     import subprocess as _sp
 
     killed = False
-    if session_id and run_id:
-        for pattern in (f"--session {session_id} --run {run_id}", f"/runs/{run_id}/"):
+    if session_id:
+        for pattern in (
+            f"--session {session_id}",
+            f"/sessions/{session_id}/",
+        ):
             try:
-                rc = _sp.run(["pkill", "-TERM", "-f", pattern], check=False).returncode
+                rc = _sp.run(
+                    ["pkill", "-TERM", "-f", "--", pattern],
+                    check=False,
+                ).returncode
                 killed = killed or (rc == 0)
             except Exception:
                 pass
@@ -769,7 +770,7 @@ def cancel_scene_robot_jobs_for_run(session_id: str, run_id: str) -> dict:
     with _JOBS_LOCK:
         for jid, entry in _JOBS.items():
             payload = entry.get("payload") or {}
-            if payload.get("session_id") != session_id or payload.get("run_id") != run_id:
+            if payload.get("session_id") != session_id:
                 continue
             if entry.get("status") in ("queued", "running"):
                 entry["status"] = "cancelled"
@@ -789,7 +790,5 @@ def get_scene_robot_job_status(job_id: str) -> dict | None:
     payload = job.get("payload") or {}
     if isinstance(payload.get("session_id"), str) and payload.get("session_id"):
         job["session_id"] = payload["session_id"]
-    if isinstance(payload.get("run_id"), str) and payload.get("run_id"):
-        job["run_id"] = payload["run_id"]
     job.pop("payload", None)
     return job

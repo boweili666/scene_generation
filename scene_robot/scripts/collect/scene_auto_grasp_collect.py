@@ -53,13 +53,7 @@ parser.add_argument(
     "--session",
     type=str,
     default=None,
-    help="Session id (e.g. sess_37daed605d8c). When set together with --run, all four scene/graph/placements/manifest paths (and, unless explicitly provided, --dataset_file) are derived from runtime/sessions/<session>/runs/<run>/...",
-)
-parser.add_argument(
-    "--run",
-    type=str,
-    default=None,
-    help="Run id within the session (e.g. run_ab267fae7ae8). Required with --session.",
+    help="Session id (e.g. sess_37daed605d8c). When set, all four scene/graph/placements/manifest paths (and, unless explicitly provided, --dataset_file) are derived from runtime/sessions/<session>/...",
 )
 parser.add_argument("--dataset_file", type=str, default=None)
 parser.add_argument("--capture_hz", type=float, default=10.0)
@@ -227,17 +221,14 @@ except Exception:
 
 
 def _resolve_session_paths() -> None:
-    # If the user passed --session/--run, fill in any omitted path args from
-    # the runtime/sessions/<session>/runs/<run>/... layout. Explicit paths
-    # still win; fallback defaults are used when neither is given.
+    # If the user passed --session, fill in any omitted path args from
+    # the runtime/sessions/<session>/... layout. Explicit paths still
+    # win; fallback defaults are used when not given.
     session = args_cli.session
-    run_id = args_cli.run
-    if session or run_id:
-        if not (session and run_id):
-            raise SystemExit("--session and --run must be provided together")
-        session_root = PROJECT_ROOT / "runtime" / "sessions" / session / "runs" / run_id
+    if session:
+        session_root = PROJECT_ROOT / "runtime" / "sessions" / session
         if not session_root.exists():
-            raise SystemExit(f"Session run directory not found: {session_root}")
+            raise SystemExit(f"Session directory not found: {session_root}")
         if args_cli.scene_usd_path is None:
             args_cli.scene_usd_path = str(session_root / "scene_service" / "usd" / "scene_latest.usd")
         if args_cli.scene_graph_path is None:
@@ -251,7 +242,7 @@ def _resolve_session_paths() -> None:
             args_cli.dataset_file = str(
                 PROJECT_ROOT
                 / "datasets"
-                / f"{session}_{run_id}_{args_cli.robot}_{target_slug}.hdf5"
+                / f"{session}_{args_cli.robot}_{target_slug}.hdf5"
             )
 
     # Fall back to the legacy defaults so old invocations keep working.
@@ -332,4 +323,15 @@ def main():
 
 if __name__ == "__main__":
     main()
-    simulation_app.close()
+    # Isaac Sim's SimulationApp.close() frequently hangs in Omniverse Kit
+    # teardown (OgnSdOnNewFrame frame-discard storm, GPU ctx release).
+    # HDF5 episodes are already flushed by main(), so on hang we hard-exit
+    # so the parent process can flip the job status to succeeded and the
+    # pipeline can auto-continue / release the GPU for the next stage.
+    import threading
+    threading.Timer(30.0, lambda: os._exit(0)).start()
+    try:
+        simulation_app.close()
+    except Exception:
+        pass
+    os._exit(0)

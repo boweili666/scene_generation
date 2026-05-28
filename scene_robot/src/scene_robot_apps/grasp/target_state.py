@@ -60,23 +60,41 @@ def _snapshot_target_rigid_body_state(prim_path: str) -> dict[str, Any] | None:
     return {"prim_path": prim_path, "transforms": transforms.clone()}
 
 
-def _restore_target_rigid_body_state(snapshot: dict[str, Any] | None) -> None:
-    # Teleport the rigid body back to the snapshot pose AND zero its linear
-    # and angular velocity, all through the physx tensor view (the same API
-    # isaaclab's `RigidObject.write_root_link_pose_to_sim` /
-    # `write_root_com_velocity_to_sim` use at `rigid_object.py:282, 362`).
-    # Writes via USD xformOps don't round-trip to physx on GPU scenes, hence
-    # the previous episode's pose "leaked" into the next one.
+def _snapshot_scene_rigid_bodies(prim_paths: list[str]) -> list[dict[str, Any]]:
+    # Snapshot every rigid body listed in `prim_paths`, in order. Used by the
+    # collect/eval pipelines so per-episode reset restores the *whole* scene
+    # to the build-time pose, not just the grasp target — otherwise non-target
+    # objects (other screws, props) get knocked over by grasp/lift contacts
+    # and that disturbed pose leaks into all subsequent episodes.
+    snapshots: list[dict[str, Any]] = []
+    for path in prim_paths:
+        snap = _snapshot_target_rigid_body_state(path)
+        if snap is not None:
+            snapshots.append(snap)
+    return snapshots
+
+
+def _restore_target_rigid_body_state(
+    snapshot: dict[str, Any] | list[dict[str, Any]] | None,
+) -> None:
+    # Teleport rigid bodies back to their snapshot pose AND zero linear and
+    # angular velocity through the physx tensor view (same API isaaclab's
+    # `RigidObject.write_root_link_pose_to_sim` / `write_root_com_velocity_to_sim`
+    # use at `rigid_object.py:282, 362`). Writes via USD xformOps don't
+    # round-trip to physx on GPU scenes, so the previous episode's pose would
+    # otherwise leak into the next one.
     if snapshot is None:
         return
-    prim_path = snapshot["prim_path"]
-    view = _get_rigid_body_view(prim_path)
-    if view is None:
-        return
-    pose = snapshot["transforms"]
-    view.set_transforms(pose, indices=torch.arange(pose.shape[0], device=pose.device))
-    velocities = torch.zeros((pose.shape[0], 6), device=pose.device, dtype=pose.dtype)
-    view.set_velocities(velocities, indices=torch.arange(pose.shape[0], device=pose.device))
+    entries = snapshot if isinstance(snapshot, list) else [snapshot]
+    for entry in entries:
+        prim_path = entry["prim_path"]
+        view = _get_rigid_body_view(prim_path)
+        if view is None:
+            continue
+        pose = entry["transforms"]
+        view.set_transforms(pose, indices=torch.arange(pose.shape[0], device=pose.device))
+        velocities = torch.zeros((pose.shape[0], 6), device=pose.device, dtype=pose.dtype)
+        view.set_velocities(velocities, indices=torch.arange(pose.shape[0], device=pose.device))
 
 
 def _robot_forward_xy_world(controller) -> tuple[float, float]:
@@ -97,19 +115,35 @@ def _robot_forward_xy_world(controller) -> tuple[float, float]:
 
 
 def _shifted_target_snapshot(
-    snapshot: dict[str, Any] | None,
+    snapshot: dict[str, Any] | list[dict[str, Any]] | None,
     offset_xy: tuple[float, float],
-) -> dict[str, Any] | None:
-    # Clone the physx target-body snapshot and add `offset_xy` to the (x, y)
-    # position columns, leaving z and the quaternion untouched. The clone
-    # isolates per-episode randomization from the canonical snapshot captured
-    # once at scene build time.
+    *,
+    target_prim_path: str,
+) -> dict[str, Any] | list[dict[str, Any]] | None:
+    # Clone the physx snapshot and add `offset_xy` to the (x, y) position
+    # columns of the *target* entry, leaving z, the quaternion, and every
+    # non-target entry untouched. The clone isolates per-episode randomization
+    # from the canonical snapshot captured once at scene build time.
     if snapshot is None:
         return None
-    transforms = snapshot["transforms"].clone()
-    transforms[:, 0] += float(offset_xy[0])
-    transforms[:, 1] += float(offset_xy[1])
-    return {"prim_path": snapshot["prim_path"], "transforms": transforms}
+    dx, dy = float(offset_xy[0]), float(offset_xy[1])
+    if isinstance(snapshot, dict):
+        if snapshot["prim_path"] != target_prim_path:
+            return snapshot
+        transforms = snapshot["transforms"].clone()
+        transforms[:, 0] += dx
+        transforms[:, 1] += dy
+        return {"prim_path": snapshot["prim_path"], "transforms": transforms}
+    shifted: list[dict[str, Any]] = []
+    for entry in snapshot:
+        if entry["prim_path"] == target_prim_path:
+            transforms = entry["transforms"].clone()
+            transforms[:, 0] += dx
+            transforms[:, 1] += dy
+            shifted.append({"prim_path": entry["prim_path"], "transforms": transforms})
+        else:
+            shifted.append(entry)
+    return shifted
 
 
 def _shifted_candidate(

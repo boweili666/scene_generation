@@ -75,6 +75,7 @@ from ..config import (
     LEROBOT_DATASETS_DIR,
     OUTPUTS_EVAL_DIR,
     OUTPUTS_TRAIN_DIR,
+    RETRIEVAL_ASSET_ROOT,
 )
 
 
@@ -92,18 +93,38 @@ Available tools (in normal pipeline order):
   `placements_object_count`, `scene_service_alive`, `scene_service_pid`,
   `real2sim.status`, `scene_robot.status`. Use these flags to decide
   which tools have unmet preconditions.
+- inspect_assets: audit the current scene graph against on-disk USDs.
+  Returns per-prim resolution status. Call this when you need to know
+  which objects already have backing assets (real2sim manifest entry +
+  usd_objects/<output_name>.usd present, or retrieval USD matching the
+  class name under RETRIEVAL_ASSET_ROOT). `generate_scene` also runs
+  this audit and refuses if anything is missing.
 - create_scene_graph: build a new scene graph from text and/or the
   current uploaded image. Replaces the existing scene graph for this run.
 - run_real2sim: launch the Real2Sim observed-object reconstruction job
   for the current scene graph + image. Returns immediately with a job id;
   it runs in the background and the UI streams its log.
 - generate_scene: call the Isaac scene service to produce the scene USD
-  preview using the current scene graph. Default resample_mode is
-  lock_real2sim (keeps observed real2sim support chains rigid); only
-  pass joint when the user explicitly asks to fully resample the layout.
+  preview using the current scene graph. Layout strategy is fixed to
+  lock_real2sim (keeps observed real2sim support chains rigid).
+  HARD PRECONDITION: every obj in the scene graph must resolve to an
+  on-disk USD. real2sim objs need run_real2sim to have finished and
+  written their manifest entry + usd_objects/<output_name>.usd; retrieval
+  objs need a matching USD under RETRIEVAL_ASSET_ROOT. If anything is
+  missing the tool returns ok=false with a `missing` list and a
+  `next_step` hint — comply with that hint instead of retrying.
 - run_scene_robot_collect: launch the scene_robot auto-grasp data
   collection job. Defaults: robot=agibot, num_episodes=5, target=first
   real2sim object in the scene graph. Returns immediately with a job id.
+  HARD PRECONDITION: generate_scene must have completed for the current
+  run — inspect_state must show `has_scene_usd: true` AND
+  `placements_object_count > 0`. The collect script reads object world
+  poses from placements; an empty placements file makes it fail with
+  `ValueError: Unable to resolve target ...`. If either condition is
+  missing, call generate_scene first and only then call this tool.
+  The same precondition is enforced server-side — calling out of order
+  returns `{"ok": false, "next_step": "generate_scene"}` and you should
+  comply.
 - run_scene_robot_convert: convert the latest collect HDF5 into a
   LeRobotDataset directory. Fast (seconds-to-minutes); fire-and-return.
 - run_scene_robot_train: launch `lerobot-train` on the dataset. LONG
@@ -121,29 +142,75 @@ Available tools (in normal pipeline order):
 Operating rules:
 1. Always call `inspect_state` first if you do not already know the
    current run's state from earlier tool results in this turn.
-2. `run_real2sim`, `run_scene_robot_collect`, `run_scene_robot_train`,
-   and `run_scene_robot_eval` are LONG jobs. Do NOT poll them inside
-   this turn. Return to the user as soon as you start them; the UI
-   streams their progress and the user can come back in a follow-up
-   message.
+2. LONG JOBS DO NOT BLOCK YOUR TURN. `run_real2sim`,
+   `run_scene_robot_collect`, `run_scene_robot_train`, and
+   `run_scene_robot_eval` return immediately with a job id; the job
+   runs in the background. After starting one, stop the turn and tell
+   the user the job is running. The backend will inject a fresh user
+   message tagged `[auto] job <id> (<kind>) succeeded` (or `failed:
+   <reason>`) when the job finishes — at that point you SHOULD continue
+   the pipeline automatically without re-asking, unless the user has
+   sent their own message in between. Do NOT sleep, do NOT call
+   `check_job_progress` to wait it out inside the same turn;
+   `check_job_progress` is only for answering explicit user progress
+   questions.
 3. If the user asks for an end-to-end pipeline ("set up everything to
-   train a pickup policy"), you may call create_scene_graph ->
-   run_real2sim in one turn, then stop and tell the user you'll continue
-   once Real2Sim finishes.
-4. Do NOT call generate_scene or run_scene_robot_collect while Real2Sim
+   train a pickup policy"), chain create_scene_graph -> run_real2sim
+   in one turn, then stop per rule 2. Subsequent stages
+   (generate_scene -> run_scene_robot_collect -> ...) will resume on
+   the auto-continue message when each long job finishes.
+4. SELF-CORRECT WITHIN A TURN, BOUNDED BY FAILURE CLASS.
+   - When a tool returns `ok: false` with a `next_step` hint or a
+     `missing` list, attempt the suggested recovery in the same turn
+     instead of handing back to the user. Examples: generate_scene
+     reports `missing: [...real2sim objs...]` → call run_real2sim;
+     create_scene_graph reports needing an image but one is saved →
+     retry with `use_uploaded_image: true`.
+   - If a tool result includes `forced_stop`, the same failure class
+     has already repeated 3 times this turn — STOP. Do not call the
+     same tool again. Report the failure to the user with the failing
+     job's log path or error detail.
+   - For failures with no actionable next_step (transient subprocess
+     crash, network blip), retry the SAME call at most once; if it
+     still fails, stop and report.
+5. CONTINUATIONS FROM AUTO-INJECTED MESSAGES.
+   - If the most recent user-role message starts with `[auto]`, treat
+     it as a backend-generated continuation. Do NOT echo or quote the
+     `[auto]` text back to the user; just act on it and report what
+     you did next.
+   - GOAL INFERENCE IS MANDATORY before choosing any next stage. Scan
+     backwards through the history for the most recent NON-`[auto]`
+     user message and identify the EXPLICIT final goal in it. Map
+     phrases to goal endpoints:
+       * "generate the scene" / "build the scene" / "make a scene" /
+         "I want the scene of ..." / "show the scene" → goal endpoint
+         is `generate_scene`. STOP after scene USD is ready. Do NOT
+         start run_scene_robot_collect or anything downstream.
+       * "real2sim" / "reconstruct" / "show me the reconstruction"
+         with no mention of scene preview → goal endpoint is
+         `run_real2sim`. STOP after real2sim succeeds.
+       * "collect robot data" / "run scene_robot" / "auto-grasp on X"
+         / "robot collection" → goal endpoint is
+         `run_scene_robot_collect`.
+       * "convert dataset" / "train policy" / "eval the policy" →
+         goal endpoint extends through the matching scene_robot stage.
+       * "set up everything to train a pickup policy" / "end-to-end"
+         / "full pipeline" → goal endpoint is the last stage you can
+         reach (typically train or eval).
+   - Take ONLY the next pipeline step that advances toward that goal.
+     If the previously-completed stage already IS the goal endpoint
+     (e.g. generate_scene finished and the user just asked to "generate
+     the scene"), STOP and report — do not invent further work.
+   - On failure (`[auto] ... failed`), surface the failure with the
+     log path; do not auto-retry unless the user explicitly asked for
+     retry behaviour.
+   - If the goal is ambiguous or you cannot find a clear endpoint in
+     any non-`[auto]` user message, STOP and ask the user what they
+     want next instead of picking a stage on your own.
+6. Do NOT call generate_scene or run_scene_robot_collect while Real2Sim
    is still running or the scene graph contains real2sim objects without
    completed artifacts.
-5. PRECONDITION: Before calling `run_scene_robot_collect`, generate_scene
-   must have completed for the current run. Concretely, inspect_state
-   must show `has_scene_usd: true` AND `placements_object_count > 0`.
-   If either is missing, call `generate_scene` first, wait for it to
-   finish, and only then call `run_scene_robot_collect`. The robot
-   pipeline reads object world poses from placements; an empty
-   placements file makes the collect job fail with `ValueError: Unable
-   to resolve target ...`. The same precondition is enforced server-side
-   — calling out of order will return `{"ok": false, "next_step":
-   "generate_scene"}` and you should comply.
-6. SCENE SERVICE LIFECYCLE IS AUTO-MANAGED. The scene service and the
+7. SCENE SERVICE LIFECYCLE IS AUTO-MANAGED. The scene service and the
    scene_robot collect script each spawn their own SimulationApp and
    together they oversubscribe the GPU, so they cannot coexist:
      - `generate_scene` will start the scene service if `inspect_state`
@@ -158,17 +225,18 @@ Operating rules:
    itself returned `next_step: user_action_required` (which means the
    automatic start failed for an environment reason, e.g. SCENE_PYTHON
    is not set to an Isaac-capable interpreter).
-7. PROGRESS QUERIES: When the user asks how a previously-started long
+8. PROGRESS QUERIES: When the user asks how a previously-started long
    job is going ("any update?", "is real2sim done?", "how many episodes
    has collect run?", "what's it doing now?"), call `check_job_progress`
    with the appropriate `kind`. Summarise the response in one or two
    sentences — surface elapsed time, the most useful progress marker
    (mask_selection, episode, step), and any error if the status is
    "failed". Do NOT relaunch the job unless the user explicitly asks.
-8. If the user's request is ambiguous, ask a clarifying question instead
-   of guessing. Tools you do not call are free; nothing happens.
-9. Final assistant text should be concise: state what you did and what
-   the user should do or wait for next.
+9. If the user's request is ambiguous (and it is NOT an `[auto]`
+   continuation), ask a clarifying question instead of guessing.
+   Tools you do not call are free; nothing happens.
+10. Final assistant text should be concise: state what you did and what
+    the user should do or wait for next.
 """.strip()
 
 
@@ -254,7 +322,6 @@ def _tool_inspect_state(_args: dict[str, Any], lctx: "LoopContext") -> dict[str,
 
     return {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "has_scene_graph": isinstance(scene_graph, dict),
         "scene_graph_objects": objects[:40],
         "has_uploaded_image_this_turn": lctx.has_uploaded_image,
@@ -316,11 +383,10 @@ def _tool_run_real2sim(_args: dict[str, Any], lctx: "LoopContext") -> dict[str, 
 
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "image_path": str(context.latest_input_image),
         "scene_graph_path": str(context.scene_graph_path),
         "log_path": str(context.real2sim_log_path),
-        "real2sim_root_dir": str(context.run_root),
+        "real2sim_root_dir": str(context.session_root),
         "mask_output": str(context.real2sim_masks_dir),
         "mesh_output_dir": str(context.real2sim_meshes_dir),
         "reuse_mesh_dir": str(context.real2sim_meshes_dir),
@@ -346,14 +412,141 @@ def _tool_run_real2sim(_args: dict[str, Any], lctx: "LoopContext") -> dict[str, 
     }
 
 
+def _audit_scene_graph_assets(context: "RuntimeContext") -> dict[str, Any]:
+    """Check every obj in the scene graph has a backing USD on disk.
+
+    Returns a dict with per-prim resolution status. Used both by the
+    standalone `inspect_assets` tool and as a hard precondition inside
+    `generate_scene` so the agent can't ship the request to Isaac with
+    half the assets missing.
+    """
+    sg_path = context.scene_graph_path
+    if not sg_path.exists():
+        return {"ok": False, "error": "No scene graph in this session.", "next_step": "create_scene_graph"}
+
+    try:
+        scene_graph = json.loads(sg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"ok": False, "error": f"Could not read scene graph: {exc}"}
+
+    obj_map = scene_graph.get("obj") if isinstance(scene_graph, dict) else None
+    if not isinstance(obj_map, dict) or not obj_map:
+        return {
+            "ok": True,
+            "total": 0,
+            "resolved": 0,
+            "missing": [],
+            "by_source": {},
+            "note": "Scene graph has no objects.",
+        }
+
+    manifest_path = context.real2sim_manifest_path
+    real2sim_usd_dir = context.real2sim_object_usd_dir
+    manifest_objects: dict[str, Any] = {}
+    if manifest_path.exists():
+        try:
+            mdata = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest_objects = mdata.get("objects") if isinstance(mdata, dict) else {}
+            if not isinstance(manifest_objects, dict):
+                manifest_objects = {}
+        except (json.JSONDecodeError, OSError):
+            manifest_objects = {}
+
+    retrieval_root = Path(RETRIEVAL_ASSET_ROOT)
+    retrieval_usds: list[Path] = []
+    if retrieval_root.exists():
+        retrieval_usds = list(retrieval_root.rglob("*.usd"))
+
+    resolved: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    by_source: dict[str, dict[str, int]] = {}
+
+    for prim_path, meta in obj_map.items():
+        if not isinstance(meta, dict):
+            continue
+        source = str(meta.get("source") or "").strip().lower() or "unknown"
+        cls = str(meta.get("class") or meta.get("class_name") or Path(prim_path).name)
+        entry = {"prim": prim_path, "class": cls, "source": source}
+
+        found_path: str | None = None
+        reason: str | None = None
+        if source == "real2sim":
+            man_obj = manifest_objects.get(prim_path) if isinstance(manifest_objects, dict) else None
+            if not isinstance(man_obj, dict):
+                reason = "no manifest entry — run_real2sim has not produced this object yet"
+            else:
+                output_name = str(man_obj.get("output_name") or "").strip()
+                if not output_name:
+                    reason = "manifest entry missing output_name"
+                else:
+                    candidate = real2sim_usd_dir / f"{output_name}.usd"
+                    if candidate.exists():
+                        found_path = str(candidate)
+                    else:
+                        reason = f"manifest claims output_name={output_name}.usd but file does not exist"
+        elif source == "retrieval":
+            needle = cls.lower()
+            matches = [p for p in retrieval_usds if needle in p.name.lower()]
+            if matches:
+                found_path = str(matches[0])
+            elif not retrieval_usds:
+                reason = f"retrieval asset library is empty (RETRIEVAL_ASSET_ROOT={retrieval_root})"
+            else:
+                reason = f"no USD in {retrieval_root} matches class '{cls}'"
+        else:
+            reason = f"unknown source '{source}' (expected real2sim or retrieval)"
+
+        bucket = by_source.setdefault(source, {"total": 0, "resolved": 0, "missing": 0})
+        bucket["total"] += 1
+        if found_path is not None:
+            entry["asset_path"] = found_path
+            bucket["resolved"] += 1
+            resolved.append(entry)
+        else:
+            entry["reason"] = reason or "asset not found"
+            bucket["missing"] += 1
+            missing.append(entry)
+
+    return {
+        "ok": True,
+        "total": len(resolved) + len(missing),
+        "resolved": len(resolved),
+        "missing": missing,
+        "by_source": by_source,
+    }
+
+
+def _tool_inspect_assets(_args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
+    """Surface the asset audit as a standalone tool the agent can call."""
+    return _audit_scene_graph_assets(lctx.runtime_context)
+
+
 def _tool_generate_scene(args: dict[str, Any], lctx: "LoopContext") -> dict[str, Any]:
     context = lctx.runtime_context
     if not context.scene_graph_path.exists():
         return {"ok": False, "error": "No scene graph in this run; create_scene_graph first."}
 
-    resample_mode = str(args.get("resample_mode") or "lock_real2sim").strip().lower()
-    if resample_mode not in {"joint", "lock_real2sim"}:
-        resample_mode = "lock_real2sim"
+    # Hard precondition: every scene-graph obj must resolve to an on-disk
+    # USD. If a real2sim obj has no manifest entry yet, the scene service
+    # will silently emit `[MISS] ... -> NOT FOUND` and ship a scene that's
+    # missing those props; bailing here forces the agent to call
+    # run_real2sim first (or repair retrieval gaps).
+    audit = _audit_scene_graph_assets(context)
+    if audit.get("ok") and audit.get("missing"):
+        has_missing_real2sim = any(m.get("source") == "real2sim" for m in audit["missing"])
+        next_step = "run_real2sim" if has_missing_real2sim else "user_action_required"
+        return {
+            "ok": False,
+            "error": (
+                f"{len(audit['missing'])} of {audit['total']} objects have no on-disk USD asset; "
+                "scene cannot be generated."
+            ),
+            "missing": audit["missing"],
+            "by_source": audit["by_source"],
+            "next_step": next_step,
+        }
+
+    resample_mode = "lock_real2sim"
     scene_endpoint = str(args.get("scene_endpoint") or "scene_new").strip().lower()
     if scene_endpoint not in {"scene", "scene_new"}:
         scene_endpoint = "scene_new"
@@ -484,7 +677,6 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
 
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "log_path": str(context.scene_robot_log_path),
         "plan_output_dir": str(context.robot_placement_dir),
         "robot": robot,
@@ -520,14 +712,14 @@ def _tool_run_scene_robot_collect(args: dict[str, Any], lctx: "LoopContext") -> 
 
 
 def _default_repo_id(context: RuntimeContext, robot: str | None, target: str | None) -> str:
-    """Derive a sensible default LeRobot repo_id from the current run."""
+    """Derive a sensible default LeRobot repo_id from the current session."""
     target_slug = "obj"
     if isinstance(target, str) and target:
         cleaned = target.strip().lstrip("/").replace("/", "_")
         if cleaned:
             target_slug = cleaned[:40]
     robot_slug = (robot or "agibot").strip().lower() or "agibot"
-    return f"local/{context.session_id}_{context.run_id}_{robot_slug}_{target_slug}"
+    return f"local/{context.session_id}_{robot_slug}_{target_slug}"
 
 
 def _default_dataset_root(repo_id: str) -> str:
@@ -535,24 +727,24 @@ def _default_dataset_root(repo_id: str) -> str:
 
 
 def _latest_collect_hdf5(context: RuntimeContext) -> Path | None:
-    """Find the most recent HDF5 dataset produced by collect for this run.
+    """Find the most recent HDF5 dataset produced by collect for this session.
 
     scene_auto_grasp_collect.py writes to
-    `datasets/<session>_<run>_<robot>_<target>.hdf5` by default, so we glob
-    project-level `datasets/` for files matching this run.
+    `datasets/<session>_<robot>_<target>.hdf5` by default, so we glob
+    project-level `datasets/` for files matching this session.
     """
-    pattern = f"{context.session_id}_{context.run_id}_*.hdf5"
+    pattern = f"{context.session_id}_*.hdf5"
     candidates = sorted(DATASETS_DIR.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 
 def _latest_train_output(context: RuntimeContext) -> Path | None:
-    # Train output dirs are `<session>_<run>_<timestamp>` (see
-    # _tool_run_scene_robot_train). Scope strictly to this run so eval
-    # doesn't pick up another run/session's checkpoint; None when absent.
+    # Train output dirs are `<session>_<timestamp>` (see
+    # _tool_run_scene_robot_train). Scope strictly to this session so eval
+    # doesn't pick up another session's checkpoint; None when absent.
     if not OUTPUTS_TRAIN_DIR.exists():
         return None
-    prefix = f"{context.session_id}_{context.run_id}_"
+    prefix = f"{context.session_id}_"
     candidates = [
         p for p in OUTPUTS_TRAIN_DIR.iterdir() if p.is_dir() and p.name.startswith(prefix)
     ]
@@ -569,7 +761,7 @@ def _tool_run_scene_robot_convert(args: dict[str, Any], lctx: "LoopContext") -> 
     if isinstance(hdf5_arg, str) and hdf5_arg.strip():
         hdf5_path = Path(hdf5_arg.strip())
         if not hdf5_path.is_absolute():
-            hdf5_path = (context.run_root / hdf5_path).resolve()
+            hdf5_path = (context.session_root / hdf5_path).resolve()
     else:
         candidate = _latest_collect_hdf5(context)
         if candidate is None:
@@ -588,7 +780,6 @@ def _tool_run_scene_robot_convert(args: dict[str, Any], lctx: "LoopContext") -> 
 
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "log_path": str(context.scene_robot_convert_log_path),
         "hdf5": str(hdf5_path),
         "repo_id": repo_id,
@@ -625,11 +816,10 @@ def _tool_run_scene_robot_train(args: dict[str, Any], lctx: "LoopContext") -> di
     output_dir = (args.get("output_dir") or "").strip() if isinstance(args.get("output_dir"), str) else ""
     if not output_dir:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        output_dir = str(OUTPUTS_TRAIN_DIR / f"{context.session_id}_{context.run_id}_{timestamp}")
+        output_dir = str(OUTPUTS_TRAIN_DIR / f"{context.session_id}_{timestamp}")
 
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "log_path": str(context.scene_robot_train_log_path),
         "repo_id": repo_id,
         "dataset_root": dataset_root,
@@ -698,11 +888,10 @@ def _tool_run_scene_robot_eval(args: dict[str, Any], lctx: "LoopContext") -> dic
     record_dir = (args.get("record_dir") or "").strip() if isinstance(args.get("record_dir"), str) else ""
     if not record_dir:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        record_dir = str(OUTPUTS_EVAL_DIR / f"{context.session_id}_{context.run_id}_{timestamp}_runs")
+        record_dir = str(OUTPUTS_EVAL_DIR / f"{context.session_id}_{timestamp}_runs")
 
     payload = {
         "session_id": context.session_id,
-        "run_id": context.run_id,
         "log_path": str(context.scene_robot_eval_log_path),
         "target": target,
         "checkpoint": checkpoint,
@@ -904,6 +1093,7 @@ def _tool_check_job_progress(args: dict[str, Any], lctx: "LoopContext") -> dict[
 
 TOOL_HANDLERS: dict[str, Callable[[dict[str, Any], "LoopContext"], dict[str, Any]]] = {
     "inspect_state": _tool_inspect_state,
+    "inspect_assets": _tool_inspect_assets,
     "create_scene_graph": _tool_create_scene_graph,
     "run_real2sim": _tool_run_real2sim,
     "generate_scene": _tool_generate_scene,
@@ -920,6 +1110,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "name": "inspect_state",
         "description": "Read the current run's state: scene graph object summary, whether an input image exists, whether a scene USD has been generated, and the latest real2sim / scene_robot job status.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "inspect_assets",
+        "description": "Audit every object in the current scene graph against on-disk USD assets. Returns per-prim status: resolved assets carry their asset_path; missing entries carry a reason and which source they expected (real2sim → run_real2sim must finish; retrieval → an asset must exist under RETRIEVAL_ASSET_ROOT matching the class). Call this before generate_scene to confirm the scene can actually be built.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -963,11 +1163,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "resample_mode": {
-                    "type": "string",
-                    "enum": ["joint", "lock_real2sim"],
-                    "description": "Layout strategy. Default lock_real2sim — keeps observed real2sim support chains rigid; only pass joint when the user explicitly asks to fully resample the layout.",
-                },
                 "scene_endpoint": {
                     "type": "string",
                     "enum": ["scene", "scene_new"],
@@ -1125,6 +1320,14 @@ class LoopContext:
         self.last_started_state: str | None = None
         self.warnings: list[str] = []
         self.tool_steps: list[dict[str, Any]] = []
+        # Per-turn failure-class counter. Key: (tool_name, normalized_error).
+        # When a class hits FAILURE_CLASS_LIMIT, the next result for that
+        # class gets a `forced_stop` marker so the LLM knows to give up
+        # (see SYSTEM_PROMPT rule 4).
+        self.failure_class_counts: dict[tuple[str, str], int] = {}
+
+
+FAILURE_CLASS_LIMIT = 3
 
 
 # --------- OpenAI Responses API plumbing ---------
@@ -1171,6 +1374,24 @@ def _summarize_tool_result(result: dict[str, Any]) -> str:
     return "ok"
 
 
+def _normalize_failure_class(result: dict[str, Any]) -> str:
+    """Reduce a tool failure to a stable class key for the per-turn counter.
+
+    Prefer an explicit `error_code` from the tool. Otherwise use the first
+    sentence/line of `error`. We deliberately ignore variable detail
+    (paths, ids, traceback) so "same kind of failure" collapses to one
+    class even when the surface text wiggles.
+    """
+    code = result.get("error_code")
+    if isinstance(code, str) and code.strip():
+        return code.strip()
+    err = result.get("error")
+    if isinstance(err, str) and err.strip():
+        first = err.strip().splitlines()[0]
+        return first.split(".")[0].strip()[:160]
+    return "unknown_error"
+
+
 def _execute_tool(name: str, args_json: str, lctx: LoopContext) -> dict[str, Any]:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
@@ -1182,13 +1403,25 @@ def _execute_tool(name: str, args_json: str, lctx: LoopContext) -> dict[str, Any
     if not isinstance(args, dict):
         args = {}
     try:
-        return handler(args, lctx)
+        result = handler(args, lctx)
     except Exception as exc:  # noqa: BLE001 - surface tool-side errors back to the model
-        return {
+        result = {
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
         }
+
+    failed = (not result.get("ok", True)) or bool(result.get("error"))
+    if failed:
+        key = (name, _normalize_failure_class(result))
+        lctx.failure_class_counts[key] = lctx.failure_class_counts.get(key, 0) + 1
+        if lctx.failure_class_counts[key] >= FAILURE_CLASS_LIMIT:
+            result["forced_stop"] = (
+                f"Failure class '{key[1]}' for tool '{name}' has repeated "
+                f"{lctx.failure_class_counts[key]} times this turn. Stop "
+                "calling this tool; report the failure to the user."
+            )
+    return result
 
 
 # --------- Public entry point ---------
@@ -1364,10 +1597,10 @@ def _format_failure_note(notes: list[dict[str, Any]]) -> str:
         "SYSTEM: One or more background jobs from this run finished with status=failed. "
         "Lead your reply by telling the user (in their language) what failed and why. "
         "Use the structured fields below to give a SPECIFIC diagnosis: cite the actual "
-        "exception class, the host:port / URL that failed, the failing step, and a one- "
-        "line guess at the likely root cause (e.g. 'remote service on 127.0.0.1:8002 is "
-        "not running'). Then ask whether to retry or adjust. Do NOT silently restart "
-        "the failed job.",
+        "exception class, the failing step, and a one-line guess at the likely root "
+        "cause. Only mention a concrete host:port / URL when it appears verbatim in "
+        "the supplied error fields or log digest below — do NOT invent or guess one. "
+        "Then ask whether to retry or adjust. Do NOT silently restart the failed job.",
     ]
     for note in notes:
         kind = note.get("kind") or "job"
@@ -1413,24 +1646,22 @@ def _format_failure_note(notes: list[dict[str, Any]]) -> str:
 def handle_agent_loop_message(
     *,
     session_id: str | None,
-    run_id: str | None,
     text: str | None,
     image_bytes: bytes | None = None,
     scene_service_url: str | None = None,
 ) -> dict[str, Any]:
-    context = resolve_runtime_context(session_id=session_id, run_id=run_id, create=True)
+    context = resolve_runtime_context(session_id=session_id, create=True)
     if context is None:
         context = create_session()
     context.ensure()
 
     has_uploaded_image = _save_input_image(context, image_bytes)
     state = _load_agent_state(context)
-    state["current_run_id"] = context.run_id
     _ensure_run_state(state, context)
 
     # A fresh message starts a fresh loop: drop any never-consumed
     # interrupt from a prior turn so it can't kill this new message.
-    clear_interrupt(context.session_id, context.run_id)
+    clear_interrupt(context.session_id)
 
     failure_notes = _sync_inflight_jobs(state, context)
     if failure_notes:
@@ -1462,7 +1693,7 @@ def handle_agent_loop_message(
     last_response = None
 
     for turn in range(MAX_TOOL_TURNS):
-        if consume_interrupt(context.session_id, context.run_id):
+        if consume_interrupt(context.session_id):
             _append_agent_history(
                 state,
                 "assistant",

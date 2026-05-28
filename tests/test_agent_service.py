@@ -30,7 +30,7 @@ class AgentServiceTest(unittest.TestCase):
             mock.patch.object(runtime_context, "RUNTIME_DIR", runtime_root),
             mock.patch.object(runtime_context, "SESSIONS_DIR", sessions_root),
         ):
-            context = runtime_context.create_session(session_id="sess_demo", run_id="run_demo")
+            context = runtime_context.create_session(session_id="sess_demo")
         return context
 
     def test_sync_real2sim_job_to_session_records_artifacts(self) -> None:
@@ -52,9 +52,9 @@ class AgentServiceTest(unittest.TestCase):
                 {
                     "job_id": "job123",
                     "status": "succeeded",
-                    "payload": {"session_id": context.session_id, "run_id": context.run_id},
+                    "payload": {"session_id": context.session_id},
                     "artifacts": {
-                        "real2sim_root_dir": str(context.run_root),
+                        "real2sim_root_dir": str(context.session_root),
                         "scene_results_dir": str(context.real2sim_scene_results_dir),
                         "assignment_json": "real2sim/scene_results/assignment.json",
                         "poses_json": "real2sim/scene_results/poses.json",
@@ -95,7 +95,7 @@ class AgentServiceTest(unittest.TestCase):
                         "user_message": "The remote SAM3D service is unreachable.",
                         "technical_detail": "Connection refused",
                     },
-                    "payload": {"session_id": context.session_id, "run_id": context.run_id},
+                    "payload": {"session_id": context.session_id},
                     "artifacts": {},
                 }
             )
@@ -120,7 +120,6 @@ class AgentServiceTest(unittest.TestCase):
             json.dumps(
                 {
                     "session_id": context.session_id,
-                    "current_run_id": context.run_id,
                     "current_state": "await_layout_strategy",
                     "last_intent": "generate_scene",
                     "last_completed_state": "generate_scene",
@@ -130,27 +129,21 @@ class AgentServiceTest(unittest.TestCase):
                         "question": "Choose joint or lock_real2sim.",
                         "options": [{"id": "joint", "label": "Joint"}],
                         "scene_endpoint": "scene_new",
-                        "run_id": context.run_id,
                     },
-                    "runs": {
-                        context.run_id: {
-                            "run_id": context.run_id,
-                            "scene_generation": {
-                                "status": "succeeded",
-                                "outputs": {
-                                    "saved_usd": str(context.scene_service_usd_path),
-                                    "placements_path": str(context.default_placements_path),
-                                    "screenshot_path": str(context.render_path),
-                                    "debug": {"resample_mode": "joint"},
-                                },
-                            },
-                            "real2sim": {
-                                "status": "running",
-                                "job_id": "job123",
-                                "log_path": str(context.real2sim_log_path),
-                                "log_start_offset": 12,
-                            },
-                        }
+                    "scene_generation": {
+                        "status": "succeeded",
+                        "outputs": {
+                            "saved_usd": str(context.scene_service_usd_path),
+                            "placements_path": str(context.default_placements_path),
+                            "screenshot_path": str(context.render_path),
+                            "debug": {"resample_mode": "joint"},
+                        },
+                    },
+                    "real2sim": {
+                        "status": "running",
+                        "job_id": "job123",
+                        "log_path": str(context.real2sim_log_path),
+                        "log_start_offset": 12,
                     },
                     "history": [{"role": "assistant", "content": "Choose joint or lock_real2sim."}],
                 }
@@ -164,7 +157,6 @@ class AgentServiceTest(unittest.TestCase):
         ):
             result = agent_service.get_agent_state_response(
                 session_id=context.session_id,
-                run_id=context.run_id,
             )
 
         self.assertEqual(result["agent"]["state"], "await_layout_strategy")
@@ -191,19 +183,13 @@ class AgentServiceTest(unittest.TestCase):
             json.dumps(
                 {
                     "session_id": context.session_id,
-                    "current_run_id": context.run_id,
                     "current_state": "run_real2sim",
                     "last_intent": "run_real2sim",
-                    "runs": {
-                        context.run_id: {
-                            "run_id": context.run_id,
-                            "real2sim": {
-                                "status": "running",
-                                "job_id": "job_live",
-                                "log_path": str(context.real2sim_log_path),
-                                "log_start_offset": 7,
-                            },
-                        }
+                    "real2sim": {
+                        "status": "running",
+                        "job_id": "job_live",
+                        "log_path": str(context.real2sim_log_path),
+                        "log_start_offset": 7,
                     },
                     "history": [],
                 }
@@ -218,7 +204,6 @@ class AgentServiceTest(unittest.TestCase):
         ):
             result = agent_service.get_agent_state_response(
                 session_id=context.session_id,
-                run_id=context.run_id,
             )
 
         self.assertEqual(result["real2sim_job"]["job_id"], "job_live")
